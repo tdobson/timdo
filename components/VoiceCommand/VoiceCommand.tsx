@@ -7,6 +7,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { ActionIcon, Loader, NavLink } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { useAiStatus } from '../../app/hooks/useAiStatus';
 import { apiFetch } from '../../app/lib/apiClient';
 import { getWorkerApiBaseUrl } from '../../app/lib/apiConfig';
 import type { Project } from '../../app/types/project.types';
@@ -25,6 +26,7 @@ interface VoiceCommandProps {
 
 export function VoiceCommand({ compact = false }: VoiceCommandProps) {
   const { data: session } = useSession();
+  const { voiceAvailable } = useAiStatus();
   const queryClient = useQueryClient();
   const router = useRouter();
   const [status, setStatus] = useState<RecordingStatus>('idle');
@@ -213,6 +215,11 @@ export function VoiceCommand({ compact = false }: VoiceCommandProps) {
       startRecording();
     }
   };
+
+  // An instance with no AI provider configured has no voice features to offer
+  if (!voiceAvailable) {
+    return null;
+  }
 
   if (compact) {
     // Mobile-friendly compact version (just an icon button)

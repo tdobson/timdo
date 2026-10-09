@@ -8,38 +8,48 @@ import aiApp from '../routes/ai';
 import * as projectService from '../services/projectService';
 import { createTestDb, ROBIN, seedCollaboration, TIM } from './helpers/testDb';
 
-vi.mock('groq-sdk', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    audio: { transcriptions: { create: vi.fn().mockResolvedValue({ text: 'add a task' }) } },
-  })),
-}));
-
 let mockInvokeResult: any = { summary: 'Nothing', changes: [] };
-let lastInvokeArgs: any = null;
+let lastPrompt = '';
 
-vi.mock('@langchain/core/prompts', () => ({
-  PromptTemplate: {
-    fromTemplate: vi.fn().mockReturnValue({
-      pipe: vi.fn().mockReturnValue({
-        invoke: vi.fn().mockImplementation(async (args: any) => {
-          lastInvokeArgs = args;
-          return mockInvokeResult;
-        }),
+vi.mock('../services/ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/ai')>();
+  const fake = () => ({
+    transcriber: { transcribe: vi.fn(async () => 'add a task') },
+    llm: {
+      complete: vi.fn(async ({ prompt }: { prompt: string }) => {
+        lastPrompt = prompt;
+        return mockInvokeResult;
       }),
+    },
+  });
+  return {
+    ...actual,
+    providersForGroqKey: vi.fn(() => fake()),
+    providersFromEnv: vi.fn((env: { GROQ_API_KEY?: string }) => {
+      if (!env.GROQ_API_KEY) {
+        throw new actual.AiNotConfiguredError(
+          'Voice features are not configured: GROQ_API_KEY is not set'
+        );
+      }
+      return fake();
     }),
-  },
-}));
+  };
+});
 
-vi.mock('@langchain/groq', () => ({
-  ChatGroq: vi.fn().mockImplementation(() => ({ withStructuredOutput: vi.fn() })),
-}));
+/** The task list the model was shown, parsed back out of the rendered prompt. */
+function tasksInPrompt(prompt: string): any[] {
+  const marker = 'Current Tasks JSON:';
+  return JSON.parse(prompt.slice(prompt.indexOf(marker) + marker.length).trim());
+}
 
 const env = { GROQ_API_KEY: 'test-key' };
 
 function form(projects?: unknown) {
   const fd = new FormData();
   fd.append('audio', new File(['x'], 'recording.webm', { type: 'audio/webm' }));
-  if (projects !== undefined) {fd.append('projects', JSON.stringify(projects));}
+  if (projects !== undefined) {
+    fd.append('projects', JSON.stringify(projects));
+  }
   return fd;
 }
 
@@ -54,7 +64,7 @@ describe('AI routes', () => {
     seedCollaboration(t.raw);
     userId = TIM;
     mockInvokeResult = { summary: 'Nothing', changes: [] };
-    lastInvokeArgs = null;
+    lastPrompt = '';
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('userId', userId);
@@ -105,10 +115,10 @@ describe('AI routes', () => {
       assigneeId: ROBIN,
       assigneeName: 'Robin Fairweather',
     });
-    expect(JSON.parse(lastInvokeArgs.projects).map((t: any) => t.project)).toEqual([
+    expect(tasksInPrompt(lastPrompt).map((t: any) => t.project)).toEqual([
       'Check inverter datasheet',
     ]);
-    expect(lastInvokeArgs.workspaces).toContain('Robin Fairweather');
+    expect(lastPrompt).toContain('Robin Fairweather');
   });
 
   it('scopes the context to the signed-in user', async () => {
@@ -119,8 +129,8 @@ describe('AI routes', () => {
       env
     );
     expect(res.status).toBe(200);
-    expect(lastInvokeArgs.me).toBe('Robin Fairweather <robin@example.com>');
-    expect(lastInvokeArgs.workspaces).not.toContain('Tim Dobson" (personal');
+    expect(lastPrompt).toContain('\nRobin Fairweather <robin@example.com>\n');
+    expect(lastPrompt).not.toContain('Tim Dobson" (personal');
   });
 
   it('ignores a client list for projects the user cannot see', async () => {
@@ -135,7 +145,7 @@ describe('AI routes', () => {
       },
     ];
     await app.request('/api/v2/ai/voice-command', { method: 'POST', body: form(forged) }, env);
-    expect(JSON.parse(lastInvokeArgs.projects).map((t: any) => t.project)).toEqual([
+    expect(tasksInPrompt(lastPrompt).map((t: any) => t.project)).toEqual([
       'Check inverter datasheet',
     ]);
   });
@@ -153,7 +163,7 @@ describe('AI routes', () => {
     expect(res.status).toBe(400);
   });
 
-  it('needs the Groq key', async () => {
+  it('reports an unconfigured instance', async () => {
     const res = await app.request('/api/v2/ai/voice-command', { method: 'POST', body: form() }, {});
     expect(res.status).toBe(500);
   });

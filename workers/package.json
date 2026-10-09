@@ -14,15 +14,17 @@
 		"migrations:apply:remote": "wrangler d1 migrations apply timdo-v2-db --remote"
 	},
 	"dependencies": {
+		"@anthropic-ai/sdk": "^0.132.1",
 		"@hono/zod-validator": "^0.2.2",
-		"drizzle-orm": "^0.33.0",
-		"groq-sdk": "^0.25.0",
 		"@langchain/core": "^0.3.61",
 		"@langchain/groq": "^0.2.3",
+		"drizzle-orm": "^0.33.0",
+		"groq-sdk": "^0.25.0",
 		"hono": "^4.5.10",
 		"jose": "^5.6.3",
 		"uuid": "^10.0.0",
-		"zod": "^3.23.8"
+		"zod": "^3.23.8",
+		"zod-to-json-schema": "^3.24.5"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20240725.0",

@@ -10,36 +10,40 @@ import * as projectService from '../services/projectService';
 import { loadVoiceContext, matchPerson, resolveProposals } from '../services/voiceContextService';
 import { createTestDb, ROBIN, seedCollaboration, STRANGER, TIM } from './helpers/testDb';
 
-vi.mock('groq-sdk', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    audio: {
-      transcriptions: {
-        create: vi.fn().mockImplementation(async () => ({ text: mockTranscript })),
-      },
-    },
-  })),
-}));
-
 let mockTranscript = 'mock transcription';
 let mockInvokeResult: any = { summary: 'Nothing', changes: [] };
-let lastInvokeArgs: any = null;
+let lastPrompt = '';
 
-vi.mock('@langchain/core/prompts', () => ({
-  PromptTemplate: {
-    fromTemplate: vi.fn().mockReturnValue({
-      pipe: vi.fn().mockReturnValue({
-        invoke: vi.fn().mockImplementation(async (args: any) => {
-          lastInvokeArgs = args;
-          return mockInvokeResult;
-        }),
+vi.mock('../services/ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/ai')>();
+  const fake = () => ({
+    transcriber: { transcribe: vi.fn(async () => mockTranscript) },
+    llm: {
+      complete: vi.fn(async ({ prompt }: { prompt: string }) => {
+        lastPrompt = prompt;
+        return mockInvokeResult;
       }),
+    },
+  });
+  return {
+    ...actual,
+    providersForGroqKey: vi.fn(() => fake()),
+    providersFromEnv: vi.fn((env: { GROQ_API_KEY?: string }) => {
+      if (!env.GROQ_API_KEY) {
+        throw new actual.AiNotConfiguredError(
+          'Voice features are not configured: GROQ_API_KEY is not set'
+        );
+      }
+      return fake();
     }),
-  },
-}));
+  };
+});
 
-vi.mock('@langchain/groq', () => ({
-  ChatGroq: vi.fn().mockImplementation(() => ({ withStructuredOutput: vi.fn() })),
-}));
+/** The task list the model was shown, parsed back out of the rendered prompt. */
+function tasksInPrompt(prompt: string): any[] {
+  const marker = 'Current Tasks JSON:';
+  return JSON.parse(prompt.slice(prompt.indexOf(marker) + marker.length).trim());
+}
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const audio = () => new File(['x'], 'r.webm', { type: 'audio/webm' });
@@ -65,7 +69,7 @@ describe('voice commands in shared workspaces', () => {
     seedCollaboration(raw);
     mockTranscript = 'mock transcription';
     mockInvokeResult = { summary: 'Nothing', changes: [] };
-    lastInvokeArgs = null;
+    lastPrompt = '';
     // A workspace Tim can only view, a second Solfit elsewhere is added per test
     raw.exec(`
       INSERT INTO Organisations (id, name, slug, created_by, is_personal) VALUES
@@ -181,17 +185,15 @@ describe('voice commands in shared workspaces', () => {
   describe('prompt', () => {
     it('gives the model the user, workspaces with roles, people and compact tasks', async () => {
       await processVoiceCommand({ audioFile: audio(), groqApiKey: 'k', context: await ctx() });
-      expect(lastInvokeArgs.me).toBe('Tim Dobson <tim@example.com>');
-      expect(lastInvokeArgs.workspaces).toContain(
-        'Workspace "Migrating Dragons" (shared, your role: owner)'
-      );
-      expect(lastInvokeArgs.workspaces).toContain('Robin Fairweather <robin@example.com> member');
-      expect(lastInvokeArgs.workspaces).toContain(
+      expect(lastPrompt).toContain('\nTim Dobson <tim@example.com>\n');
+      expect(lastPrompt).toContain('Workspace "Migrating Dragons" (shared, your role: owner)');
+      expect(lastPrompt).toContain('Robin Fairweather <robin@example.com> member');
+      expect(lastPrompt).toContain(
         'Workspace "Caving Club" (shared, your role: viewer, VIEW ONLY)'
       );
-      expect(lastInvokeArgs.workspaces).toContain('Solfit [SOL]');
-      expect(lastInvokeArgs.epics).toContain('"Acme Solar" in Solfit');
-      const tasks = JSON.parse(lastInvokeArgs.projects);
+      expect(lastPrompt).toContain('Solfit [SOL]');
+      expect(lastPrompt).toContain('"Acme Solar" in Solfit');
+      const tasks = tasksInPrompt(lastPrompt);
       expect(tasks.find((t: any) => t.project === 'Check inverter datasheet')).toMatchObject({
         category: 'Solfit',
         workspace: 'Migrating Dragons',
@@ -677,7 +679,7 @@ describe('voice commands in shared workspaces', () => {
       }
       const c = await ctx();
       await processVoiceCommand({ audioFile: audio(), groqApiKey: 'k', context: c });
-      const tasks = JSON.parse(lastInvokeArgs.projects);
+      const tasks = tasksInPrompt(lastPrompt);
       const onboarding = tasks.find((t: any) => t.id === uuid(1));
       expect(onboarding.notes).toHaveLength(163);
       const done = tasks.filter((t: any) => t.status === 'done');
@@ -816,7 +818,12 @@ describe('voice commands in shared workspaces', () => {
 
   describe('matchPerson', () => {
     const people = [
-      { userId: 'a', name: 'Robin Fairweather', email: 'robin@example.com', role: 'member' as const },
+      {
+        userId: 'a',
+        name: 'Robin Fairweather',
+        email: 'robin@example.com',
+        role: 'member' as const,
+      },
       { userId: 'b', name: 'Tim Dobson', email: 'tim@example.com', role: 'owner' as const },
     ];
     it('handles me words, nobody words and unknowns', () => {

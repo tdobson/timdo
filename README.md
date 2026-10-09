@@ -22,7 +22,7 @@ TimDo V2 provides authenticated users with an interactive board to manage their 
 -   **Client-Side State**: Data fetching and server-state caching are managed by [TanStack Query (React Query)](https://tanstack.com/query/latest).
 -   **Authentication**: User identity and access control are handled by [Auth0](https://auth0.com/) and integrated into the application using [NextAuth.js](https://next-auth.js.org/).
 -   **Backend API**: The backend is a set of serverless functions running on Cloudflare Workers, interacting with a Cloudflare D1 (SQL) database.
--   **AI Features**: Voice commands are processed by the backend using Groq for transcription and LLM reasoning via LangChain.js.
+-   **AI Features**: Voice commands are transcribed and interpreted by a provider each instance chooses: Groq (the default), any OpenAI-compatible service, Anthropic, Cloudflare Workers AI, or your own HTTP service. See [docs/ai-providers.md](docs/ai-providers.md).
 
 This architecture provides a secure, interactive, and personalized user experience.
 
@@ -37,7 +37,7 @@ TimDo started as a one-person tool and is now multi-user. Work lives in workspac
 -   **Authentication**: NextAuth.js with Auth0 Provider
 -   **Client-State Management**: TanStack Query (React Query)
 -   **Backend**: Cloudflare Workers, Hono, Drizzle ORM
--   **AI**: LangChain.js, Groq API (for transcription and LLM)
+-   **AI**: pluggable per instance (Groq by default; OpenAI-compatible, Anthropic, Workers AI, or your own service)
 -   **Database**: Cloudflare D1
 -   **Testing**: Jest, React Testing Library, Vitest, Storybook
 
@@ -117,7 +117,7 @@ The API is a RESTful service built with Cloudflare Workers and Hono.
     -   Fill in `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, and `AUTH0_ISSUER` in `.env.local`.
     -   In Auth0, add `http://localhost:3000/api/auth/callback/auth0` to "Allowed Callback URLs" and `http://localhost:3000` to "Allowed Logout URLs".
     -   Generate secrets for `NEXTAUTH_SECRET` and `INTERNAL_API_SECRET` by running `openssl rand -base64 32`.
-    -   Get a free API key from [Groq](https://console.groq.com/keys) and add it as `GROQ_API_KEY`.
+    -   For voice commands, get a free API key from [Groq](https://console.groq.com/keys) and add it as `GROQ_API_KEY`, or pick another provider as described in [docs/ai-providers.md](docs/ai-providers.md).
 4.  **Set up Cloudflare D1 Database:**
     -   Run `npx wrangler d1 create timdo-v2-db` and copy the `database_id` into `workers/wrangler.toml`.
     -   Run `cd workers && npm run migrations:generate` to create the initial SQL migration.

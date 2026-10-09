@@ -30,6 +30,16 @@ crons = ["0 * * * *"]
 AUTH0_DOMAIN = "relatemate.uk.auth0.com" # Auth0 domain WITHOUT https:// prefix
 AUTH0_AUDIENCE = "https://api.timdo.tdobson.net"   # Replace with your Auth0 API Audience
 
+# AI providers for voice commands (see docs/ai-providers.md). Unset means Groq for both jobs.
+# AI_TRANSCRIPTION_PROVIDER = "groq"   # groq | openai | workers-ai | http
+# AI_LLM_PROVIDER = "groq"             # groq | openai | anthropic | workers-ai | http
+# AI_LLM_MODEL = "openai/gpt-oss-120b"
+# Keys are secrets: GROQ_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, AI_HTTP_SECRET.
+# For Workers AI, uncomment the binding below.
+
+# [ai]
+# binding = "AI"
+
 # Example for a preview/staging environment (optional)
 # [env.preview]
 # name = "timdo-v2-api-preview"

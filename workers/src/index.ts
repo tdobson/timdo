@@ -15,13 +15,13 @@ import projectsApp from './routes/projects';
 import tasksApp from './routes/tasks';
 import userApp from './routes/user';
 import { AccessError } from './services/accessService';
+import type { AiEnv } from './services/ai';
 import { processAwaitingReturns } from './services/projectService';
 
-export interface Env {
+export interface Env extends AiEnv {
   DB: D1Database;
   AUTH0_DOMAIN: string;
   AUTH0_AUDIENCE: string;
-  GROQ_API_KEY: string;
   INTERNAL_API_SECRET: string;
 }
 

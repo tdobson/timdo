@@ -1,41 +1,34 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseVoiceCommand } from '../services/aiService';
 
-// Mock groq-sdk and @langchain/groq
-vi.mock('groq-sdk', () => {
-  return {
-    default: vi.fn().mockImplementation(() => ({
-      audio: {
-        transcriptions: {
-          create: vi.fn().mockResolvedValue({ text: 'mock transcription' }),
-        },
-      },
-    })),
-  };
-});
-
 let mockInvokeResult: any = {
   summary: 'Created task',
   changes: [],
 };
+let lastPrompt = '';
 
-vi.mock('@langchain/core/prompts', () => {
-  return {
-    PromptTemplate: {
-      fromTemplate: vi.fn().mockReturnValue({
-        pipe: vi.fn().mockReturnValue({
-          invoke: vi.fn().mockImplementation(async () => mockInvokeResult),
-        }),
+vi.mock('../services/ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/ai')>();
+  const fake = () => ({
+    transcriber: { transcribe: vi.fn(async () => 'mock transcription') },
+    llm: {
+      complete: vi.fn(async ({ prompt }: { prompt: string }) => {
+        lastPrompt = prompt;
+        return mockInvokeResult;
       }),
     },
-  };
-});
-
-vi.mock('@langchain/groq', () => {
+  });
   return {
-    ChatGroq: vi.fn().mockImplementation(() => ({
-      withStructuredOutput: vi.fn(),
-    })),
+    ...actual,
+    providersForGroqKey: vi.fn(() => fake()),
+    providersFromEnv: vi.fn((env: { GROQ_API_KEY?: string }) => {
+      if (!env.GROQ_API_KEY) {
+        throw new actual.AiNotConfiguredError(
+          'Voice features are not configured: GROQ_API_KEY is not set'
+        );
+      }
+      return fake();
+    }),
   };
 });
 

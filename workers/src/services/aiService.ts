@@ -1,8 +1,7 @@
-import { PromptTemplate } from '@langchain/core/prompts';
-import { ChatGroq } from '@langchain/groq';
-import Groq from 'groq-sdk';
 import { z } from 'zod';
 import type { Project } from '../../../app/types/project.types';
+import { providersForGroqKey, type AiProviders, type StructuredLlm } from './ai';
+import { renderPrompt } from './ai/schema';
 import {
   compactTasks,
   describeEpics,
@@ -16,7 +15,10 @@ interface ProcessVoiceCommandArgs {
   audioFile: File;
   /** The caller's tasks. Ignored when `context` is given (it carries its own tasks). */
   projects?: Project[];
-  groqApiKey: string;
+  /** The transcription and LLM services to use (see ./ai). */
+  ai?: AiProviders;
+  /** Older callers pass a Groq key instead; that means Groq with the default models. */
+  groqApiKey?: string;
   /**
    * What the signed-in user can see and who they work with, from loadVoiceContext().
    * When present, proposals are checked and resolved to ids before they're returned.
@@ -132,13 +134,14 @@ const zodSchema = z.object({
     .describe('An array of changes to be made to projects, epics, or categories.'),
 });
 
-async function transcribeAudio(audioFile: File, groq: Groq): Promise<string> {
-  // Use Groq's optimized Whisper model for fast transcription.
-  const transcription = await groq.audio.transcriptions.create({
-    file: audioFile,
-    model: 'whisper-large-v3',
-  });
-  return transcription.text;
+function resolveProviders(args: { ai?: AiProviders; groqApiKey?: string }): AiProviders {
+  if (args.ai) {
+    return args.ai;
+  }
+  if (args.groqApiKey) {
+    return providersForGroqKey(args.groqApiKey);
+  }
+  throw new Error('No AI providers were given');
 }
 
 const VOICE_PROMPT = `You are an expert project management assistant for an application called TimDo.
@@ -222,20 +225,9 @@ const NO_CONTEXT = {
 async function getProjectUpdates(
   transcript: string,
   projects: unknown[],
-  groqApiKey: string,
+  llm: StructuredLlm,
   context?: VoiceContext
 ): Promise<z.infer<typeof zodSchema>> {
-  const prompt = PromptTemplate.fromTemplate(VOICE_PROMPT);
-
-  // Use the GPT OSS 120B model for reasoning.
-  const model = new ChatGroq({
-    apiKey: groqApiKey,
-    model: 'openai/gpt-oss-120b',
-  });
-
-  // Use the modern .withStructuredOutput() method which handles schema conversion and parsing.
-  const chain = prompt.pipe(model.withStructuredOutput(zodSchema));
-
   const promptContext = context
     ? {
         me: `${context.me.name} <${context.me.email}>`,
@@ -244,14 +236,14 @@ async function getProjectUpdates(
       }
     : NO_CONTEXT;
 
-  const result = await chain.invoke({
+  const prompt = renderPrompt(VOICE_PROMPT, {
     transcript,
     projects: JSON.stringify(projects),
     timestamp: new Date().toISOString(),
     ...promptContext,
   });
 
-  return result;
+  return llm.complete({ name: 'voice_command', prompt, schema: zodSchema });
 }
 
 /** Exposed for tests: the full prompt template the model sees. */
@@ -260,12 +252,13 @@ export const VOICE_PROMPT_TEMPLATE = VOICE_PROMPT;
 export async function processVoiceCommand({
   audioFile,
   projects = [],
+  ai,
   groqApiKey,
   context,
 }: ProcessVoiceCommandArgs) {
-  const groq = new Groq({ apiKey: groqApiKey });
+  const providers = resolveProviders({ ai, groqApiKey });
 
-  const transcript = await transcribeAudio(audioFile, groq);
+  const transcript = await providers.transcriber.transcribe(audioFile);
 
   if (!transcript.trim()) {
     return {
@@ -284,7 +277,7 @@ export async function processVoiceCommand({
     changes,
     answer,
     warnings: modelWarnings,
-  } = await getProjectUpdates(transcript, taskList, groqApiKey, context);
+  } = await getProjectUpdates(transcript, taskList, providers.llm, context);
 
   if (context) {
     const { proposals, warnings } = resolveProposals((changes || []) as RawChange[], context);
@@ -326,7 +319,8 @@ export const parseVoiceCommand = processVoiceCommand;
 
 interface ParseOnboardingProjectsArgs {
   audioFile: File;
-  groqApiKey: string;
+  ai?: AiProviders;
+  groqApiKey?: string;
 }
 
 const onboardingProjectSchema = z.object({
@@ -369,11 +363,12 @@ const onboardingOutputSchema = z.object({
 
 export async function parseOnboardingProjects({
   audioFile,
+  ai,
   groqApiKey,
 }: ParseOnboardingProjectsArgs) {
-  const groq = new Groq({ apiKey: groqApiKey });
+  const providers = resolveProviders({ ai, groqApiKey });
 
-  const transcript = await transcribeAudio(audioFile, groq);
+  const transcript = await providers.transcriber.transcribe(audioFile);
 
   if (!transcript.trim()) {
     return {
@@ -382,7 +377,7 @@ export async function parseOnboardingProjects({
     };
   }
 
-  const prompt = PromptTemplate.fromTemplate(
+  const prompt = renderPrompt(
     `You are an onboarding assistant for TimDo, a project management app.
 Your task is to parse a user's voice recording where they describe their projects.
 
@@ -414,18 +409,14 @@ Be generous in parsing - if you hear something that sounds like a project, inclu
 
 Transcript:
 "{transcript}"
-`
+`,
+    { transcript }
   );
 
-  const model = new ChatGroq({
-    apiKey: groqApiKey,
-    model: 'openai/gpt-oss-120b',
-  });
-
-  const chain = prompt.pipe(model.withStructuredOutput(onboardingOutputSchema));
-
-  const result = await chain.invoke({
-    transcript,
+  const result = await providers.llm.complete({
+    name: 'onboarding_projects',
+    prompt,
+    schema: onboardingOutputSchema,
   });
 
   return {

@@ -1,11 +1,61 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import type { Env } from '../index';
+import {
+  AiNotConfiguredError,
+  describeMissing,
+  providersFromEnv,
+  resolveAiConfig,
+  type AiProviders,
+} from '../services/ai';
 import { parseOnboardingProjects, processVoiceCommand } from '../services/aiService';
 import { loadVoiceContext } from '../services/voiceContextService';
 
 const aiApp = new Hono<{ Bindings: Env }>();
 
-// The auth middleware is now applied in src/index.ts, so we remove it from here.
+// The auth middleware is applied in src/index.ts.
+
+/** Which AI services this instance uses, and whether they are ready. Names only, never keys. */
+aiApp.get('/status', (c) => {
+  try {
+    const config = resolveAiConfig(c.env);
+    return c.json({
+      configured: config.configured,
+      transcription: {
+        provider: config.transcription.provider,
+        model: config.transcription.model,
+        ready: !config.transcription.missing,
+      },
+      llm: {
+        provider: config.llm.provider,
+        model: config.llm.model,
+        ready: !config.llm.missing,
+      },
+      missing: config.configured ? null : describeMissing(config),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ configured: false, transcription: null, llm: null, missing: message });
+  }
+});
+
+type ProviderResult = { ok: true; ai: AiProviders } | { ok: false; response: Response };
+
+function providersOrError(c: Context<{ Bindings: Env }>): ProviderResult {
+  try {
+    return { ok: true, ai: providersFromEnv(c.env) };
+  } catch (error) {
+    if (error instanceof AiNotConfiguredError) {
+      return {
+        ok: false,
+        response: c.json(
+          { error: 'Voice features are not configured on this instance', details: error.message },
+          500
+        ),
+      };
+    }
+    throw error;
+  }
+}
 
 aiApp.post('/voice-command', async (c) => {
   try {
@@ -28,17 +78,16 @@ aiApp.post('/voice-command', async (c) => {
       }
     }
 
-    const groqApiKey = c.env.GROQ_API_KEY;
-
-    if (!groqApiKey) {
-      return c.json({ error: 'Server configuration error: Missing Groq API key' }, 500);
+    const providers = providersOrError(c);
+    if (!providers.ok) {
+      return providers.response;
     }
 
     const context = await loadVoiceContext(c.get('db'), c.get('userId'), clientTasks);
 
     const result = await processVoiceCommand({
       audioFile,
-      groqApiKey,
+      ai: providers.ai,
       context,
     });
 
@@ -59,15 +108,14 @@ aiApp.post('/parse-onboarding', async (c) => {
       return c.json({ error: 'Audio file is required' }, 400);
     }
 
-    const groqApiKey = c.env.GROQ_API_KEY;
-
-    if (!groqApiKey) {
-      return c.json({ error: 'Server configuration error: Missing Groq API key' }, 500);
+    const providers = providersOrError(c);
+    if (!providers.ok) {
+      return providers.response;
     }
 
     const result = await parseOnboardingProjects({
       audioFile,
-      groqApiKey,
+      ai: providers.ai,
     });
 
     return c.json(result);

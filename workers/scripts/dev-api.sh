@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 PORT="${1:-8787}"
 PERSIST=".wrangler/dev-$PORT"
 
-[[ -f .dev.vars ]] || printf 'INTERNAL_API_SECRET=local-dev-secret\nGROQ_API_KEY=\n' > .dev.vars
+[[ -f .dev.vars ]] || printf 'INTERNAL_API_SECRET=local-dev-secret\n# Voice commands: see docs/ai-providers.md\nGROQ_API_KEY=\n' > .dev.vars
 
 if [[ ! -d "$PERSIST" || "${RESET:-}" == "1" ]]; then
   rm -rf "$PERSIST"
