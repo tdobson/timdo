@@ -1,27 +1,63 @@
-name: npm test
+name: tests
 
 on:
   pull_request:
     branches:
       - '**'
+  push:
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
-  test_pull_request:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
-          cache: 'yarn'
-          cache-dependency-path: '**/yarn.lock'
-      - name: Install dependencies
-        run: yarn
-      - name: Run build
-        run: npm run build
-      - name: Run tests
-        run: npm test
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            workers/package-lock.json
+            mcp/package-lock.json
+
+      - name: Install
+        run: |
+          npm ci --no-audit --no-fund
+          (cd workers && npm ci --no-audit --no-fund)
+          (cd mcp && npm ci --no-audit --no-fund)
+
+      - name: Types and lint
+        run: |
+          npx tsc --noEmit
+          (cd workers && npx tsc --noEmit -p .)
+          npx eslint app components --ext .ts,.tsx
+
+      - name: API tests
+        run: cd workers && npx vitest run
+
+      - name: Web app tests
+        run: npx jest --forceExit
+
+      - name: MCP server tests
+        run: cd mcp && npm test
+
+      - name: CLI tests
+        run: for t in tests/*.test.sh; do bash "$t"; done
+
+      - name: Web app builds
+        env:
+          AUTH0_CLIENT_ID: placeholder
+          AUTH0_CLIENT_SECRET: placeholder
+          AUTH0_ISSUER: https://example.auth0.com
+          AUTH0_AUDIENCE: https://api.example.com
+          NEXTAUTH_URL: http://localhost:3000
+          NEXTAUTH_SECRET: placeholder-secret
+          INTERNAL_API_SECRET: placeholder
+          NEXT_PUBLIC_WORKER_API_BASE_URL: http://127.0.0.1:8787/api/v2
+        run: npx next build
