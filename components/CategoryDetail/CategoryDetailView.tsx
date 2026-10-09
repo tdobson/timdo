@@ -41,6 +41,7 @@ import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useOrganisationMembers } from '../../app/hooks/useOrganisationQueries';
 import { useCreateProject, useUpdateProject } from '../../app/hooks/useProjectMutations';
 import { useWorkspaceLookup, useWorkspaceProjects } from '../../app/hooks/useWorkspaces';
+import { markdownToPlainText } from '../../app/lib/plainText';
 import type { Epic } from '../../app/types/epic.types';
 import type {
   Project,
@@ -355,7 +356,7 @@ export function CategoryDetailView({ categoryName, tasks, epics }: CategoryDetai
                         <AnchorTaskLink task={t} />
                         {t.reason && (
                           <Text size="xs" c="dimmed" lineClamp={1}>
-                            {t.reason}
+                            {markdownToPlainText(t.reason)}
                           </Text>
                         )}
                       </div>

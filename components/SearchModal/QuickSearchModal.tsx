@@ -16,6 +16,7 @@ import {
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useProjects } from '../../app/hooks/useProjectQueries';
 import { useTaskSearch } from '../../app/hooks/useSearchQueries';
+import { markdownToPlainText } from '../../app/lib/plainText';
 import type { Project } from '../../app/types/project.types';
 import { TaskAssigneeAvatar, workspaceLabel } from '../Team';
 
@@ -135,7 +136,7 @@ export function QuickSearchModal({ opened, onClose }: QuickSearchModalProps) {
                   </Group>
                   {item.reason && (
                     <Text size="xs" c="dimmed" lineClamp={1}>
-                      Why: {item.reason}
+                      Why: {markdownToPlainText(item.reason)}
                     </Text>
                   )}
                   {item.snippet && (

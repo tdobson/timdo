@@ -30,6 +30,7 @@ import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useEpics } from '../../app/hooks/useEpicQueries';
 import { useGoals } from '../../app/hooks/useGoalQueries';
 import { useClaimTask } from '../../app/hooks/useTaskMutations';
+import { markdownToPlainText } from '../../app/lib/plainText';
 import type {
   Project,
   ProjectSize,
@@ -585,7 +586,7 @@ export function ProjectCard({
                 <Text component="span" fw={700}>
                   Reason:
                 </Text>{' '}
-                {project.reason}
+                {markdownToPlainText(project.reason)}
               </Text>
             )}
             {project.notes && (

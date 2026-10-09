@@ -44,6 +44,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useDeleteEpic, useUpdateEpic } from '../../app/hooks/useEpicQueries';
 import { useCreateProject, useUpdateProject } from '../../app/hooks/useProjectMutations';
+import { markdownToPlainText } from '../../app/lib/plainText';
 import type { Epic, EpicStatus, EpicUpdateInput } from '../../app/types/epic.types';
 import type { Goal } from '../../app/types/goal.types';
 import type {
@@ -480,7 +481,7 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
                           </Group>
                           {t.reason && (
                             <Text size="xs" c="dimmed" lineClamp={2}>
-                              {t.reason}
+                              {markdownToPlainText(t.reason)}
                             </Text>
                           )}
                           <Group justify="space-between" mt={4}>
@@ -538,7 +539,7 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
                           )}
                           {t.reason && (
                             <Text size="xs" c="dimmed" lineClamp={2}>
-                              {t.reason}
+                              {markdownToPlainText(t.reason)}
                             </Text>
                           )}
                           <Group justify="space-between" mt={4}>
@@ -591,7 +592,7 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
                           </Group>
                           {t.reason && (
                             <Text size="xs" c="dimmed" lineClamp={2}>
-                              {t.reason}
+                              {markdownToPlainText(t.reason)}
                             </Text>
                           )}
                           <Group justify="space-between" mt={4}>
@@ -707,7 +708,7 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
                         </Text>
                         {t.reason && (
                           <Text size="xs" c="dimmed" lineClamp={1}>
-                            {t.reason}
+                            {markdownToPlainText(t.reason)}
                           </Text>
                         )}
                       </div>
