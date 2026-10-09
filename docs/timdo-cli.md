@@ -22,7 +22,7 @@ Make sure `~/.local/bin` is on your PATH.
 
 ## Authentication
 
-The CLI uses a static secret (`X-Internal-Secret` header) instead of OAuth/JWT. This avoids interactive login flows, making it suitable for scripts and AI agents. The secret resolves to the first user in the database (single-user app).
+Most people sign in with a personal token: `timdo login` (see [collaboration.md](collaboration.md)). The account owner's tooling can instead use the static `INTERNAL_API_SECRET` as `TIMDO_SECRET`, which acts as the first account that signed up, or as anyone with `--as <email>`. To use another TimDo instance, run `timdo login --app https://tasks.example.org`.
 
 ## Commands
 
@@ -162,7 +162,8 @@ timdo --json search "roof"    # JSON array of matches
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `TIMDO_CONFIG` | `~/.config/timdo/config` | Path to config file |
-| `TIMDO_API` | `https://timdo-v2-api.tdobson.net/api/v2` | API base URL |
+| `TIMDO_API` | `https://timdo-v2-api.tdobson.net/api/v2` | API base URL; `timdo login --app <url>` saves another instance's |
+| `TIMDO_APP_URL` | `https://timdo.tdobson.net` | the web app, for invite links and help text |
 | `TIMDO_FORMAT` | `text` | Default output format |
 | `TIMDO_SECRET` | (required) | API secret, usually set in config file |
 

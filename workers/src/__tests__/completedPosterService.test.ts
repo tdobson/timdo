@@ -264,4 +264,51 @@ describe('completedPosterService', () => {
       expect(crewItems[0].category).toBe('Caving Crew');
     });
   });
+
+  describe('which tasks count as work', () => {
+    const done = (id: string, category: string, isShared?: boolean) => ({
+      id,
+      project: `${id} task`,
+      category,
+      status: 'done' as const,
+      size: '*' as const,
+      statusLastChangedOn: '2025-03-01T00:00:00Z',
+      ...(isShared === undefined ? {} : { isShared }),
+    });
+    const workColumn = (data: ReturnType<typeof partitionCompletedTasks>) =>
+      data.tiers.flatMap((t) => t.columns[3]).map((i) => i.id);
+    const personalColumns = (data: ReturnType<typeof partitionCompletedTasks>) =>
+      data.tiers.flatMap((t) => t.columns.slice(0, 3).flat()).map((i) => i.id);
+
+    it('uses the listed projects, in their order, when the instance gives a list', () => {
+      const data = partitionCompletedTasks(
+        [done('a', 'Support'), done('b', 'Personal'), done('c', 'Fixes'), done('d', 'Solfit')],
+        {},
+        {},
+        undefined,
+        'all',
+        { workProjects: ['Fixes', 'Support'] }
+      );
+      expect(workColumn(data)).toEqual(['c', 'a']);
+      expect(personalColumns(data).sort()).toEqual(['b', 'd']);
+    });
+
+    it("uses each task's workspace when there is no list", () => {
+      const data = partitionCompletedTasks(
+        [done('a', 'Anything', true), done('b', 'Solfit', false), done('c', 'Personal', false)],
+        {},
+        {},
+        undefined,
+        'all'
+      );
+      expect(workColumn(data)).toEqual(['a']);
+      expect(personalColumns(data).sort()).toEqual(['b', 'c']);
+    });
+
+    it('falls back to the original project names when it knows neither', () => {
+      const data = partitionCompletedTasks([done('a', 'Solfit'), done('b', 'Personal')], {}, {});
+      expect(workColumn(data)).toEqual(['a']);
+      expect(personalColumns(data)).toEqual(['b']);
+    });
+  });
 });

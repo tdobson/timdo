@@ -37,7 +37,8 @@ import classes from './PosterCanvas.module.css';
 
 type PosterType = 'wall-of-done' | 'active-tasks' | 'goals-rhythm';
 
-const FALLBACK_CATEGORIES = ['Solfit', 'Crew', 'Personal', 'Migrating Dragons', 'Mavala', 'Xebit'];
+// With no tasks yet there is nothing to filter by
+const FALLBACK_CATEGORIES: string[] = [];
 
 export default function PosterStudioPage() {
   const { data: session } = useSession();

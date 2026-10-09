@@ -220,7 +220,9 @@ describe('SharingPage', () => {
       expect.stringContaining('Member'),
       expect.stringContaining('Viewer'),
     ]);
-    expect(within(card).getByRole('button', { name: 'Remove Robin Fairweather' })).toBeInTheDocument();
+    expect(
+      within(card).getByRole('button', { name: 'Remove Robin Fairweather' })
+    ).toBeInTheDocument();
     // Sole owner can't demote themselves
     expect(
       within(card).queryByRole('textbox', { name: 'Role for Tim Dobson' })
@@ -279,7 +281,9 @@ describe('SharingPage', () => {
     render(<SharingPage />);
     const card = await workspaceCard('org-md');
 
-    await userEvent.click(within(card).getByRole('textbox', { name: 'Role for Robin Fairweather' }));
+    await userEvent.click(
+      within(card).getByRole('textbox', { name: 'Role for Robin Fairweather' })
+    );
     await userEvent.click(await screen.findByRole('option', { name: /Viewer/ }));
 
     await waitFor(() =>
@@ -351,7 +355,7 @@ describe('SharingPage', () => {
 
       const result = await within(card).findByTestId('share-result-invited');
       expect(within(result).getByTestId('invite-link')).toHaveTextContent(
-        'https://timdo.tdobson.net/invite/tok-123'
+        `${window.location.origin}/invite/tok-123`
       );
       expect(result).toHaveTextContent('join Migrating Dragons automatically when they sign in');
       expect(within(result).getByRole('button', { name: /copy link/i })).toBeInTheDocument();

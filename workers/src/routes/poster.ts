@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../index';
+import { instanceConfig } from '../instance';
 import { generateActiveTasksPosterSvg } from '../services/activePosterService';
 import { getCompletedPosterData } from '../services/completedPosterService';
 import { getProjectsForUser } from '../services/projectService';
@@ -24,7 +25,9 @@ posterApp.get('/wall-of-done', async (c) => {
         .filter(Boolean)
     : undefined;
 
-  const data = await getCompletedPosterData(db, userId, categories, timeframe);
+  const data = await getCompletedPosterData(db, userId, categories, timeframe, {
+    workProjects: instanceConfig(c.env).posterWorkProjects,
+  });
 
   if (isTiled) {
     const tiles = generateTiledA4Svgs(data);

@@ -76,7 +76,7 @@ isMine          assigned to me, or unassigned and created by me
 - `POST /organisations/:id/invites` takes `{ email, role: admin|member|viewer }` and returns one of:
   - `{ status: 'added', userId, name, email, role }`: they already had an account and are in now.
   - `{ status: 'already_member', ... }`
-  - `{ status: 'invited', id, email, role, token, expiresAt }`: they join automatically when they first sign in with that email. The invite link is `https://timdo.tdobson.net/invite/<token>`.
+  - `{ status: 'invited', id, email, role, token, expiresAt }`: they join automatically when they first sign in with that email. The invite link is `<APP_URL>/invite/<token>` (the CLI prints it as `inviteUrl`).
 - `DELETE /organisations/:id/invites/:inviteId` revokes an invite.
 - `POST /organisations/invites/accept` takes `{ token }`.
 - `PUT /organisations/:id/members/:userId` takes `{ role }`.

@@ -3,9 +3,11 @@ import { drizzle } from 'drizzle-orm/d1';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import * as schema from './db/schema';
+import { instanceConfig, type InstanceEnv } from './instance';
 import { combinedAuthMiddleware, internalAuthMiddleware } from './middleware/auth';
 import activityApp from './routes/activity';
 import aiApp from './routes/ai';
+import configApp from './routes/config';
 import customersApp from './routes/customers';
 import epicsApp from './routes/epics';
 import goalsApp from './routes/goals';
@@ -17,7 +19,7 @@ import userApp from './routes/user';
 import { AccessError } from './services/accessService';
 import { processAwaitingReturns } from './services/projectService';
 
-export interface Env {
+export interface Env extends InstanceEnv {
   DB: D1Database;
   AUTH0_DOMAIN: string;
   AUTH0_AUDIENCE: string;
@@ -54,14 +56,13 @@ app.use('*', async (c, next) => {
   console.log(`[Request End]   <-- ${c.req.method} ${c.req.path} - Status: ${c.res.status}`);
 });
 
-// CORS middleware should be one of the first to run.
-app.use(
-  '/api/v2/*',
+// CORS middleware should be one of the first to run. The allowed origins are per instance.
+app.use('/api/v2/*', (c, next) =>
   cors({
-    origin: ['http://localhost:3000', 'https://timdo.tdobson.net'],
+    origin: instanceConfig(c.env).corsOrigins,
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'X-Internal-Secret', 'X-Timdo-User'],
-  })
+  })(c, next)
 );
 
 // DB middleware to make the DB instance available on all routes.
@@ -84,7 +85,8 @@ app.use('/api/v2/poster/*', combinedAuthMiddleware);
 app.use('/api/v2/activity/*', combinedAuthMiddleware);
 app.use('/api/v2/activity', combinedAuthMiddleware);
 
-// Register route handlers.
+// Register route handlers. /config is public; everything else was given auth above.
+app.route('/api/v2/config', configApp);
 app.route('/api/v2/organisations', organisationsApp);
 app.route('/api/v2/projects', projectsApp);
 app.route('/api/v2/tasks', tasksApp);

@@ -45,12 +45,12 @@ const projectSchema = z.object({
     .string()
     .nullable()
     .optional()
-    .describe('The high-level category/project area, e.g. "Solfit", "Crew", "Personal".'),
+    .describe('The high-level category/project area, e.g. "Acme Solar", "Personal".'),
   projectId: z
     .string()
     .nullable()
     .optional()
-    .describe('The project ID or key if specified (e.g. "proj-xebit-1", "XEB").'),
+    .describe('The project ID or key if specified (e.g. "proj-acme-1", "ACME").'),
   assignee: z
     .string()
     .nullable()

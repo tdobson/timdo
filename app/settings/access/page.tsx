@@ -23,8 +23,9 @@ import { SetupSteps } from '../../../components/Access/SetupSteps';
 import { TokenList } from '../../../components/Access/TokenList';
 import { SignInPrompt } from '../../../components/Sharing/SignInPrompt';
 import { useApiTokens, type CreatedApiToken } from '../../hooks/useApiTokens';
+import { INSTANCE } from '../../lib/instance';
 
-const REPO_URL = 'https://github.com/tdobson/timdo';
+const REPO_URL = INSTANCE.repoUrl;
 
 function TokenSkeleton() {
   return (

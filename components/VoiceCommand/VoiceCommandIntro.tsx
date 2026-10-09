@@ -10,7 +10,7 @@ export const TASK_EXAMPLES = [
 ];
 
 export const TEAM_EXAMPLES = [
-  'Add a Solfit task for Robin to check the inverter datasheet',
+  'Add an Acme Solar task for Robin to check the inverter datasheet',
   'Assign the Acme Solar onboarding task to me',
   "What's Robin working on?",
 ];

@@ -30,6 +30,12 @@ crons = ["0 * * * *"]
 AUTH0_DOMAIN = "relatemate.uk.auth0.com" # Auth0 domain WITHOUT https:// prefix
 AUTH0_AUDIENCE = "https://api.timdo.tdobson.net"   # Replace with your Auth0 API Audience
 
+# This instance (see docs/running-your-own-instance.md). Change these for your own deployment.
+INSTANCE_NAME = "TimDo"
+APP_URL = "https://timdo.tdobson.net"            # public web address; invite links and CORS
+# CORS_ORIGINS = "http://localhost:3000,https://timdo.tdobson.net"   # default: localhost + APP_URL
+POSTER_WORK_PROJECTS = "Solfit,Migrating Dragons,Xebit,Mavala,Caving Crew"   # Wall of Done work column; unset = shared workspaces
+
 # Example for a preview/staging environment (optional)
 # [env.preview]
 # name = "timdo-v2-api-preview"
