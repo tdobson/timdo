@@ -12,6 +12,7 @@ import {
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import type { Project, ProjectSize, ProjectStatus } from '../../app/types/project.types';
 import { ProjectUpdatesTimeline } from '../FeatureCard/ProjectUpdatesTimeline';
 
@@ -39,6 +40,7 @@ const sizeOptions: { value: ProjectSize; label: string }[] = [
 ];
 
 export function EditProjectModal({ opened, onClose, project, onSave }: EditProjectModalProps) {
+  const { features } = useInstanceConfig();
   const form = useForm({
     initialValues: {
       project: project.project,
@@ -133,15 +135,17 @@ export function EditProjectModal({ opened, onClose, project, onSave }: EditProje
             minRows={3}
             {...form.getInputProps('notes')}
           />
-          <TextInput
-            label="Gmail Thread ID"
-            placeholder="e.g. 18dfa72b3c4d5e6f"
-            leftSection={<IconBrandGmail size={14} />}
-            {...form.getInputProps('gmailThreadId')}
-          />
+          {features.gmail && (
+            <TextInput
+              label="Gmail Thread ID"
+              placeholder="e.g. 18dfa72b3c4d5e6f"
+              leftSection={<IconBrandGmail size={14} />}
+              {...form.getInputProps('gmailThreadId')}
+            />
+          )}
           <ProjectUpdatesTimeline
             projectId={project.id}
-            projectGmailThreadId={project.gmailThreadId}
+            projectGmailThreadId={features.gmail ? project.gmailThreadId : null}
           />
           <Group justify="flex-end" mt="md">
             <Button variant="default" onClick={onClose}>

@@ -49,7 +49,8 @@ describe('Poster API Routes (/api/v2/poster)', () => {
         expect.anything(),
         'test-user-id',
         undefined,
-        '6m'
+        '6m',
+        { workProjects: null }
       );
       expect(wallOfDoneSvgService.generateWallOfDoneSvg).toHaveBeenCalledWith(mockPosterData);
     });
@@ -67,7 +68,8 @@ describe('Poster API Routes (/api/v2/poster)', () => {
         expect.anything(),
         'test-user-id',
         ['Solfit', 'Crew'],
-        '6m'
+        '6m',
+        { workProjects: null }
       );
     });
 

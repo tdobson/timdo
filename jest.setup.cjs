@@ -59,6 +59,15 @@ class ResizeObserver {
 
 window.ResizeObserver = ResizeObserver;
 
+// The instance settings come from a public API call; tests see everything switched on
+jest.mock('./app/hooks/useInstanceConfig', () => {
+  const ALL_FEATURES = { goals: true, poster: true, voice: true, gmail: true };
+  return {
+    ALL_FEATURES,
+    useInstanceConfig: jest.fn(() => ({ config: null, features: ALL_FEATURES, isLoading: false })),
+  };
+});
+
 jest.mock('marked', () => ({
   marked: {
     parse: jest.fn((str) => str),

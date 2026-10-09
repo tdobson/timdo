@@ -1,5 +1,6 @@
 import React from 'react';
 import { screen } from '@testing-library/react';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import { render } from '../../test-utils/render';
 import { AppLayout } from './AppLayout';
 
@@ -36,6 +37,22 @@ jest.mock('../VoiceCommand/VoiceCommandIntro', () => ({
 }));
 
 describe('AppLayout', () => {
+  it('leaves Life Goals and Poster Studio out when the instance has switched them off', () => {
+    (useInstanceConfig as jest.Mock).mockReturnValueOnce({
+      config: null,
+      features: { goals: false, poster: false, voice: true, gmail: true },
+      isLoading: false,
+    });
+    render(
+      <AppLayout>
+        <div>Content</div>
+      </AppLayout>
+    );
+    expect(screen.queryByText('Life Goals')).not.toBeInTheDocument();
+    expect(screen.queryByText('Poster Studio')).not.toBeInTheDocument();
+    expect(screen.getByText('Board')).toBeInTheDocument();
+  });
+
   it('renders Poster Studio navigation link navigating to /poster', () => {
     render(
       <AppLayout>

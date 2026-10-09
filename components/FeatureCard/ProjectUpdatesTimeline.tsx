@@ -19,6 +19,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import { addProjectUpdate, deleteProjectUpdate, getProjectUpdates } from '../../app/lib/apiClient';
 import type { ProjectUpdate } from '../../app/types/project.types';
 import { absoluteTime, personLabel, relativeTime, TeamAvatar } from '../Team';
@@ -41,6 +42,7 @@ export function ProjectUpdatesTimeline({
 
   const [note, setNote] = useState('');
   const [gmailThreadId, setGmailThreadId] = useState('');
+  const { features } = useInstanceConfig();
   const [showAddForm, setShowAddForm] = useState(false);
 
   const queryKey = ['project-updates', projectId];
@@ -134,7 +136,7 @@ export function ProjectUpdatesTimeline({
   return (
     <Stack gap="sm" mt="xs">
       {/* Project-level Gmail Thread Link if present */}
-      {projectGmailThreadId && (
+      {features.gmail && projectGmailThreadId && (
         <Group gap="xs">
           <Badge leftSection={<IconBrandGmail size={14} />} variant="light" color="red" size="sm">
             Gmail Thread
@@ -202,14 +204,16 @@ export function ProjectUpdatesTimeline({
                 maxRows={6}
                 data-autofocus
               />
-              <TextInput
-                placeholder="Optional Gmail Thread ID"
-                label="Gmail Thread ID"
-                size="xs"
-                value={gmailThreadId}
-                onChange={(e) => setGmailThreadId(e.currentTarget.value)}
-                leftSection={<IconBrandGmail size={14} />}
-              />
+              {features.gmail && (
+                <TextInput
+                  placeholder="Optional Gmail Thread ID"
+                  label="Gmail Thread ID"
+                  size="xs"
+                  value={gmailThreadId}
+                  onChange={(e) => setGmailThreadId(e.currentTarget.value)}
+                  leftSection={<IconBrandGmail size={14} />}
+                />
+              )}
               <Group justify="flex-end" gap="xs">
                 <Button
                   size="xs"

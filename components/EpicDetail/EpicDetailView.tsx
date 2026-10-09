@@ -43,6 +43,7 @@ import { useForm } from '@mantine/form';
 import { useDisclosure } from '@mantine/hooks';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useDeleteEpic, useUpdateEpic } from '../../app/hooks/useEpicQueries';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import { useCreateProject, useUpdateProject } from '../../app/hooks/useProjectMutations';
 import type { Epic, EpicStatus, EpicUpdateInput } from '../../app/types/epic.types';
 import type { Goal } from '../../app/types/goal.types';
@@ -87,6 +88,8 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
   const createProjectMutation = useCreateProject();
 
   const { userId, isMe } = useCurrentUser();
+
+  const { features } = useInstanceConfig();
 
   const [editModalOpened, { open: openEditModal, close: closeEditModal }] = useDisclosure();
   const [createTaskModalOpened, { open: openCreateTaskModal, close: closeCreateTaskModal }] =
@@ -287,7 +290,7 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
                   >
                     {epic.status}
                   </Badge>
-                  {linkedGoal && (
+                  {features.goals && linkedGoal && (
                     <Badge
                       component={Link}
                       href="/goals"
@@ -770,7 +773,7 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
               allowDeselect={false}
             />
 
-            {isCreator && (
+            {isCreator && features.goals && (
               <Select
                 label="Linked Goal"
                 description={PRIVATE_GOAL_HINT}

@@ -19,6 +19,7 @@ import {
 import { signOut, useSession } from 'next-auth/react';
 import { AppShell, Burger, Button, Group, Kbd, NavLink, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import { useCreateProject } from '../../app/hooks/useProjectMutations';
 import type { ProjectCreateInput } from '../../app/types/project.types';
 import { CreateProjectModal } from '../CreateProjectModal/CreateProjectModal';
@@ -34,6 +35,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const createProjectMutation = useCreateProject();
   const router = useRouter();
   const pathname = usePathname();
+  const { features } = useInstanceConfig();
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -174,13 +176,15 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               active={pathname?.startsWith('/sharing')}
               leftSection={<IconUsers size="1rem" stroke={1.5} />}
             />
-            <NavLink
-              component={Link}
-              href="/goals"
-              label="Life Goals"
-              active={pathname === '/goals'}
-              leftSection={<IconTarget size="1rem" stroke={1.5} />}
-            />
+            {features.goals && (
+              <NavLink
+                component={Link}
+                href="/goals"
+                label="Life Goals"
+                active={pathname === '/goals'}
+                leftSection={<IconTarget size="1rem" stroke={1.5} />}
+              />
+            )}
             <NavLink
               label="Create New Task"
               leftSection={<IconPlus size="1rem" stroke={1.5} />}
@@ -191,13 +195,15 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               leftSection={<IconFileImport size="1rem" stroke={1.5} />}
               onClick={openImportModal}
             />
-            <NavLink
-              component={Link}
-              href="/poster"
-              label="Poster Studio"
-              active={pathname === '/poster'}
-              leftSection={<IconPrinter size="1rem" stroke={1.5} />}
-            />
+            {features.poster && (
+              <NavLink
+                component={Link}
+                href="/poster"
+                label="Poster Studio"
+                active={pathname === '/poster'}
+                leftSection={<IconPrinter size="1rem" stroke={1.5} />}
+              />
+            )}
             <NavLink
               component={Link}
               href="/settings/access"

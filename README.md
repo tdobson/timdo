@@ -105,6 +105,8 @@ The API is a RESTful service built with Cloudflare Workers and Hono.
 
 ## Getting Started
 
+Working on the code needs no accounts at all: see [CONTRIBUTING.md](CONTRIBUTING.md) for the local API with demo data and the test suites. To run your own copy for real, with the accounts you need, what they cost and the settings that make it yours, see [docs/running-your-own-instance.md](docs/running-your-own-instance.md). The steps below set up the full web app for development.
+
 1.  **Clone the repository.**
 2.  **Install dependencies in both root and worker directories:**
     ```bash

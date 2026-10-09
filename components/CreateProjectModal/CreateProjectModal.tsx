@@ -18,6 +18,7 @@ import { useForm } from '@mantine/form';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useEpics } from '../../app/hooks/useEpicQueries';
 import { useGoals } from '../../app/hooks/useGoalQueries';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import { useWorkspaceProjects } from '../../app/hooks/useWorkspaces';
 import type { ProjectCreateInput, ProjectSize, ProjectStatus } from '../../app/types/project.types';
 import { AssigneePicker } from '../ProjectPicker/AssigneePicker';
@@ -48,6 +49,7 @@ interface CreateTaskFormValues {
 export function CreateProjectModal({ opened, onClose, onSave }: CreateProjectModalProps) {
   const { data: epics = [] } = useEpics();
   const { data: goals = [] } = useGoals();
+  const { features } = useInstanceConfig();
   const { findProject } = useWorkspaceProjects();
   const { userId } = useCurrentUser();
 
@@ -181,17 +183,19 @@ export function CreateProjectModal({ opened, onClose, onSave }: CreateProjectMod
               comboboxProps={{ withinPortal: true }}
               {...form.getInputProps('epicId')}
             />
-            <Select
-              label="Life Goal"
-              description={PRIVATE_GOAL_HINT}
-              placeholder="Optional life goal"
-              data={goalOptions}
-              searchable
-              clearable
-              leftSection={<IconTarget size={16} />}
-              comboboxProps={{ withinPortal: true }}
-              {...form.getInputProps('goalId')}
-            />
+            {features.goals && (
+              <Select
+                label="Life Goal"
+                description={PRIVATE_GOAL_HINT}
+                placeholder="Optional life goal"
+                data={goalOptions}
+                searchable
+                clearable
+                leftSection={<IconTarget size={16} />}
+                comboboxProps={{ withinPortal: true }}
+                {...form.getInputProps('goalId')}
+              />
+            )}
           </Group>
           <Radio.Group
             name="status"

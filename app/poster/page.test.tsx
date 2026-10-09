@@ -79,11 +79,7 @@ describe('PosterStudioPage', () => {
 
     // Category Multi-Select Filter bar
     expect(screen.getByText('All Categories')).toBeInTheDocument();
-    expect(screen.getByText('Solfit')).toBeInTheDocument();
-    expect(screen.getByText('Crew')).toBeInTheDocument();
-    expect(screen.getByText('Personal')).toBeInTheDocument();
-    expect(screen.getByText('Migrating Dragons')).toBeInTheDocument();
-    expect(screen.getByText('Mavala')).toBeInTheDocument();
-    expect(screen.getByText('Xebit')).toBeInTheDocument();
+    // With no tasks there are no project chips to offer: the filter is built from real tasks
+    expect(screen.queryByText('Solfit')).not.toBeInTheDocument();
   });
 });

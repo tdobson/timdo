@@ -6,6 +6,10 @@ import { getProjectsForUser } from './projectService';
 
 type DB = DrizzleD1Database<typeof schema>;
 
+/**
+ * The original instance's work projects. Used only when a caller gives neither a
+ * POSTER_WORK_PROJECTS list nor workspace information for its tasks.
+ */
 export const WORK_CATEGORIES = [
   'Solfit',
   'Migrating Dragons',
@@ -13,6 +17,14 @@ export const WORK_CATEGORIES = [
   'Mavala',
   'Caving Crew',
 ] as const;
+
+export interface PartitionOptions {
+  /**
+   * Project names for the work column (column 4), in the order they should appear. When not
+   * given, tasks from shared workspaces are work and tasks from personal workspaces are personal.
+   */
+  workProjects?: string[] | null;
+}
 
 export const PREFIX_CATEGORY_MAP: Record<string, string> = {
   solfit: 'Solfit',
@@ -160,6 +172,8 @@ export interface CompletedPosterItem {
   title: string;
   reason?: string | null;
   category: string;
+  /** Goes in the work column rather than the personal columns */
+  isWork?: boolean;
   size: number;
   completedAt: string;
   dateFormatted: string;
@@ -189,6 +203,8 @@ export interface CompletedTaskInput {
   reason?: string | null;
   size: string;
   category?: string | null;
+  /** True when the task's workspace has more than one member */
+  isShared?: boolean;
   epicId?: string | null;
   goalId?: string | null;
   statusLastChangedOn?: string | null;
@@ -201,8 +217,31 @@ export function partitionCompletedTasks(
   epicsMap: Record<string, { id: string; title: string; goalId?: string | null }> = {},
   goalsMap: Record<string, { id: string; title: string; icon?: string | null }> = {},
   categories?: string[],
-  timeframe?: '6m' | '12m' | 'all'
+  timeframe?: '6m' | '12m' | 'all',
+  options: PartitionOptions = {}
 ): CompletedPosterData {
+  // Which tasks count as work: an explicit list, else the task's workspace, else the
+  // original instance's list for callers that give neither.
+  const workList =
+    options.workProjects && options.workProjects.length > 0
+      ? options.workProjects.map((p) => normalizeCategory(p).toLowerCase())
+      : null;
+  const isWorkTask = (task: CompletedTaskInput, category: string): boolean => {
+    if (workList) {
+      return workList.includes(category.toLowerCase());
+    }
+    if (task.isShared !== undefined) {
+      return task.isShared;
+    }
+    return (WORK_CATEGORIES as readonly string[]).includes(category);
+  };
+  const workOrder = (category: string): number => {
+    if (workList) {
+      return workList.indexOf(category.toLowerCase());
+    }
+    return (WORK_CATEGORIES as readonly string[]).indexOf(category);
+  };
+
   const normalizedCategories =
     categories && categories.length > 0
       ? categories.map((c) => normalizeCategory(c).toLowerCase())
@@ -272,6 +311,7 @@ export function partitionCompletedTasks(
         title,
         reason: task.reason?.trim() || null,
         category,
+        isWork: isWorkTask(task, category),
         size: sizeToNumeric(task.size),
         completedAt: dateStr,
         dateFormatted: dateInfo.fullText,
@@ -291,20 +331,22 @@ export function partitionCompletedTasks(
       return normalizedCategories.includes(item.category.toLowerCase());
     });
 
-  // Split into Personal (cols 1-3) and Work/Ventures (col 4)
-  const isWorkCategory = (cat: string) => (WORK_CATEGORIES as readonly string[]).includes(cat);
-
+  // Split into Personal (cols 1-3) and Work (col 4)
   const personalItems = preparedItems
-    .filter((item) => !isWorkCategory(item.category))
+    .filter((item) => !item.isWork)
     .sort((a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime());
 
   const workItems = preparedItems
-    .filter((item) => isWorkCategory(item.category))
+    .filter((item) => item.isWork)
     .sort((a, b) => {
-      const catOrderA = WORK_CATEGORIES.indexOf(a.category as any);
-      const catOrderB = WORK_CATEGORIES.indexOf(b.category as any);
+      // Listed projects keep their listed order; the rest group by name, then by date
+      const catOrderA = workOrder(a.category);
+      const catOrderB = workOrder(b.category);
       if (catOrderA !== catOrderB) {
         return (catOrderA === -1 ? 99 : catOrderA) - (catOrderB === -1 ? 99 : catOrderB);
+      }
+      if (catOrderA === -1 && a.category !== b.category) {
+        return a.category.localeCompare(b.category);
       }
       return new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime();
     });
@@ -350,7 +392,8 @@ export async function getCompletedPosterData(
   db: DB,
   userId: string,
   categories?: string[],
-  timeframe?: '6m' | '12m' | 'all'
+  timeframe?: '6m' | '12m' | 'all',
+  options: PartitionOptions = {}
 ): Promise<CompletedPosterData> {
   // The Wall of Done is personal: the tasks you did (assigned to you, or yours and unassigned),
   // across every workspace you belong to.
@@ -372,5 +415,12 @@ export async function getCompletedPosterData(
     goalsMap[goal.id] = { id: goal.id, title: goal.title, icon: goal.icon };
   }
 
-  return partitionCompletedTasks(completedTasks, epicsMap, goalsMap, categories, timeframe);
+  return partitionCompletedTasks(
+    completedTasks,
+    epicsMap,
+    goalsMap,
+    categories,
+    timeframe,
+    options
+  );
 }

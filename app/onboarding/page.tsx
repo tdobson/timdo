@@ -9,6 +9,7 @@ import { OnboardingProcessing } from '../../components/Onboarding/OnboardingProc
 import { OnboardingReview } from '../../components/Onboarding/OnboardingReview';
 import { OnboardingTypingForm } from '../../components/Onboarding/OnboardingTypingForm';
 import { OnboardingWelcome } from '../../components/Onboarding/OnboardingWelcome';
+import { useInstanceConfig } from '../hooks/useInstanceConfig';
 import { useOnboardingRecording } from '../hooks/useOnboardingRecording';
 import { useCreateProject } from '../hooks/useProjectMutations';
 import type { ProjectCreateInput } from '../types/project.types';
@@ -31,13 +32,14 @@ export default function OnboardingPage() {
   } = useOnboardingRecording();
 
   const createProjectMutation = useCreateProject();
+  const { features } = useInstanceConfig();
 
-  // Switch to typing form if microphone not available
+  // Switch to the typing form if there is no microphone, or voice is off on this instance
   useEffect(() => {
-    if (microphoneAvailable === false && step === 'welcome') {
+    if ((microphoneAvailable === false || !features.voice) && step === 'welcome') {
       setStep('typing');
     }
-  }, [microphoneAvailable, step]);
+  }, [microphoneAvailable, features.voice, step]);
 
   // When parsing completes and we get parsed projects, move to review
   useEffect(() => {

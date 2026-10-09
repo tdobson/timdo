@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Box, Code, Group, Stack, Text, ThemeIcon, Title } from '@mantine/core';
+import { INSTANCE } from '../../app/lib/instance';
 import { CommandBlock } from './CommandBlock';
 
 function Step({
@@ -40,7 +41,7 @@ export function SetupSteps() {
   return (
     <Stack gap="lg" component="ol" m={0} p={0} aria-label="Setup steps">
       <Step number={1} title="Get the code">
-        <CommandBlock value="git clone https://github.com/tdobson/timdo.git && cd timdo" />
+        <CommandBlock value={`git clone ${INSTANCE.repoUrl}.git && cd timdo`} />
         <Text size="sm" c="dimmed">
           You&apos;ll need bash, curl and jq.
         </Text>

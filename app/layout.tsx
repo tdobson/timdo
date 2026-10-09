@@ -10,10 +10,11 @@ import { ColorSchemeScript, mantineHtmlProps, MantineProvider } from '@mantine/c
 import { AppLayout } from '../components/AppLayout/AppLayout';
 import { Providers } from '../components/Providers';
 import { theme } from '../theme';
+import { INSTANCE } from './lib/instance';
 
 export const metadata = {
-  title: "TimDo - Tim's Projects",
-  description: "A dynamic display of Tim's projects, inspired by the SVG project poster.",
+  title: INSTANCE.siteTitle,
+  description: INSTANCE.siteDescription,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

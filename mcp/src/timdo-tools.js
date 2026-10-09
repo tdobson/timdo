@@ -289,7 +289,7 @@ export const TIMDO_TOOLS = [
   ),
   tool(
     'timdo_get_workspace',
-    'One TimDo workspace in full: members with roles (isMe marks you), projects with key and open/done/epic counts, and pending invites with tokens (invite link: https://timdo.tdobson.net/invite/<token>).',
+    'One TimDo workspace in full: members with roles (isMe marks you), projects with key and open/done/epic counts, and pending invites with tokens (each carries an inviteUrl to send to the person).',
     { workspace: str('Workspace name, "personal", or id') },
     ['workspace']
   ),

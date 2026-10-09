@@ -24,6 +24,7 @@ import {
 import { FeatureCard } from '../components/FeatureCard/FeatureCard';
 import { needsOnboarding } from './hooks/onboardingGate';
 import { fetchOrganisations, getProjects } from './lib/apiClient';
+import { INSTANCE } from './lib/instance';
 import classes from './HomePage.module.css';
 
 export default function HomePage() {
@@ -131,59 +132,47 @@ export default function HomePage() {
         </Grid>
       </Container>
 
-      {/* Creator Section */}
-      <Container size="md" className={classes.creatorSection}>
-        <Paper shadow="sm" p="xl" radius="md" className={classes.creatorCard}>
-          <Stack align="center" gap="md">
-            <Title order={3} ta="center" className={classes.creatorTitle}>
-              Built by someone who gets it
-            </Title>
-            <Title order={4} ta="center" fw={500}>
-              Made by Tim Dobson
-            </Title>
-            <Text ta="center" c="dimmed" maw={600}>
-              Full-stack developer and technology leader who got tired of complicated tools getting
-              in the way of getting things done. Built TimDo to solve his own problem: a simple,
-              visual way to manage life without the bloat.
-            </Text>
-            <Text ta="center" c="dimmed" size="sm">
-              Technology Leader & Community Builder
-            </Text>
-            <Group gap="xs">
-              <Anchor
-                href="https://linkedin.com/in/tdobson"
-                target="_blank"
-                rel="noopener noreferrer"
-                size="sm"
-              >
-                LinkedIn
-              </Anchor>
-              <Text c="dimmed" size="sm">
-                |
-              </Text>
-              <Anchor
-                href="https://github.com/tdobson"
-                target="_blank"
-                rel="noopener noreferrer"
-                size="sm"
-              >
-                GitHub
-              </Anchor>
-              <Text c="dimmed" size="sm">
-                |
-              </Text>
-              <Anchor
-                href="https://tdobson.net"
-                target="_blank"
-                rel="noopener noreferrer"
-                size="sm"
-              >
-                Website
-              </Anchor>
-            </Group>
-          </Stack>
-        </Paper>
-      </Container>
+      {/* Creator Section: who runs this instance, if they want to say */}
+      {INSTANCE.creator && (
+        <Container size="md" className={classes.creatorSection}>
+          <Paper shadow="sm" p="xl" radius="md" className={classes.creatorCard}>
+            <Stack align="center" gap="md">
+              <Title order={3} ta="center" className={classes.creatorTitle}>
+                Built by someone who gets it
+              </Title>
+              <Title order={4} ta="center" fw={500}>
+                Made by {INSTANCE.creator.name}
+              </Title>
+              {INSTANCE.creator.bio && (
+                <Text ta="center" c="dimmed" maw={600}>
+                  {INSTANCE.creator.bio}
+                </Text>
+              )}
+              {INSTANCE.creator.tagline && (
+                <Text ta="center" c="dimmed" size="sm">
+                  {INSTANCE.creator.tagline}
+                </Text>
+              )}
+              {INSTANCE.creator.links.length > 0 && (
+                <Group gap="xs">
+                  {INSTANCE.creator.links.map((link, index) => (
+                    <React.Fragment key={link.href}>
+                      {index > 0 && (
+                        <Text c="dimmed" size="sm">
+                          |
+                        </Text>
+                      )}
+                      <Anchor href={link.href} target="_blank" rel="noopener noreferrer" size="sm">
+                        {link.label}
+                      </Anchor>
+                    </React.Fragment>
+                  ))}
+                </Group>
+              )}
+            </Stack>
+          </Paper>
+        </Container>
+      )}
 
       {/* Final CTA Section */}
       <Box className={classes.ctaSection}>
@@ -221,11 +210,11 @@ export default function HomePage() {
         <Container size="lg">
           <Group justify="space-between" align="center">
             <Text size="sm" c="dimmed">
-              © 2025 Tim Dobson
+              {INSTANCE.copyright}
             </Text>
             <Group gap="xs">
               <Anchor
-                href="https://github.com/tdobson"
+                href={INSTANCE.repoUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 size="sm"
@@ -236,7 +225,7 @@ export default function HomePage() {
               <Text c="dimmed" size="sm">
                 |
               </Text>
-              <Anchor href="mailto:tim@example.com" size="sm" c="dimmed">
+              <Anchor href={`mailto:${INSTANCE.contactEmail}`} size="sm" c="dimmed">
                 Contact
               </Anchor>
             </Group>

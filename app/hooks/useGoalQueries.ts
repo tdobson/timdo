@@ -3,6 +3,7 @@ import { useSession } from 'next-auth/react';
 import { notifications } from '@mantine/notifications';
 import { createGoal, deleteGoal, getGoals, updateGoal } from '../lib/apiClient';
 import type { Goal, GoalCreateInput, GoalType, GoalUpdateInput } from '../types/goal.types';
+import { useInstanceConfig } from './useInstanceConfig';
 
 // Query key factory
 export const goalKeys = {
@@ -16,6 +17,7 @@ export const goalKeys = {
  */
 export function useGoals(type?: GoalType) {
   const { data: session } = useSession();
+  const { features } = useInstanceConfig();
 
   return useQuery({
     queryKey: goalKeys.list(type),
@@ -25,7 +27,7 @@ export function useGoals(type?: GoalType) {
       }
       return getGoals(type, session.accessToken);
     },
-    enabled: !!session?.accessToken,
+    enabled: !!session?.accessToken && features.goals,
   });
 }
 

@@ -26,10 +26,12 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
+import { FeatureSwitchedOff } from '../../components/FeatureSwitchedOff';
 import PrintableSvgPoster from '../../components/TimDoPage/PrintableSvgPoster';
 import { generatePosterSvg } from '../../workers/src/services/posterSvgService';
 import { useActiveTasksPoster } from '../hooks/useActiveTasksPoster';
 import { useGoals } from '../hooks/useGoalQueries';
+import { useInstanceConfig } from '../hooks/useInstanceConfig';
 import { useProjects } from '../hooks/useProjectQueries';
 import { useWallOfDonePoster } from '../hooks/useWallOfDonePoster';
 import { PosterCanvas } from './PosterCanvas';
@@ -37,7 +39,8 @@ import classes from './PosterCanvas.module.css';
 
 type PosterType = 'wall-of-done' | 'active-tasks' | 'goals-rhythm';
 
-const FALLBACK_CATEGORIES = ['Solfit', 'Crew', 'Personal', 'Migrating Dragons', 'Mavala', 'Xebit'];
+// With no tasks yet there is nothing to filter by
+const FALLBACK_CATEGORIES: string[] = [];
 
 export default function PosterStudioPage() {
   const { data: session } = useSession();
@@ -46,6 +49,7 @@ export default function PosterStudioPage() {
   const [isExportingTiled, setIsExportingTiled] = useState(false);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [doneTimeframe, setDoneTimeframe] = useState<'6m' | '12m' | 'all'>('6m');
+  const { features } = useInstanceConfig();
 
   const categoryFilterOptions = useMemo(() => {
     return selectedCategories.length > 0 ? selectedCategories : undefined;
@@ -253,6 +257,10 @@ export default function PosterStudioPage() {
       : posterType === 'active-tasks'
         ? activeTasksSvgMarkup
         : goalsSvgString || undefined;
+
+  if (!features.poster) {
+    return <FeatureSwitchedOff what="Posters" />;
+  }
 
   return (
     <Container size="xl" py="md">

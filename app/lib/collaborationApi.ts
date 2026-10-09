@@ -22,11 +22,20 @@ import type {
 import { apiFetch } from './apiClient';
 import { getWorkerApiBaseUrl } from './apiConfig';
 
-/** Public web address used in invite links. */
-export const INVITE_BASE_URL = 'https://timdo.tdobson.net/invite';
+/**
+ * Invite links point at the site the person is using, so they work on any instance.
+ * NEXT_PUBLIC_APP_URL covers the rare server-side render; otherwise it is the browser's origin.
+ */
+export function inviteBaseUrl(): string {
+  const origin =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : process.env.NEXT_PUBLIC_APP_URL || '';
+  return `${origin.replace(/\/$/, '')}/invite`;
+}
 
 export function inviteLink(token: string): string {
-  return `${INVITE_BASE_URL}/${token}`;
+  return `${inviteBaseUrl()}/${token}`;
 }
 
 export class CollaborationApiError extends Error {

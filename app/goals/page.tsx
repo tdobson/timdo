@@ -5,7 +5,9 @@ import { useSession } from 'next-auth/react';
 import { Alert, Container, Loader } from '@mantine/core';
 import { useEpics } from '../../app/hooks/useEpicQueries';
 import { useGoals } from '../../app/hooks/useGoalQueries';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import { useProjects } from '../../app/hooks/useProjectQueries';
+import { FeatureSwitchedOff } from '../../components/FeatureSwitchedOff';
 import { GoalsDashboardView } from '../../components/GoalsDashboard/GoalsDashboardView';
 
 export default function GoalsDashboardPage() {
@@ -17,6 +19,11 @@ export default function GoalsDashboardPage() {
   // API only returns my own goal links
   const { data: projects, isLoading: isProjectsLoading, isError: isProjectsError } = useProjects();
   const { data: epics, isLoading: isEpicsLoading, isError: isEpicsError } = useEpics();
+  const { features } = useInstanceConfig();
+
+  if (!features.goals) {
+    return <FeatureSwitchedOff what="Life goals" />;
+  }
 
   if (status === 'loading' || isGoalsLoading || isProjectsLoading || isEpicsLoading) {
     return (

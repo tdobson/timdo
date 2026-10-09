@@ -27,6 +27,7 @@ TIMDO_AS="${TIMDO_AS:-}"
 TIMDO_FORMAT="${TIMDO_FORMAT:-text}"
 FORMAT_EXPLICIT=0
 APP_URL="${TIMDO_APP_URL:-https://timdo.tdobson.net}"
+APP_URL="${APP_URL%/}"
 
 # ---------------------------------------------------------------------------
 # Global flags may appear anywhere: --json, --text, --as <email>, --no-color
@@ -1713,25 +1714,31 @@ cmd_whoami() {
 # ---------------------------------------------------------------------------
 # login / logout (personal access tokens)
 # ---------------------------------------------------------------------------
-config_set_token() {
-  local token="$1" dir tmp
+# config_set KEY VALUE: write one setting to the config file (an empty value removes it)
+config_set() {
+  local key="$1" value="$2" dir tmp
   dir=$(dirname "$TIMDO_CONFIG")
   mkdir -p "$dir"
   tmp=$(mktemp "$dir/.config.XXXXXX")
   chmod 600 "$tmp"
   if [[ -f "$TIMDO_CONFIG" ]]; then
-    grep -v '^TIMDO_TOKEN=' "$TIMDO_CONFIG" > "$tmp" || true
+    grep -v "^$key=" "$TIMDO_CONFIG" > "$tmp" || true
   fi
-  if [[ -n "$token" ]]; then
-    printf 'TIMDO_TOKEN=%q\n' "$token" >> "$tmp"
+  if [[ -n "$value" ]]; then
+    printf '%s=%q\n' "$key" "$value" >> "$tmp"
   fi
   mv "$tmp" "$TIMDO_CONFIG"
 }
+
+config_set_token() { config_set TIMDO_TOKEN "$1"; }
 
 usage_login() {
   cat <<USAGE
 Usage: timdo login              paste the token when asked (it isn't shown on screen)
        timdo login --token-stdin  read it from stdin, for scripts: pass-tool | timdo login --token-stdin
+       timdo login --app https://tasks.example.org
+                                  use another TimDo instance: its web address, and optionally
+                                  --api https://.../api/v2 if the API is not at <app>/api/v2
 
 Saves a personal access token so the CLI (and the TimDo MCP server) act as you.
 Create one in the web app: $APP_URL/settings/access
@@ -1741,9 +1748,13 @@ USAGE
 }
 
 cmd_login() {
-  local token=""
+  local token="" app="" api=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --app) app="${2:-}"; shift 2 ;;
+      --app=*) app="${1#--app=}"; shift ;;
+      --api) api="${2:-}"; shift 2 ;;
+      --api=*) api="${1#--api=}"; shift ;;
       --token-stdin) IFS= read -r token || true; shift ;;
       --token) token="${2:-}"; shift 2
         echo "Note: --token leaves the token in your shell history. Next time run 'timdo login' and paste it." >&2 ;;
@@ -1752,6 +1763,16 @@ cmd_login() {
       *) usage_die "Unknown option for login: $1" ;;
     esac
   done
+  # Another instance: remember its addresses before anything else, so the prompt and the
+  # check below talk to the right place. The API defaults to <app>/api/v2.
+  if [[ -n "$app" ]]; then
+    app="${app%/}"
+    [[ "$app" =~ ^https?:// ]] || die "--app needs a full web address, e.g. https://tasks.example.org"
+    APP_URL="$app"
+    TIMDO_API="${api:-$app/api/v2}"
+  elif [[ -n "$api" ]]; then
+    TIMDO_API="${api%/}"
+  fi
   if [[ -z "$token" ]]; then
     echo "Create a token at $APP_URL/settings/access, then paste it here."
     read -r -s -p "Token: " token
@@ -1766,8 +1787,12 @@ cmd_login() {
   TIMDO_AS=""
   me=$(api GET /users/me)
   config_set_token "$token"
+  if [[ -n "$app" || -n "$api" ]]; then
+    config_set TIMDO_APP_URL "${app:-}"
+    config_set TIMDO_API "$TIMDO_API"
+  fi
   echo "$me" | jqt '"Logged in as " + (.name // .email) + " <" + .email + ">."'
-  echo "Saved to $TIMDO_CONFIG. Try: timdo list do --mine"
+  echo "Saved to $TIMDO_CONFIG (API: $TIMDO_API). Try: timdo list do --mine"
 }
 
 cmd_logout() {
@@ -2118,7 +2143,7 @@ SIGNING IN:
   whoami                       Who the CLI is acting as, and your workspaces
 
 ENVIRONMENT:
-  TIMDO_TOKEN (personal token), TIMDO_API, TIMDO_CONFIG (default ~/.config/timdo/config).
+  TIMDO_TOKEN (personal token), TIMDO_API, TIMDO_APP_URL, TIMDO_CONFIG (default ~/.config/timdo/config).
   Owner only: TIMDO_SECRET, TIMDO_AS. Environment variables override the config file.
   If both a token and the secret are set, the token wins.
 

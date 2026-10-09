@@ -29,6 +29,7 @@ import { useForm } from '@mantine/form';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useEpics } from '../../app/hooks/useEpicQueries';
 import { useGoals } from '../../app/hooks/useGoalQueries';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import { useClaimTask } from '../../app/hooks/useTaskMutations';
 import type {
   Project,
@@ -92,6 +93,7 @@ export function ProjectCard({
   const [isEditing, setIsEditing] = useState(false);
   const { data: epics } = useEpics();
   const { data: goals } = useGoals();
+  const { features } = useInstanceConfig();
   const { userId, isMe } = useCurrentUser();
   const claimTaskMutation = useClaimTask();
   const linkedEpic = epics?.find((e) => e.id === project.epicId);
@@ -500,18 +502,20 @@ export function ProjectCard({
                   onChange={(val) => form.setFieldValue('epicId', val)}
                 />
               </Grid.Col>
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <Select
-                  label="Linked Life Goal"
-                  description={PRIVATE_GOAL_HINT}
-                  placeholder="Select Goal"
-                  data={goalSelectData}
-                  clearable
-                  leftSection={<IconTarget size={14} />}
-                  value={form.values.goalId}
-                  onChange={(val) => form.setFieldValue('goalId', val)}
-                />
-              </Grid.Col>
+              {features.goals && (
+                <Grid.Col span={{ base: 12, sm: 6 }}>
+                  <Select
+                    label="Linked Life Goal"
+                    description={PRIVATE_GOAL_HINT}
+                    placeholder="Select Goal"
+                    data={goalSelectData}
+                    clearable
+                    leftSection={<IconTarget size={14} />}
+                    value={form.values.goalId}
+                    onChange={(val) => form.setFieldValue('goalId', val)}
+                  />
+                </Grid.Col>
+              )}
             </Grid>
             {form.values.status === 'awaiting' && (
               <DatePickerInput
@@ -553,12 +557,14 @@ export function ProjectCard({
               minRows={4}
               maxRows={12}
             />
-            <TextInput
-              label="Gmail Thread ID"
-              placeholder="e.g. 18dfa72b3c4d5e6f"
-              leftSection={<IconBrandGmail size={14} />}
-              {...form.getInputProps('gmailThreadId')}
-            />
+            {features.gmail && (
+              <TextInput
+                label="Gmail Thread ID"
+                placeholder="e.g. 18dfa72b3c4d5e6f"
+                leftSection={<IconBrandGmail size={14} />}
+                {...form.getInputProps('gmailThreadId')}
+              />
+            )}
             {/* INTERACTIVE stars in the edit form */}
             <Group>
               <Text size="sm" fw={500}>
@@ -598,7 +604,7 @@ export function ProjectCard({
             )}
             <ProjectUpdatesTimeline
               projectId={project.id}
-              projectGmailThreadId={project.gmailThreadId}
+              projectGmailThreadId={features.gmail ? project.gmailThreadId : null}
               canEdit={canEdit}
             />
           </Stack>

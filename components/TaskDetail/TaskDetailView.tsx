@@ -39,6 +39,7 @@ import { DatePickerInput } from '@mantine/dates';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useEpics } from '../../app/hooks/useEpicQueries';
 import { useGoals } from '../../app/hooks/useGoalQueries';
+import { useInstanceConfig } from '../../app/hooks/useInstanceConfig';
 import { useOrganisationMembers } from '../../app/hooks/useOrganisationQueries';
 import { useUpdateProject } from '../../app/hooks/useProjectMutations';
 import { useProjects } from '../../app/hooks/useProjectQueries';
@@ -89,6 +90,7 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
   const { data: members = [] } = useOrganisationMembers(task.orgId || '');
   const { data: epics } = useEpics();
   const { data: goals } = useGoals();
+  const { features } = useInstanceConfig();
   const { data: allTasks = [] } = useProjects();
   const [mergeModalOpened, setMergeModalOpened] = useState(false);
 
@@ -453,19 +455,21 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
                 />
               </Grid.Col>
 
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <Select
-                  label="Linked Life Goal"
-                  description={PRIVATE_GOAL_HINT}
-                  placeholder="Select Goal (Aim, Focus, Value, Habit)"
-                  data={goalSelectData}
-                  value={goalId}
-                  onChange={handleGoalChange}
-                  clearable
-                  leftSection={<IconTarget size={16} />}
-                  disabled={!canEdit}
-                />
-              </Grid.Col>
+              {features.goals && (
+                <Grid.Col span={{ base: 12, sm: 6 }}>
+                  <Select
+                    label="Linked Life Goal"
+                    description={PRIVATE_GOAL_HINT}
+                    placeholder="Select Goal (Aim, Focus, Value, Habit)"
+                    data={goalSelectData}
+                    value={goalId}
+                    onChange={handleGoalChange}
+                    clearable
+                    leftSection={<IconTarget size={16} />}
+                    disabled={!canEdit}
+                  />
+                </Grid.Col>
+              )}
             </Grid>
 
             {/* Sizing and Priority */}
@@ -542,35 +546,39 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
             )}
 
             {/* Gmail integration */}
-            <Stack gap="xs">
-              <TextInput
-                label="Gmail Thread ID"
-                placeholder="e.g. 18dfa72b3c4d5e6f"
-                value={gmailThreadId}
-                onChange={(e) => setGmailThreadId(e.currentTarget.value)}
-                onBlur={handleGmailThreadIdBlur}
-                leftSection={<IconBrandGmail size={16} />}
-                readOnly={!canEdit}
-              />
-              {task.gmailThreadId && (
-                <Group gap="xs">
-                  <Anchor
-                    href={`https://mail.google.com/mail/u/0/#inbox/${task.gmailThreadId}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    size="sm"
-                    c="blue"
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                  >
-                    <IconBrandGmail size={16} color="#EA4335" />
-                    Open in Gmail
-                    <IconExternalLink size={14} />
-                  </Anchor>
-                </Group>
-              )}
-            </Stack>
+            {features.gmail && (
+              <>
+                <Stack gap="xs">
+                  <TextInput
+                    label="Gmail Thread ID"
+                    placeholder="e.g. 18dfa72b3c4d5e6f"
+                    value={gmailThreadId}
+                    onChange={(e) => setGmailThreadId(e.currentTarget.value)}
+                    onBlur={handleGmailThreadIdBlur}
+                    leftSection={<IconBrandGmail size={16} />}
+                    readOnly={!canEdit}
+                  />
+                  {task.gmailThreadId && (
+                    <Group gap="xs">
+                      <Anchor
+                        href={`https://mail.google.com/mail/u/0/#inbox/${task.gmailThreadId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        size="sm"
+                        c="blue"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      >
+                        <IconBrandGmail size={16} color="#EA4335" />
+                        Open in Gmail
+                        <IconExternalLink size={14} />
+                      </Anchor>
+                    </Group>
+                  )}
+                </Stack>
 
-            <Divider my="sm" />
+                <Divider my="sm" />
+              </>
+            )}
 
             {/* Notes */}
             <div>
