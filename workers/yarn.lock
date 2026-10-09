@@ -1128,10 +1128,10 @@ hasown@^2.0.2:
   dependencies:
     function-bind "^1.1.2"
 
-hono@^4.5.10, hono@>=3.9.0:
-  version "4.8.2"
-  resolved "https://registry.npmjs.org/hono/-/hono-4.8.2.tgz"
-  integrity sha512-hM+1RIn9PK1I6SiTNS6/y7O1mvg88awYLFEuEtoiMtRyT3SD2iu9pSFgbBXT3b1Ua4IwzvSTLvwO0SEhDxCi4w==
+hono@^4.13.13, hono@>=3.9.0:
+  version "4.13.13"
+  resolved "https://registry.npmjs.org/hono/-/hono-4.13.13.tgz"
+  integrity sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==
 
 humanize-ms@^1.2.1:
   version "1.2.1"

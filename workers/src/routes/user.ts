@@ -68,11 +68,12 @@ userApp.post(
 );
 
 userApp.delete('/me/tokens/:id', combinedAuthMiddleware, async (c) => {
+  const tokenId = c.req.param('id') ?? '';
   // With a token you can only revoke that token, so a stolen one can't lock you out everywhere
-  if (c.get('authMethod') === 'token' && c.req.param('id') !== c.get('tokenId')) {
+  if (c.get('authMethod') === 'token' && tokenId !== c.get('tokenId')) {
     return c.json({ error: 'Revoke other tokens from the TimDo web app' }, 403);
   }
-  const ok = await tokenService.revokeToken(c.get('db'), c.get('userId'), c.req.param('id'));
+  const ok = await tokenService.revokeToken(c.get('db'), c.get('userId'), tokenId);
   if (!ok) {
     return c.json({ error: 'Token not found' }, 404);
   }
