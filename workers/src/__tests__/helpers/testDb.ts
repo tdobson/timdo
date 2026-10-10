@@ -16,51 +16,86 @@ type DatabaseSync = any;
 
 const FIXTURE = path.join(__dirname, '..', 'fixtures', 'live-schema.sql');
 const MIGRATIONS = path.join(__dirname, '..', '..', '..', 'migrations');
-const PENDING_MIGRATIONS = ['0006_collaboration.sql', '0007_api_tokens.sql'];
+export const PENDING_MIGRATIONS = [
+  '0006_collaboration.sql',
+  '0007_api_tokens.sql',
+  '0008_task_refs.sql',
+  '0009_report_note_dedupe.sql',
+];
 
 export const TIM = 'user-tim';
 export const ROBIN = 'user-robin';
 export const STRANGER = 'user-stranger';
 
-export function createTestDb() {
+/** Run one migration file against a raw database (e.g. to test a backfill on older data). */
+export function applyMigration(raw: DatabaseSync, file: string) {
+  raw.exec(fs.readFileSync(path.join(MIGRATIONS, file), 'utf8'));
+}
+
+/**
+ * `migrations` defaults to every pending migration; pass a shorter list to stop early.
+ * `stats.queries` counts the statements services send, so tests can check query counts.
+ */
+export function createTestDb({ migrations = PENDING_MIGRATIONS } = {}) {
   const raw = new DatabaseSync(':memory:');
   raw.exec('PRAGMA foreign_keys = ON;');
   raw.exec(fs.readFileSync(FIXTURE, 'utf8'));
-  for (const file of PENDING_MIGRATIONS) {
-    raw.exec(fs.readFileSync(path.join(MIGRATIONS, file), 'utf8'));
+  for (const file of migrations) {
+    applyMigration(raw, file);
   }
+  const stats = { queries: 0, maxBindings: 0 };
+
+  const execute = (query: string, params: any[], method: string) => {
+    stats.queries++;
+    stats.maxBindings = Math.max(stats.maxBindings, params.length);
+    const stmt = raw.prepare(query);
+    const args = (params as any[]).map((p) => (typeof p === 'boolean' ? Number(p) : p));
+    if (method === 'run') {
+      stmt.run(...args);
+      return { rows: [] };
+    }
+    // Positional rows: joins return duplicate column names that objects would collapse
+    stmt.setReturnArrays(true);
+    if (method === 'get') {
+      return { rows: stmt.get(...args) } as any;
+    }
+    return { rows: stmt.all(...args) };
+  };
 
   const db = drizzle(
-    async (query, params, method) => {
-      const stmt = raw.prepare(query);
-      const args = (params as any[]).map((p) => (typeof p === 'boolean' ? Number(p) : p));
-      if (method === 'run') {
-        stmt.run(...args);
-        return { rows: [] };
+    async (query, params, method) => execute(query, params, method),
+    // D1 runs a batch as one transaction: all of it lands, or none of it
+    async (queries) => {
+      raw.exec('BEGIN');
+      try {
+        const results = queries.map((q) => {
+          const result = execute(q.sql, q.params, q.method);
+          // Batched 'get' results are read as rows[0]
+          return q.method === 'get' ? { rows: [result.rows] } : result;
+        });
+        raw.exec('COMMIT');
+        return results;
+      } catch (err) {
+        raw.exec('ROLLBACK');
+        throw err;
       }
-      // Positional rows: joins return duplicate column names that objects would collapse
-      stmt.setReturnArrays(true);
-      if (method === 'get') {
-        return { rows: stmt.get(...args) } as any;
-      }
-      return { rows: stmt.all(...args) };
     },
     { schema }
   );
 
-  return { db: db as any, raw };
+  return { db: db as any, raw, stats };
 }
 
-/** Tim owns a personal workspace and a shared one; Robin is a member of the shared one. */
+/** The owner has a personal workspace and a shared one; a member belongs to the shared one. */
 export function seedCollaboration(raw: DatabaseSync) {
   raw.exec(`
     INSERT INTO Users (id, email, name) VALUES
-      ('${TIM}', 'tim@example.com', 'Tim Dobson'),
-      ('${ROBIN}', 'robin@example.com', 'Robin Fairweather'),
+      ('${TIM}', 'casey@example.test', 'Casey Example'),
+      ('${ROBIN}', 'jordan@example.test', 'Jordan Example'),
       ('${STRANGER}', 'stranger@example.com', 'Stranger');
     INSERT INTO Organisations (id, name, slug, created_by, is_personal) VALUES
-      ('org-tim', 'Tim Dobson', 'tim', '${TIM}', 1),
-      ('org-md', 'Migrating Dragons', 'migrating-dragons', '${TIM}', 0),
+      ('org-tim', 'Casey Example', 'casey-example', '${TIM}', 1),
+      ('org-md', 'Northstar Workshop', 'northstar-workshop', '${TIM}', 0),
       ('org-stranger', 'Stranger', 'stranger', '${STRANGER}', 1);
     INSERT INTO OrganisationMembers (id, org_id, user_id, role) VALUES
       ('m1', 'org-tim', '${TIM}', 'owner'),
@@ -69,8 +104,8 @@ export function seedCollaboration(raw: DatabaseSync) {
       ('m4', 'org-stranger', '${STRANGER}', 'owner');
     INSERT INTO Projects (id, org_id, key, name) VALUES
       ('proj-personal', 'org-tim', 'PER', 'Personal'),
-      ('proj-solfit', 'org-md', 'SOL', 'Solfit'),
-      ('proj-md', 'org-md', 'MIG', 'Migrating Dragons'),
-      ('proj-stranger', 'org-stranger', 'STR', 'Stranger Things');
+      ('proj-acme-solar', 'org-md', 'ACS', 'Acme Solar'),
+      ('proj-md', 'org-md', 'NSW', 'Northstar Workshop'),
+      ('proj-stranger', 'org-stranger', 'STR', 'Outside Projects');
   `);
 }

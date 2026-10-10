@@ -34,13 +34,13 @@ global.fetch = jest.fn();
 const fetchMock = global.fetch as jest.Mock;
 const WORKER_API_URL = 'https://worker.example.com/api/v2';
 
-// Mock organisations hook: a personal workspace and one shared with Robin
+// Mock organisations hook: a personal workspace and one shared with Jordan
 jest.mock('../hooks/useOrganisationQueries', () => ({
   ...jest.requireActual('../hooks/useOrganisationQueries'),
   useOrganisations: () => ({
     data: [
       { id: 'org-personal', name: 'Personal Workspace', isPersonal: true, memberCount: 1 },
-      { id: 'org-md', name: 'Migrating Dragons', isPersonal: false, memberCount: 2 },
+      { id: 'org-2', name: 'Northstar Workshop', isPersonal: false, memberCount: 2 },
     ],
     isLoading: false,
     isError: false,
@@ -56,15 +56,15 @@ function mockApi(projects: unknown, projectsResponse?: Partial<Response>) {
     if (url.endsWith('/users/me')) {
       return Promise.resolve({
         ok: true,
-        json: async () => ({ id: 'user-123', email: 'tim@example.com', name: 'Tim Dobson' }),
+        json: async () => ({ id: 'user-1', email: 'casey@example.com', name: 'Casey Example' }),
       });
     }
-    if (url.includes('/organisations/org-md/members')) {
+    if (url.includes('/organisations/org-2/members')) {
       return Promise.resolve({
         ok: true,
         json: async () => [
-          { userId: 'user-123', userName: 'Tim Dobson', userEmail: 'tim@example.com' },
-          { userId: 'user-ed', userName: 'Robin Fairweather', userEmail: 'ed@example.com' },
+          { userId: 'user-1', userName: 'Casey Example', userEmail: 'casey@example.com' },
+          { userId: 'user-2', userName: 'Jordan Example', userEmail: 'jordan@example.com' },
         ],
       });
     }
@@ -79,10 +79,10 @@ const mockProjects: Project[] = [
     status: 'do',
     priority: 10,
     size: '*',
-    category: 'Solfit',
+    category: 'Acme Solar',
     reason: '',
     notes: '',
-    userId: 'user-123',
+    userId: 'user-1',
     isDeleted: false,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
@@ -97,7 +97,7 @@ const mockProjects: Project[] = [
     category: 'Personal',
     reason: '',
     notes: '',
-    userId: 'user-123',
+    userId: 'user-1',
     isDeleted: false,
     createdAt: '2024-01-02T00:00:00.000Z',
     updatedAt: '2024-01-02T00:00:00.000Z',
@@ -109,10 +109,10 @@ const mockProjects: Project[] = [
     status: 'done',
     priority: 1,
     size: '***',
-    category: 'Solfit',
+    category: 'Acme Solar',
     reason: '',
     notes: '',
-    userId: 'user-123',
+    userId: 'user-1',
     isDeleted: false,
     createdAt: '2024-01-03T00:00:00.000Z',
     updatedAt: '2024-01-03T00:00:00.000Z',
@@ -124,10 +124,10 @@ const mockProjects: Project[] = [
     status: 'do',
     priority: 8,
     size: '****',
-    category: 'Crew',
+    category: 'Personal Project',
     reason: '',
     notes: '',
-    userId: 'user-123',
+    userId: 'user-1',
     isDeleted: false,
     createdAt: '2024-01-04T00:00:00.000Z',
     updatedAt: '2024-01-04T00:00:00.000Z',
@@ -201,7 +201,7 @@ describe('BoardPage', () => {
         reason: '',
         notes: '',
         awaitUntil: '2026-08-03',
-        userId: 'user-123',
+        userId: 'user-1',
         isDeleted: false,
         createdAt: '2024-01-05T00:00:00.000Z',
         updatedAt: '2024-01-05T00:00:00.000Z',
@@ -244,11 +244,11 @@ describe('BoardPage', () => {
 
     render(<BoardPage />);
 
-    // Click Solfit pill
-    const solfitPill = await screen.findByRole('button', { name: 'Solfit' });
-    await user.click(solfitPill);
+    // Click Acme Solar pill
+    const acmeSolarPill = await screen.findByRole('button', { name: 'Acme Solar' });
+    await user.click(acmeSolarPill);
 
-    expect(mockPush).toHaveBeenCalledWith('/board?category=Solfit');
+    expect(mockPush).toHaveBeenCalledWith('/board?category=Acme%20Solar');
   });
 
   it('shows a loader while the session is loading', () => {
@@ -287,7 +287,7 @@ describe('BoardPage', () => {
     expect(workspace).toHaveValue('All workspaces');
     await user.click(workspace);
     expect(await screen.findByRole('option', { name: 'Personal' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Migrating Dragons' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Northstar Workshop' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'Personal Workspace' })).not.toBeInTheDocument();
 
     expect(screen.getByRole('radio', { name: 'Everyone' })).toBeChecked();
@@ -301,31 +301,31 @@ describe('BoardPage with shared work', () => {
       ...mockProjects[0],
       id: 'mine-1',
       project: 'My shared task',
-      category: 'Solfit',
-      orgId: 'org-md',
-      orgName: 'Migrating Dragons',
+      category: 'Acme Solar',
+      orgId: 'org-2',
+      orgName: 'Northstar Workshop',
       isShared: true,
       isMine: true,
-      assigneeId: 'user-123',
-      assigneeName: 'Tim Dobson',
+      assigneeId: 'user-1',
+      assigneeName: 'Casey Example',
     },
     {
       ...mockProjects[0],
-      id: 'ed-1',
-      project: "Robin's task",
-      category: 'Solfit',
-      orgId: 'org-md',
-      orgName: 'Migrating Dragons',
+      id: 'task-2',
+      project: "Jordan's task",
+      category: 'Acme Solar',
+      orgId: 'org-2',
+      orgName: 'Northstar Workshop',
       isShared: true,
       isMine: false,
-      assigneeId: 'user-ed',
-      assigneeName: 'Robin Fairweather',
+      assigneeId: 'user-2',
+      assigneeName: 'Jordan Example',
     },
     {
       ...mockProjects[3],
       id: 'personal-1',
       project: 'Personal errand',
-      category: 'Crew',
+      category: 'Personal Project',
       orgId: 'org-personal',
       orgName: 'Personal Workspace',
       isShared: false,
@@ -338,7 +338,7 @@ describe('BoardPage with shared work', () => {
     window.localStorage.clear();
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = WORKER_API_URL;
     useSessionMock.mockReturnValue({
-      data: { user: { name: 'Tim Dobson', id: 'user-123' }, accessToken: 'test-token' },
+      data: { user: { name: 'Casey Example', id: 'user-1' }, accessToken: 'test-token' },
       status: 'authenticated',
     });
   });
@@ -349,13 +349,13 @@ describe('BoardPage with shared work', () => {
 
     render(<BoardPage />);
 
-    expect(await screen.findByText("Robin's task")).toBeInTheDocument();
+    expect(await screen.findByText("Jordan's task")).toBeInTheDocument();
     expect(screen.getByText('My shared task')).toBeInTheDocument();
     expect(screen.getByText('Personal errand')).toBeInTheDocument();
 
     await user.click(screen.getByRole('radio', { name: 'Mine' }));
 
-    await waitFor(() => expect(screen.queryByText("Robin's task")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Jordan's task")).not.toBeInTheDocument());
     expect(screen.getByText('My shared task')).toBeInTheDocument();
     expect(screen.getByText('Personal errand')).toBeInTheDocument();
     expect(window.localStorage.getItem('timdo:assignee-scope')).toBe(JSON.stringify('mine'));
@@ -363,8 +363,8 @@ describe('BoardPage with shared work', () => {
 
   it('restores Mine from localStorage and explains an empty Mine view', async () => {
     window.localStorage.setItem('timdo:assignee-scope', JSON.stringify('mine'));
-    // Robin's view: everything shared, nothing of his own
-    mockApi(sharedTasks.filter((t) => t.id === 'ed-1').map((t) => ({ ...t, isMine: false })));
+    // Jordan's view: everything shared, nothing of his own
+    mockApi(sharedTasks.filter((t) => t.id === 'task-2').map((t) => ({ ...t, isMine: false })));
     const user = userEvent.setup();
 
     render(<BoardPage />);
@@ -376,7 +376,7 @@ describe('BoardPage with shared work', () => {
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /show everyone/i }));
-    expect(await screen.findByText("Robin's task")).toBeInTheDocument();
+    expect(await screen.findByText("Jordan's task")).toBeInTheDocument();
   });
 
   it('groups category pills by workspace and says who a workspace is shared with', async () => {
@@ -384,8 +384,8 @@ describe('BoardPage with shared work', () => {
 
     render(<BoardPage />);
 
-    const sharedLabel = await screen.findByTestId('workspace-label-org-md');
-    expect(sharedLabel).toHaveTextContent('Migrating Dragons');
+    const sharedLabel = await screen.findByTestId('workspace-label-org-2');
+    expect(sharedLabel).toHaveTextContent('Northstar Workshop');
     expect(screen.getByTestId('workspace-label-org-personal')).toHaveTextContent('Personal');
     // Unassigned only makes sense once something is shared
     expect(screen.getByRole('radio', { name: 'Unassigned' })).toBeInTheDocument();

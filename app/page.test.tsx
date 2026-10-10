@@ -122,7 +122,7 @@ describe('HomePage onboarding gate (signed in)', () => {
     mockPush.mockClear();
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = WORKER_API_URL;
     useSessionMock.mockReturnValue({
-      data: { user: { name: 'Robin', id: 'user-ed' }, accessToken: 'token' },
+      data: { user: { name: 'Casey Example', id: 'user-1' }, accessToken: 'token' },
       status: 'authenticated',
     });
   });
@@ -132,7 +132,7 @@ describe('HomePage onboarding gate (signed in)', () => {
   });
 
   it('sends a brand new solo user to onboarding', async () => {
-    mockApi([], [{ id: 'org-p', name: 'Robin', isPersonal: true, memberCount: 1 }]);
+    mockApi([], [{ id: 'org-p', name: 'Casey Example', isPersonal: true, memberCount: 1 }]);
 
     render(<HomePage />);
 
@@ -143,8 +143,8 @@ describe('HomePage onboarding gate (signed in)', () => {
     mockApi(
       [],
       [
-        { id: 'org-p', name: 'Robin Fairweather', isPersonal: true, memberCount: 1 },
-        { id: 'org-md', name: 'Migrating Dragons', isPersonal: false, memberCount: 2 },
+        { id: 'org-p', name: 'Casey Example', isPersonal: true, memberCount: 1 },
+        { id: 'org-2', name: 'Northstar Workshop', isPersonal: false, memberCount: 2 },
       ]
     );
 
@@ -155,7 +155,7 @@ describe('HomePage onboarding gate (signed in)', () => {
   });
 
   it('sends anyone with tasks to the board', async () => {
-    mockApi([{ id: 't1' }], [{ id: 'org-p', name: 'Tim', isPersonal: true, memberCount: 1 }]);
+    mockApi([{ id: 't1' }], [{ id: 'org-p', name: 'Casey Example', isPersonal: true, memberCount: 1 }]);
 
     render(<HomePage />);
 

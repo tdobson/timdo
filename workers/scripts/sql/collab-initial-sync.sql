@@ -5,9 +5,9 @@
 -- Do NOT re-run once the new API is live: it rebuilds goal links and re-inserts notes from the
 -- legacy tables and matches projects by name. For writes the old API made during the deploy
 -- window, use collab-catchup-sync.template.sql instead.
+-- Instance-specific workspace, project-renaming and stale-project cleanup is not included.
 
 -- 1. Personal workspaces --------------------------------------------------------------------
-UPDATE Organisations SET is_personal = 1 WHERE id = 'org-tim-personal';
 
 INSERT INTO Organisations (id, name, slug, is_personal, created_by, created_at, updated_at)
 SELECT 'org-personal-' || replace(u.id, 'google-oauth2|', ''),
@@ -24,8 +24,6 @@ WHERE o.is_personal = 1
   AND NOT EXISTS (SELECT 1 FROM OrganisationMembers m WHERE m.org_id = o.id AND m.user_id = o.created_by);
 
 -- 2. One project per legacy category (and epic category) ------------------------------------
-UPDATE Projects SET name = 'Xebit Ltd', updated_at = CURRENT_TIMESTAMP
-WHERE id = 'proj-xebit' AND name = 'Xebit';
 
 INSERT INTO Projects (id, org_id, key, name, lead_user_id, is_archived, created_at, updated_at)
 SELECT 'proj-' || lower(hex(randomblob(8))),
@@ -112,13 +110,7 @@ UPDATE Epics SET project_id = (
 )
 WHERE project_id IS NULL AND category IS NOT NULL AND trim(category) != '';
 
--- 7. Drop the stale duplicate project left by the September migration if it's now empty -----
-DELETE FROM Projects
-WHERE id = 'proj-caving-crew'
-  AND NOT EXISTS (SELECT 1 FROM Tasks WHERE project_id = 'proj-caving-crew')
-  AND NOT EXISTS (SELECT 1 FROM Epics WHERE project_id = 'proj-caving-crew');
-
--- 8. Rebuild full-text search ---------------------------------------------------------------
+-- 7. Rebuild full-text search ---------------------------------------------------------------
 DELETE FROM Tasks_FTS;
 INSERT INTO Tasks_FTS (task_id, title, reason, notes, customer, tags, update_notes)
 SELECT t.id, t.title, coalesce(t.reason, ''), coalesce(t.notes, ''), coalesce(t.customer, ''),

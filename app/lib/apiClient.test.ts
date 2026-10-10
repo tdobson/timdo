@@ -13,6 +13,7 @@ import {
   fetchCurrentUser,
   fetchOrganisationMembers,
   fetchOrganisations,
+  findSimilarTasks,
   getActiveTasksPoster,
   getEpics,
   getGoals,
@@ -76,18 +77,18 @@ describe('apiClient', () => {
       global.fetch = jest.fn().mockResolvedValueOnce({
         ok: false,
         status: 403,
-        text: async () => JSON.stringify({ error: 'You have view-only access to "Solfit"' }),
+        text: async () => JSON.stringify({ error: 'You have view-only access to "Acme"' }),
       } as any);
 
       const promise = apiCall('http://example.com/api');
-      await expect(promise).rejects.toThrow('You have view-only access to "Solfit"');
+      await expect(promise).rejects.toThrow('You have view-only access to "Acme"');
       await expect(promise).rejects.toBeInstanceOf(ApiError);
     });
   });
 
   describe('collaboration helpers', () => {
     it('fetchCurrentUser calls GET /users/me', async () => {
-      const me = { id: 'u1', email: 'tim@example.com', name: 'Tim' };
+      const me = { id: 'u1', email: 'alex@example.com', name: 'Alex Morgan' };
       global.fetch = jest.fn().mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -109,6 +110,44 @@ describe('apiClient', () => {
       } as any);
 
       await expect(getProjectById('missing', 'test-token')).resolves.toBeNull();
+    });
+  });
+
+  describe('similar-task lookup', () => {
+    it('forwards a zero limit so the API can reject it rather than using the default', async () => {
+      global.fetch = jest.fn().mockImplementation(async (url: string) => {
+        const invalid = new URL(url).searchParams.get('limit') === '0';
+        return {
+          ok: !invalid,
+          status: invalid ? 400 : 200,
+          text: async () => JSON.stringify({ error: 'limit must be between 1 and 10' }),
+          json: async () => [],
+        };
+      });
+      await expect(
+        findSimilarTasks({ title: 'Fix the offer page', limit: 0 })
+      ).rejects.toMatchObject({
+        status: 400,
+        message: 'limit must be between 1 and 10',
+      });
+    });
+
+    it('omits an unspecified limit and preserves authentication and cancellation', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] });
+      const controller = new AbortController();
+      await findSimilarTasks(
+        { title: '  Fix the offer page  ', projectId: 'acme-project' },
+        'test-token',
+        controller.signal
+      );
+      const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(new URL(url).searchParams.has('limit')).toBe(false);
+      expect(new URL(url).searchParams.get('title')).toBe('Fix the offer page');
+      expect(new URL(url).searchParams.get('projectId')).toBe('acme-project');
+      expect(options.headers).toEqual({ Authorization: 'Bearer test-token' });
+      expect(options.signal).toBe(controller.signal);
     });
   });
 
@@ -203,17 +242,17 @@ describe('apiClient', () => {
 
   describe('Epic API methods', () => {
     it('getEpics sends GET request with optional category', async () => {
-      const mockEpics = [{ id: 'e1', title: 'Epic 1', category: 'Solfit' }];
+      const mockEpics = [{ id: 'e1', title: 'Epic 1', category: 'Acme' }];
       global.fetch = jest.fn().mockResolvedValueOnce({
         ok: true,
         status: 200,
         json: async () => mockEpics,
       } as any);
 
-      const res = await getEpics('Solfit', 'test-token');
+      const res = await getEpics('Acme', 'test-token');
       expect(res).toEqual(mockEpics);
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/epics?category=Solfit'),
+        expect.stringContaining('/epics?category=Acme'),
         expect.objectContaining({
           headers: { Authorization: 'Bearer test-token' },
         })
@@ -451,12 +490,12 @@ describe('apiClient', () => {
       } as any);
 
       const res = await getWallOfDonePoster(
-        { categories: ['Solfit', 'Crew'], format: 'svg' },
+        { categories: ['Acme', 'Workshop'], format: 'svg' },
         'test-token'
       );
       expect(res).toBe(mockSvg);
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/poster/wall-of-done?format=svg&categories=Solfit%2CCrew'),
+        expect.stringContaining('/poster/wall-of-done?format=svg&categories=Acme%2CWorkshop'),
         expect.objectContaining({
           headers: { Authorization: 'Bearer test-token' },
         })
@@ -496,7 +535,7 @@ describe('apiClient', () => {
     });
 
     it('getActiveTasksPoster fetches JSON when format is json', async () => {
-      const mockData = { categories: ['Solfit'], tasks: [], svg: '<svg></svg>' };
+      const mockData = { categories: ['Acme'], tasks: [], svg: '<svg></svg>' };
       global.fetch = jest.fn().mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -504,12 +543,12 @@ describe('apiClient', () => {
       } as any);
 
       const res = await getActiveTasksPoster(
-        { categories: ['Solfit'], format: 'json' },
+        { categories: ['Acme'], format: 'json' },
         'test-token'
       );
       expect(res).toEqual(mockData);
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/poster/active?format=json&categories=Solfit'),
+        expect.stringContaining('/poster/active?format=json&categories=Acme'),
         expect.objectContaining({
           headers: { Authorization: 'Bearer test-token' },
         })
@@ -531,7 +570,7 @@ describe('apiClient', () => {
 
   describe('Organisations API methods', () => {
     it('fetchOrganisations sends GET request with auth header', async () => {
-      const mockOrgs = [{ id: 'org-1', name: 'XEBIT', slug: 'xebit', role: 'owner' }];
+      const mockOrgs = [{ id: 'org-1', name: 'Acme', slug: 'acme', role: 'owner' }];
       global.fetch = jest.fn().mockResolvedValueOnce({
         ok: true,
         status: 200,

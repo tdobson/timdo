@@ -3,7 +3,7 @@
  * screen. The server resolves names to ids (workspace, project, assignee, epic) and adds
  * the labels shown on each card.
  */
-import type { Project, ProjectSize, ProjectStatus } from '../../app/types/project.types';
+import type { Project, ProjectSize, ProjectStatus, RefRole } from '../../app/types/project.types';
 
 export type VoiceChangeType =
   | 'create'
@@ -12,6 +12,38 @@ export type VoiceChangeType =
   | 'createEpic'
   | 'createProject'
   | 'claim';
+
+/** A link the change adds: canonical `kind:ref` plus what the server worked out about it. */
+export interface VoiceRefAdd {
+  ref: string;
+  role: RefRole;
+  kind?: string;
+  url?: string | null;
+  label?: string;
+}
+
+/** A link the change takes off; role null means every role it has on the task. */
+export interface VoiceRefRemove {
+  ref: string;
+  role: RefRole | null;
+}
+
+/** An open task a proposed new task looks like, from the server's similar-task check. */
+export interface VoiceSimilarTask {
+  id: string;
+  shortId?: string;
+  title: string;
+  status?: string;
+  projectId?: string;
+  projectName?: string | null;
+  orgId?: string;
+  orgName?: string | null;
+  assigneeId?: string | null;
+  assigneeName?: string | null;
+  score?: number;
+  /** Whether the caller can add a note or otherwise edit the task. */
+  canEdit?: boolean;
+}
 
 /** The proposed task, epic or project, as the model described it. */
 export interface VoiceDraft {
@@ -53,6 +85,11 @@ export interface VoiceProposal {
   epicId?: string | null;
   epicTitle?: string | null;
   goalId?: string | null;
+  /** Links to add (create and update) and take off (update only) */
+  refs?: VoiceRefAdd[];
+  removeRefs?: VoiceRefRemove[];
+  /** Likely duplicate tasks found for a new task proposal. */
+  similar?: VoiceSimilarTask[];
   warnings?: string[];
 }
 

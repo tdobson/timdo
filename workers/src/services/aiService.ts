@@ -4,8 +4,10 @@ import Groq from 'groq-sdk';
 import { z } from 'zod';
 import type { Project } from '../../../app/types/project.types';
 import {
+  addSimilarTasks,
   compactTasks,
   describeEpics,
+  describeRefKinds,
   describeWorkspaces,
   resolveProposals,
   type RawChange,
@@ -19,7 +21,8 @@ interface ProcessVoiceCommandArgs {
   groqApiKey: string;
   /**
    * What the signed-in user can see and who they work with, from loadVoiceContext().
-   * When present, proposals are checked and resolved to ids before they're returned.
+   * When present, proposals are checked and resolved to ids before they're returned, and new
+   * tasks that look like open ones carry them as `similar`.
    */
   context?: VoiceContext;
 }
@@ -45,12 +48,12 @@ const projectSchema = z.object({
     .string()
     .nullable()
     .optional()
-    .describe('The high-level category/project area, e.g. "Solfit", "Crew", "Personal".'),
+    .describe('The high-level category/project area, e.g. "Acme Solar", "Northstar Workshop", "Personal".'),
   projectId: z
     .string()
     .nullable()
     .optional()
-    .describe('The project ID or key if specified (e.g. "proj-xebit-1", "XEB").'),
+    .describe('The project ID or key if specified (e.g. "proj-acme-solar-1", "ACS").'),
   assignee: z
     .string()
     .nullable()
@@ -91,6 +94,24 @@ const projectSchema = z.object({
     .nullable()
     .optional()
     .describe('The Gmail thread ID associated with this project, if any.'),
+  refs: z
+    .array(
+      z.object({
+        ref: z.string().describe('The link as kind:id, e.g. "github.issue:acme/widgets#12".'),
+        role: z
+          .string()
+          .optional()
+          .describe('"link" (default), "source", "reported_by" or "about".'),
+      })
+    )
+    .optional()
+    .describe(
+      'For create and update only: links to add, ONLY when the user explicitly mentions one.'
+    ),
+  removeRefs: z
+    .array(z.string())
+    .optional()
+    .describe('For update only: links to take off the task, as kind:id from its "refs".'),
 });
 
 // Zod schema for the expected LLM output
@@ -103,7 +124,7 @@ const zodSchema = z.object({
     .nullable()
     .optional()
     .describe(
-      'Only when the user asks a question about their tasks (e.g. "What is Robin working on?"): a short, plain answer based on the tasks listed. Omit otherwise.'
+      'Only when the user asks a question about their tasks (e.g. "What is Jordan working on?"): a short, plain answer based on the tasks listed. Omit otherwise.'
     ),
   warnings: z
     .array(z.string())
@@ -160,33 +181,44 @@ WORKSPACES, PROJECTS AND PEOPLE:
 EPICS:
 {epics}
 
+LINKS ALREADY IN USE (kinds of outside link per workspace, with GitHub repositories or an example id):
+{refKinds}
+
 You will be given the user's transcript and a JSON array of the tasks they can see. Each task shows its category (project), workspace and assignee.
 
 Your instructions are:
 1.  Analyze the transcript to understand the user's intent. The user might want to create, update, or delete one or more tasks, create a new epic, create a new project, assign a task to someone, claim a task, or ask a question about the tasks.
 2.  Based on the intent, generate a list of proposed changes:
-    -   **Creates (Tasks)**: Use type "create" and provide full task data in "after". Use placeholder IDs like 'new-project-placeholder-1', 'new-project-placeholder-2', etc. Default priority to 5 and size to '***' if not specified. If assignment is mentioned (e.g. "for Robin", "assign to Robin", "assign to me"), set "after.assignee".
+    -   **Creates (Tasks)**: Use type "create" and provide full task data in "after". Use placeholder IDs like 'new-project-placeholder-1', 'new-project-placeholder-2', etc. Default priority to 5 and size to '***' if not specified. If assignment is mentioned (e.g. "for Jordan", "assign to Jordan", "assign to me"), set "after.assignee".
     -   **Claim Task**: When the user says "claim task <name>", "claim this", "I'll take <task>", or wants to take ownership of an existing task, use type "claim", set the existing task ID in "projectId", and set "after.assignee" to "me".
     -   **Create Epic**: When the user says "new epic, <title>" or indicates creating a new epic, use type "createEpic" and provide the title in "after.project", the project name in "after.category" (if mentioned), and a placeholder ID like 'new-epic-placeholder-1'.
     -   **Create Project**: Only when the user clearly asks for a new project (e.g. "new project, <name>", "start a project called <name>"), use type "createProject" with the name in "after.project". If they name a workspace for it, put it in "after.workspace".
     -   **Category / Epic / Goal Recognition**:
-        - Phrases like "in Solfit", "for Migrating Dragons", "under Personal", or a project name at the start of a sentence (e.g. "Solfit, add a task...") set "after.category".
-        - "after.category" MUST be the exact name of one of the projects listed above. Speech-to-text often mishears names, so pick the closest listed project (e.g. "sole fit" is "Solfit"). Only use a name that isn't listed when the user clearly asks for a new project.
+        - Phrases like "in Acme Solar", "for Northstar Workshop", "under Personal", or a project name at the start of a sentence (e.g. "Acme Solar, add a task...") set "after.category".
+        - "after.category" MUST be the exact name of one of the projects listed above. Speech-to-text often mishears names, so pick the closest listed project (e.g. "North Star Workshop" is "Northstar Workshop"). Only use a name that isn't listed when the user clearly asks for a new project.
         - Phrases like "linked to Acme Solar", "for Acme solar", or mentioning an epic name set "after.epicTitle" to that epic's exact title from the list above.
         - Phrases like "for goal <title>" or linking to a goal set "after.goalTitle".
     -   **Assignment Recognition**:
-        - Phrases like "for Robin", "assign to Robin", "give it to robin@example.com", "Robin should..." set "after.assignee" to that person's full name as listed under People.
+        - Phrases like "for Jordan", "assign to Jordan", "give it to jordan@example.test", "Jordan should..." set "after.assignee" to that person's full name as listed under People.
         - The person must be in the workspace of the task's project. If they aren't, still set "after.assignee" to the name you heard; TimDo will check it and tell the user.
         - "assign to me", "mine", "for myself", "I'll do it" set "after.assignee" to "me".
         - "unassign it", "nobody's doing it" set "after.assignee" to "unassigned".
         - Never change the assignee of a task unless the user asks.
     -   **Updates**: Use type "update" and provide the full updated task data in "after", keeping the task's current category unless the user asks to move it. If status changes, update 'statusLastChangedOn' to current timestamp.
     -   **Deletes**: Use type "delete" and omit the "after" field.
+    -   **Links (refs)**: A task can link to things outside TimDo, each written as kind:id (e.g. github.issue:acme/widgets#12, forum.post:4411, acme.member:123456). Each task's "refs" lists the links it has already.
+        - ONLY add a link when the user explicitly mentions one: a link, URL, issue, pull request, thread, post, ticket, member or id. Never invent one.
+        - Put new links in "after.refs", each with "ref" (kind:id) and "role": "link" (related material, the default), "source" (where the task came from: "from forum post 4411"), "reported_by" (who reported it: "reported by member 4411"), "about" (the person or thing it concerns).
+        - GitHub: "issue 12 on widgets" is github.issue:OWNER/widgets#12 and "PR 7" is github.pr:OWNER/REPO#7. Take OWNER/REPO from the repositories under LINKS ALREADY IN USE for that workspace. If you can't tell which repository, leave the link out and say so in "warnings".
+        - Other systems: take the kind from LINKS ALREADY IN USE for that workspace ("member 4411" is acme.member:4411 when acme.member is listed). If no listed kind fits, leave it out and say so in "warnings".
+        - Write spoken numbers as digits: "four four one one" and "forty-four eleven" are 4411.
+        - To take links off an existing task ("unlink issue 12", "remove the forum link"), put them in "after.removeRefs" as the kind:id strings from that task's "refs".
+        - Use "refs" to answer questions such as "what's linked to issue 12?". Never repeat a link a task already has.
     -   **View-only projects**: NEVER propose a change to a task, epic or project in a workspace where the user is a viewer (marked VIEW ONLY, or "viewOnly": true on a task). Leave it out and explain why in "warnings".
-    -   **Questions**: If the user asks about their tasks (e.g. "What's Robin working on?", "What have I got on in Solfit?"), answer in "answer" in one or two short sentences using only the tasks listed (a person is working on the tasks assigned to them that aren't done). Return an empty "changes" array unless they also asked for changes.
+    -   **Questions**: If the user asks about their tasks (e.g. "What's Jordan working on?", "What have I got on in Acme Solar?"), answer in "answer" in one or two short sentences using only the tasks listed (a person is working on the tasks assigned to them that aren't done). Return an empty "changes" array unless they also asked for changes.
 3.  You MUST return a JSON object with "changes" (array) and "summary" (string).
 4.  The "changes" array should ONLY contain proposed changes. Do not include unchanged tasks.
-5.  The "summary" must be a concise, human-readable string (e.g., "Added 1 task for Robin and moved 'Deploy feature X' to done.").
+5.  The "summary" must be a concise, human-readable string (e.g., "Added 1 task for Jordan and moved 'Deploy feature X' to done.").
 6.  If the request is unclear or unrelated to project management, return empty "changes" array and appropriate summary.
 7.  STATUS GUIDE:
     - "do": active, actionable now.
@@ -217,6 +249,7 @@ const NO_CONTEXT = {
   me: '(unknown)',
   workspaces: '(not provided: use the categories on the tasks)',
   epics: '(not provided)',
+  refKinds: '(not provided)',
 };
 
 async function getProjectUpdates(
@@ -241,6 +274,7 @@ async function getProjectUpdates(
         me: `${context.me.name} <${context.me.email}>`,
         workspaces: describeWorkspaces(context),
         epics: describeEpics(context),
+        refKinds: describeRefKinds(context),
       }
     : NO_CONTEXT;
 
@@ -288,6 +322,8 @@ export async function processVoiceCommand({
 
   if (context) {
     const { proposals, warnings } = resolveProposals((changes || []) as RawChange[], context);
+    // New tasks that look like open ones get a "Looks like an existing task" hint
+    await addSimilarTasks(proposals, context);
     return {
       transcript,
       summary,

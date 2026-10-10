@@ -16,7 +16,7 @@ export interface MigrationResult {
 }
 
 /**
- * Generate a project key from project name (e.g. "Solfit" -> "SOL", "Crew" -> "CRE", "Mavala Tech" -> "MTX")
+ * Generate a project key from project name (e.g. "Northstar Labs" -> "NLX", "Field Team" -> "FTX", "Maple Grove Research" -> "MGR")
  */
 export function generateProjectKey(name: string): string {
   const cleaned = name

@@ -25,6 +25,7 @@ const TIER_HEIGHT = MASTER_BANNER_HEIGHT / 3; // 1122.67 px
 const TIER_PADDING_TOP = 25;
 const TIER_PADDING_BOTTOM = 25;
 const HEADER_HEIGHT = 45;
+const OVERFLOW_NOTICE_HEIGHT = 36;
 
 export interface A4Tile {
   sheetIndex: number;
@@ -204,23 +205,129 @@ function renderTaskItem(
   };
 }
 
+interface RenderedTaskItem {
+  item: CompletedPosterItem;
+  svg: string;
+  height: number;
+}
+
+interface ColumnLayout {
+  visibleItems: RenderedTaskItem[];
+  omittedCount: number;
+  footerY: number | null;
+}
+
+function layoutColumnItems(
+  items: CompletedPosterItem[],
+  x: number,
+  startY: number,
+  width: number,
+  maxY: number
+): ColumnLayout {
+  const measuredItems: RenderedTaskItem[] = [];
+  let currentY = startY;
+
+  for (const item of items) {
+    const { svg, height } = renderTaskItem(item, x, currentY, width);
+    if (currentY + height > maxY) {
+      const availableHeight = maxY - startY;
+      const visibleItems: RenderedTaskItem[] = [];
+      let usedHeight = 0;
+
+      for (const measuredItem of measuredItems) {
+        if (usedHeight + measuredItem.height + OVERFLOW_NOTICE_HEIGHT > availableHeight) {
+          break;
+        }
+        visibleItems.push(measuredItem);
+        usedHeight += measuredItem.height;
+      }
+
+      return {
+        visibleItems,
+        omittedCount: items.length - visibleItems.length,
+        footerY: startY + usedHeight,
+      };
+    }
+
+    measuredItems.push({ item, svg, height });
+    currentY += height;
+  }
+
+  return { visibleItems: measuredItems, omittedCount: 0, footerY: null };
+}
+
+function renderOverflowNotice(
+  x: number,
+  y: number,
+  shownCount: number,
+  omittedCount: number,
+  tierIdx: number,
+  colIdx: number
+): string {
+  const totalCount = shownCount + omittedCount;
+  const taskLabel = totalCount === 1 ? 'task' : 'tasks';
+  return `<g data-overflow-notice="true" data-tier-index="${tierIdx}" data-column-index="${colIdx}" data-shown-count="${shownCount}" data-omitted-count="${omittedCount}"><text x="${x.toFixed(
+    2
+  )}" y="${(y + 13).toFixed(
+    2
+  )}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#444444">Showing ${shownCount} of ${totalCount} ${taskLabel} (${omittedCount} omitted)</text><text x="${x.toFixed(
+    2
+  )}" y="${(y + 28).toFixed(
+    2
+  )}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#666666">See Done in TimDo for the full list.</text></g>`;
+}
+
 /**
  * Returns column header title for a specific column and tier
  */
-function getColumnHeader(colIdx: number, tierIdx: number): string {
+function getColumnHeader(
+  colIdx: number,
+  tierIdx: number,
+  previousItems: RenderedTaskItem[],
+  currentItems: RenderedTaskItem[]
+): string {
   if (colIdx < 3) {
-    return tierIdx === 0 ? 'PERSONAL' : 'PERSONAL (CONT.)';
+    return tierIdx === 0 ? 'PERSONAL WORKSPACE' : 'PERSONAL WORKSPACE (CONT.)';
   }
-  // Col 4 (Work & Community)
-  if (tierIdx === 0) return 'WORK &amp; VENTURES';
-  if (tierIdx === 1) return 'PROJECTS (CONT.)';
-  return 'CAVING CREW (CONT.)';
+  if (tierIdx === 0) {
+    return 'OTHER WORKSPACES';
+  }
+
+  const previousCategory = previousItems[previousItems.length - 1]?.item.category.trim();
+  const currentCategory = currentItems[0]?.item.category.trim();
+  if (
+    previousCategory &&
+    currentCategory &&
+    previousCategory.toLowerCase() === currentCategory.toLowerCase()
+  ) {
+    return `OTHER WORKSPACES: ${currentCategory.toUpperCase()} (CONT.)`;
+  }
+
+  return 'OTHER WORKSPACES (CONT.)';
 }
 
 /**
  * Generates the full master banner SVG string (0 0 1587 3368)
  */
 export function generateWallOfDoneSvg(data: CompletedPosterData): string {
+  const columnLayouts: ColumnLayout[][] = [];
+
+  for (let tierIdx = 0; tierIdx < 3; tierIdx++) {
+    const tierTop = tierIdx * TIER_HEIGHT;
+    const headerY = tierTop + MARGIN_TOP + 5;
+    const startY = headerY + HEADER_HEIGHT;
+    const maxY = tierTop + TIER_HEIGHT - MARGIN_BOTTOM;
+    const tierLayouts: ColumnLayout[] = [];
+
+    for (let colIdx = 0; colIdx < 4; colIdx++) {
+      const colX = MARGIN_LEFT + colIdx * (COLUMN_WIDTH + COLUMN_GAP);
+      const items = data.tiers[tierIdx]?.columns[colIdx] || [];
+      tierLayouts.push(layoutColumnItems(items, colX, startY, COLUMN_WIDTH, maxY));
+    }
+
+    columnLayouts.push(tierLayouts);
+  }
+
   let bodySvg = '';
 
   // Background
@@ -229,40 +336,45 @@ export function generateWallOfDoneSvg(data: CompletedPosterData): string {
   // Draw 3 tiers
   for (let tierIdx = 0; tierIdx < 3; tierIdx++) {
     const tierTop = tierIdx * TIER_HEIGHT;
-    const tierData = data.tiers[tierIdx];
 
     // Aligned Refresher Header bar across all 4 columns
     const headerY = tierTop + MARGIN_TOP + 5;
 
     for (let colIdx = 0; colIdx < 4; colIdx++) {
       const colX = MARGIN_LEFT + colIdx * (COLUMN_WIDTH + COLUMN_GAP);
-      const headerTitle = getColumnHeader(colIdx, tierIdx);
+      const currentColumnLayout = columnLayouts[tierIdx][colIdx];
+      const previousItems = tierIdx > 0 ? columnLayouts[tierIdx - 1][colIdx].visibleItems : [];
+      const headerTitle = getColumnHeader(
+        colIdx,
+        tierIdx,
+        previousItems,
+        currentColumnLayout.visibleItems
+      );
 
       // Category Header with 2px underline rule
       bodySvg += `<text x="${colX.toFixed(2)}" y="${(headerY + 12).toFixed(
         2
-      )}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="900" letter-spacing="1.5" fill="#000000">${headerTitle}</text>`;
+      )}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="900" letter-spacing="1.5" fill="#000000">${escapeXml(
+        headerTitle
+      )}</text>`;
       bodySvg += `<line x1="${colX.toFixed(2)}" y1="${(headerY + 18).toFixed(2)}" x2="${(
         colX + COLUMN_WIDTH
       ).toFixed(2)}" y2="${(headerY + 18).toFixed(2)}" stroke="#000000" stroke-width="2" />`;
 
-      // Render tasks in this column
-      const items = tierData?.columns[colIdx] || [];
-      let currentItemY = headerY + HEADER_HEIGHT;
-      const maxY = tierTop + TIER_HEIGHT - MARGIN_BOTTOM;
+      // Render complete task rows and report any items that do not fit
+      for (const renderedItem of currentColumnLayout.visibleItems) {
+        bodySvg += `<g data-task-id="${escapeXml(renderedItem.item.id)}" data-tier-index="${tierIdx}">${renderedItem.svg}</g>`;
+      }
 
-      for (const item of items) {
-        if (currentItemY + 28 > maxY) {
-          break; // Stop when column is visually full for this tier
-        }
-        const { svg: itemMarkup, height: itemH } = renderTaskItem(
-          item,
+      if (currentColumnLayout.omittedCount > 0 && currentColumnLayout.footerY !== null) {
+        bodySvg += renderOverflowNotice(
           colX,
-          currentItemY,
-          COLUMN_WIDTH
+          currentColumnLayout.footerY,
+          currentColumnLayout.visibleItems.length,
+          currentColumnLayout.omittedCount,
+          tierIdx,
+          colIdx
         );
-        bodySvg += itemMarkup;
-        currentItemY += itemH;
       }
     }
 

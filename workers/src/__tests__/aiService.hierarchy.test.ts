@@ -53,7 +53,7 @@ describe('Voice AI Hierarchy Parsing', () => {
             status: 'do',
             priority: 5,
             size: '***',
-            category: 'Solfit',
+            category: 'Acme Solar',
             epicTitle: 'Acme Solar',
           },
         },
@@ -68,7 +68,7 @@ describe('Voice AI Hierarchy Parsing', () => {
     });
 
     expect(result.proposedChanges).toHaveLength(1);
-    expect(result.proposedChanges[0].after?.category).toBe('Solfit');
+    expect(result.proposedChanges[0].after?.category).toBe('Acme Solar');
     expect(result.proposedChanges[0].after?.epicTitle).toBe('Acme Solar');
     expect(result.proposedChanges[0].after?.project).toBe('draft design mockups');
   });
@@ -86,7 +86,7 @@ describe('Voice AI Hierarchy Parsing', () => {
             status: 'do',
             priority: 5,
             size: '***',
-            category: 'Solfit',
+            category: 'Acme Solar',
           },
         },
       ],
@@ -102,7 +102,7 @@ describe('Voice AI Hierarchy Parsing', () => {
     expect(result.proposedChanges).toHaveLength(1);
     expect(result.proposedChanges[0].type).toBe('createEpic');
     expect(result.proposedChanges[0].after?.project).toBe('Get Acme Solar Live');
-    expect(result.proposedChanges[0].after?.category).toBe('Solfit');
+    expect(result.proposedChanges[0].after?.category).toBe('Acme Solar');
   });
 
   it('parses goal and category links', async () => {

@@ -11,7 +11,7 @@ import type {
 } from '../types/project.types';
 import { projectKeys } from './useProjectQueries';
 
-/** Shows an API failure (e.g. `You have view-only access to "Solfit"`) as a red toast. */
+/** Shows an API failure (e.g. `You do not have access to this shared project`) as a red toast. */
 export function notifyError(title: string, error: unknown, fallback = 'Something went wrong.') {
   notifications.show({
     title,

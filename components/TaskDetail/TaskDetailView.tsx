@@ -67,6 +67,7 @@ import {
   WorkspaceBadge,
 } from '../Team';
 import { MergeTaskModal } from './MergeTaskModal';
+import { TaskRefs } from './TaskRefs';
 
 interface TaskDetailViewProps {
   task: Project;
@@ -108,6 +109,9 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
   const [assigneeId, setAssigneeId] = useState<string | null>(task.assigneeId || null);
   const [awaitUntil, setAwaitUntil] = useState<string | null>(task.awaitUntil || null);
   const [gmailThreadId, setGmailThreadId] = useState(task.gmailThreadId || '');
+  const gmailThreadInLinks = (task.refs || []).some(
+    (r) => r.kind === 'gmail.thread' && r.ref === task.gmailThreadId
+  );
 
   // Someone else (or another tab) changed the task: pick up the server values for the fields
   // that aren't free text, so pickers never show stale state.
@@ -120,7 +124,10 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
     setGoalId(task.goalId || null);
     setAssigneeId(task.assigneeId || null);
     setAwaitUntil(task.awaitUntil || null);
+    // Links can change the thread too, and a blur with a stale value would undo that
+    setGmailThreadId(task.gmailThreadId || '');
   }, [
+    task.gmailThreadId,
     task.status,
     task.priority,
     task.size,
@@ -160,7 +167,7 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
   };
 
   const handleGmailThreadIdBlur = () => {
-    if (gmailThreadId !== (task.gmailThreadId || '')) {
+    if (gmailThreadId.trim() !== (task.gmailThreadId || '')) {
       handleUpdate({ gmailThreadId: gmailThreadId.trim() || null });
     }
   };
@@ -514,6 +521,9 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
               readOnly={!canEdit}
             />
 
+            {/* Links to things outside TimDo: issues, threads, posts, members */}
+            <TaskRefs task={task} canEdit={canEdit} />
+
             {canEdit ? (
               <MarkdownEditor
                 label="Task Description & Notes (Markdown)"
@@ -552,7 +562,8 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
                 leftSection={<IconBrandGmail size={16} />}
                 readOnly={!canEdit}
               />
-              {task.gmailThreadId && (
+              {/* The Links section already shows this thread as a chip */}
+              {task.gmailThreadId && !gmailThreadInLinks && (
                 <Group gap="xs">
                   <Anchor
                     href={`https://mail.google.com/mail/u/0/#inbox/${task.gmailThreadId}`}
@@ -577,9 +588,10 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
               <Title order={3} size="h4" mb="sm">
                 Updates & Notes
               </Title>
+              {/* The Links section already shows the thread when it is a ref */}
               <ProjectUpdatesTimeline
                 projectId={task.id}
-                projectGmailThreadId={task.gmailThreadId}
+                projectGmailThreadId={gmailThreadInLinks ? null : task.gmailThreadId}
                 canEdit={canEdit}
               />
             </div>
@@ -603,7 +615,7 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
 }
 
 /**
- * "Created by Tim Dobson · Assigned to you · Last updated by Robin Fairweather, 2h ago"
+ * "Created by Casey Example · Assigned to Jordan Example · Last updated by Casey Example, 2h ago"
  */
 function Attribution({ task, meId }: { task: Project; meId: string | null }) {
   const parts: React.ReactNode[] = [];

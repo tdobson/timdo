@@ -27,6 +27,8 @@ TIMDO_AS="${TIMDO_AS:-}"
 TIMDO_FORMAT="${TIMDO_FORMAT:-text}"
 FORMAT_EXPLICIT=0
 APP_URL="${TIMDO_APP_URL:-https://timdo.tdobson.net}"
+ERR_HINT=""
+CLASH_HINT=""
 
 # ---------------------------------------------------------------------------
 # Global flags may appear anywhere: --json, --text, --as <email>, --no-color
@@ -113,6 +115,58 @@ confirm_or_exit() {
   die "Nothing changed. Re-run with --yes to confirm."
 }
 
+# Questions that are not about something drastic (like "is this a duplicate?") only need a
+# person at a terminal. TIMDO_FORCE_TTY=1 lets the tests answer them through a pipe; only the
+# prompt helpers read it.
+can_prompt() {
+  [[ "${TIMDO_FORCE_TTY:-}" == "1" ]] && return 0
+  [[ -t 0 && -t 1 ]]
+}
+
+# ask_similar <similar json>: show likely duplicates on stderr and ask what to do.
+# Prints "create", "cancel" or the number (from 1) of the task to add a note to instead.
+# The default (Enter, end of input, or three answers it cannot read) is "cancel".
+ask_similar() {
+  local similar="$1" count range answer tries=0
+  count=$(echo "$similar" | jq 'length')
+  range="1"
+  [[ "$count" -gt 1 ]] && range="1-$count"
+  {
+    if [[ "$count" -eq 1 ]]; then echo "${B}This looks like an open task:${R}"; else echo "${B}These look like open tasks:${R}"; fi
+    echo "$similar" | jqt 'similar_lines(true; $me)' --arg me "$( (my_id) 2>/dev/null || true)"
+  } >&2
+  while true; do
+    printf 'Create anyway? [y]es / [n]o / [%s] add as a note to that task: ' "$range" >&2
+    answer=""
+    if ! IFS= read -r answer; then
+      echo >&2
+      echo "cancel"
+      return
+    fi
+    # A terminal echoes the answer and its newline; piped answers (tests) do not
+    [[ -t 0 ]] || echo >&2
+    answer=$(lower "$(printf '%s' "$answer" | tr -d '[:space:]')")
+    case "$answer" in
+      y|yes) echo "create"; return ;;
+      ""|n|no) echo "cancel"; return ;;
+    esac
+    if [[ "$answer" =~ ^[0-9]{1,3}$ ]] && (( 10#$answer >= 1 && 10#$answer <= count )); then
+      if [[ "$(echo "$similar" | jq -r --argjson i "$answer" '.[$i - 1].canEdit == false')" == "true" ]]; then
+        echo "You can view that task but cannot add a note there. Choose another match or press n." >&2
+      else
+        echo $(( 10#$answer ))
+        return
+      fi
+    fi
+    tries=$((tries + 1))
+    if [[ "$tries" -ge 3 ]]; then
+      echo "cancel"
+      return
+    fi
+    echo "Answer y to create it, n to stop, or $range to add a note to that task instead." >&2
+  done
+}
+
 # ---------------------------------------------------------------------------
 # jq library shared by every formatter
 # ---------------------------------------------------------------------------
@@ -166,6 +220,38 @@ def note_lines:
     + "  " + ((.authorName // "Someone") | pad($aw) | paint("bold"))
     + "  " + ((.note // "") | tostring | gsub("\n"; "\n" + (" " * (2 + 17 + 2 + $aw + 2))))
     + (if .gmailThreadId then ("  (thread: \(.gmailThreadId))" | paint("dim")) else "" end);
+# Refs: links from a task to things outside TimDo, shown as kind:ref
+def role_label: {"link":"Link","source":"Source","reported_by":"Reported by","about":"About"}[.] // .;
+# The word the activity log uses for a role: "Removed reporter acme.member:200 from ..."
+def role_noun: {"link":"link","source":"source","reported_by":"reporter","about":"about"}[.] // .;
+# Control characters (line breaks, escapes) never reach the terminal from a ref or label
+def safe: (. // "") | tostring | gsub("[\\p{Cc}]+"; " ");
+def role_order: ({"source":0,"about":1,"reported_by":2,"link":3}[.role] // 9);
+def ref_canonical: (.canonical // "\(.kind):\(.ref)") | safe;
+def ref_extra: ([(.label // empty | safe), (.url // empty | safe | paint("dim"))] | join("  "));
+def ref_cell($cw): ref_canonical | if $cols > 0 then trunc(60) else . end | pad($cw);
+def ref_line($cw): "  " + (.role | role_label | pad(11)) + "  " + ref_cell($cw) + "  " + ref_extra | sub(" +$"; "");
+def ref_width: [maxlen(ref_canonical), 60] | min;
+def ref_done_line: "  " + (if .existing == true then "Already linked" else "Linked" end) + " " + ref_canonical
+  + (if .role != "link" then " (" + (.role | role_label | ascii_downcase) + ")" else "" end)
+  + (if .existing == true then (", nothing changed" | paint("dim")) else "" end);
+# Similar open tasks (GET /tasks/similar, and `similar` on a create response)
+def sim_id: (.shortId // (.id // "")[0:8]);
+def sim_title: .title | oneline | safe;
+def sim_who($me): if .assigneeId == null and .assigneeName == null then "unassigned"
+  elif $me != "" and .assigneeId == $me then "me" else ((.assigneeName // "someone") | safe | first_name) end;
+def similar_hint: "Similar open task: \(sim_id) \"\(sim_title)\" (\(.projectName // "" | safe))";
+def similar_lines($numbered; $me):
+  {t: ([maxlen(sim_title), 52] | min), p: maxlen(.projectName // "" | safe), n: (length | tostring | length)} as $w
+  | to_entries[] | .key as $i | .value | sim_who($me) as $who
+  | "  " + (if $numbered then ("\($i + 1)" | lpad($w.n)) + "  " else "" end)
+    + (sim_id | paint("dim"))
+    + "  " + (sim_title | if $cols > 0 then trunc($w.t) else . end | pad($w.t))
+    + "  " + (.projectName // "" | safe | pad($w.p) | paint("cyan"))
+    + "  " + ($who | paint(if $who == "me" then "green" elif $who == "unassigned" then "dim" else "yellow" end))
+    + (if .status != null and .status != "do" then "  " + (.status | paint("dim")) else "" end)
+    + (if .canEdit == false then "  " + ("view only" | paint("red")) else "" end)
+  | sub(" +$"; "");
 JQ
 
 # jqt PROGRAM [jq options...]: run a jq program with the shared library and raw output
@@ -221,9 +307,19 @@ api_error() {
   if [[ "$msg" == *"Invalid internal secret"* ]]; then
     die "Not signed in: the API rejected TIMDO_SECRET. Check the environment or $TIMDO_CONFIG (API: $TIMDO_API)."
   fi
+  # A 409 means the ref is already the source of another task: name it so scripts can recover.
+  # Commands can set CLASH_HINT to say what else they could do (add: --on-duplicate report).
+  if [[ "$code" == "409" ]]; then
+    local other
+    other=$(jq -r '.taskId // empty' "$file" 2>/dev/null || true)
+    die "Already tracked: $msg.${other:+ Open it with: timdo get ${other:0:8}}${CLASH_HINT:+. $CLASH_HINT}"
+  fi
   local who_note=""
   [[ -n "$TIMDO_AS" && ( "$code" == "403" || "$code" == "404" ) && "$msg" != *"$TIMDO_AS"* ]] && who_note=" (acting as $TIMDO_AS)"
-  die "$prefix: $soft$who_note"
+  # Commands can set ERR_HINT to say what to try next when the input was wrong or not found
+  local hint=""
+  [[ "$code" == "400" || "$code" == "404" ]] && hint="$ERR_HINT"
+  die "$prefix: $soft$who_note${hint:+. $hint}"
 }
 
 # api METHOD PATH [curl args...]: prints the response body, or exits non-zero with the API error
@@ -455,6 +551,349 @@ resolve_project() {
 }
 
 # ---------------------------------------------------------------------------
+# Refs: links from a task to things outside TimDo (issues, posts, mail, member ids).
+# Written as a URL or kind:id; the API parses both. See: timdo ref --help
+# ---------------------------------------------------------------------------
+REF_ROLE_ERROR="Role must be link, source, reported_by or about"
+
+# normalise_role <role>: prints link|source|reported_by|about (the API accepts the same spellings)
+normalise_role() {
+  local r
+  r=$(lower "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]-]+/_/g')
+  case "$r" in
+    "") echo "link" ;;
+    link|source|reported_by|about) echo "$r" ;;
+    *) die "Error: $REF_ROLE_ERROR, not \"$1\"." ;;
+  esac
+}
+
+# need_value <flag> <value>: stop with a clear message when a flag has no value after it
+need_value() {
+  if [[ -z "${2:-}" || "${2:-}" == --* ]]; then
+    usage_die "Error: $1 needs a value (see: timdo ref --help)."
+  fi
+}
+
+# ref_input <ref> <role> [label] [kind] [url]: one RefInput as JSON (empty fields left out)
+ref_input() {
+  jq -n --arg ref "$1" --arg role "$2" --arg label "${3:-}" --arg kind "${4:-}" --arg url "${5:-}" '
+    {ref: $ref, role: $role}
+    + (if $label == "" then {} else {label: $label} end)
+    + (if $kind == "" then {} else {kind: $kind} end)
+    + (if $url == "" then {} else {url: $url} end)'
+}
+
+# ref_role_for_flag <--ref|--source|--reported-by|--about>: the role a CLI flag stands for
+ref_role_for_flag() {
+  case "$1" in
+    --source) echo "source" ;;
+    --reported-by|--reported_by) echo "reported_by" ;;
+    --about) echo "about" ;;
+    *) echo "link" ;;
+  esac
+}
+
+# refs_json_arg <json>: check a --refs-json value is an array of {ref, role?, label?, kind?, url?}
+refs_json_arg() {
+  echo "$1" | jq -e 'type == "array" and all(.[]; type == "object" and (.ref | type) == "string")' >/dev/null 2>&1 \
+    || die "Error: --refs-json needs a JSON array like [{\"ref\":\"forum.post:4411\",\"role\":\"source\"}]."
+  echo "$1" | jq -c '.'
+}
+
+# add_ref <task id> <RefInput json>: POST it; prints the RefView with "existing"
+add_ref() {
+  api POST "/tasks/$1/refs" -d "$2"
+}
+
+# remove_ref <task id> <url|kind:id|ref id> [role]: prints a JSON array of the refs removed.
+# A hex string that starts a ref id on the task is taken as that id, anything else as a ref.
+# With a ref id, a role that does not match that ref is an error rather than ignored.
+remove_ref() {
+  local task_id="$1" what="$2" role="${3:-}"
+  local before after by_id=""
+  before=$(api GET "/tasks/$task_id/refs")
+  if [[ "$what" =~ ^[0-9a-fA-F-]{4,36}$ ]]; then
+    by_id=$(echo "$before" | jq -r --arg p "$(lower "$what")" 'if any(.[]; .id | startswith($p)) then "yes" else "" end')
+  fi
+  ERR_HINT="See the task's links with: timdo ref list ${task_id:0:8}"
+  if [[ -n "$by_id" && -n "$role" ]]; then
+    # A ref id names one ref, so --role can only confirm it, never pick another
+    local id_role
+    id_role=$(echo "$before" | jq -r --arg p "$(lower "$what")" '[.[] | select(.id | startswith($p)) | .role] | unique | join(", ")')
+    if [[ "$id_role" != "$role" ]]; then
+      die "Error: ref $what is $id_role, not $role. Leave out --role to remove it."
+    fi
+  fi
+  if [[ -n "$by_id" ]]; then
+    api DELETE "/tasks/$task_id/refs/$(urlencode "$(lower "$what")")" >/dev/null
+  else
+    local q="ref=$(urlencode "$what")"
+    [[ -n "$role" ]] && q="$q&role=$(urlencode "$role")"
+    api DELETE "/tasks/$task_id/refs?$q" >/dev/null
+  fi
+  ERR_HINT=""
+  after=$(api GET "/tasks/$task_id/refs")
+  jq -n --argjson b "$before" --argjson a "$after" '($a | map(.id)) as $keep | [$b[] | select(.id as $i | $keep | index($i) | not)]'
+}
+
+usage_ref() {
+  cat <<'EOF'
+Usage: timdo ref <list|add|rm> <task id> ...      (alias: refs)
+
+A ref links a task to something outside TimDo: a GitHub issue or PR, a forum post,
+an email, a Gmail thread, an error report, a member of another system, any web page.
+Paste a URL, or write it as kind:id. Kinds are lowercase and dotted, and you can
+invent your own. Three examples:
+  github.issue:acme/widgets#12     same as https://github.com/acme/widgets/issues/12
+  forum.post:4411                  post 4411 on your forum
+  acme.member:123456               member 123456 in the Acme system
+Record people by their id in the other system, not by name or email.
+
+Roles:
+  link          Related material (the default)
+  source        Where the task came from. A ref can be the source of only one task
+                per workspace; a clash fails and names the task that has it.
+  reported_by   An outside person or account who reported it (as many as you like)
+  about         The outside person or thing the task concerns
+
+Commands:
+  ref list <task>                          Links on a task, grouped by role, with their ids
+  ref add <task> <url|kind:id> [--role <role>] [--label "..."] [--kind <kind>] [--url <url>]
+                                           Adding the same ref and role again changes nothing.
+                                           --kind takes a bare id: ref add ea9f 123456 --kind acme.member
+  ref rm <task> <url|kind:id|ref id> [--role <role>]
+                                           Without --role, every role of that ref goes.
+
+Elsewhere:
+  add "Title" -p <project> --source <x> --reported-by <x> --about <x> --ref <x>   (each repeats)
+  update <task> --ref <x> --source <x> --reported-by <x> --about <x> --unref <x>
+  find <url|kind:id> [--role <role>]       Tasks carrying it, any status
+  list do --ref <url|kind:id>              Combine with the usual list filters
+
+Examples:
+  timdo ref add 3f2a91c0 https://github.com/acme/widgets/issues/12
+  timdo ref add 3f2a91c0 acme.member:123456 --role reported_by --label "Forum account"
+  timdo ref rm 3f2a91c0 github.issue:acme/widgets#12
+  timdo find forum.post:4411 --role source
+EOF
+}
+
+cmd_ref() {
+  local subcmd="${1:-}"
+  shift || true
+  case "$subcmd" in
+    ""|-h|--help|help) usage_ref; [[ -z "$subcmd" ]] && exit 1 || exit 0 ;;
+    list|ls|add|rm|remove|delete) ;;
+    *) usage_die "Unknown ref subcommand: $subcmd. Use list, add or rm (see: timdo ref --help)." ;;
+  esac
+
+  local id="" what="" role="" role_set=false label="" kind="" url=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) usage_ref; exit 0 ;;
+      --role|-r) need_value "$1" "${2:-}"; role="$2"; role_set=true; shift 2 ;;
+      --label|-l) need_value "$1" "${2:-}"; label="$2"; shift 2 ;;
+      --kind|-k) need_value "$1" "${2:-}"; kind="$2"; shift 2 ;;
+      --url) need_value "$1" "${2:-}"; url="$2"; shift 2 ;;
+      -*) usage_die "Unknown option for ref $subcmd: $1 (see: timdo ref --help)" ;;
+      *)
+        if [[ -z "$id" ]]; then id="$1"
+        elif [[ -z "$what" ]]; then what="$1"
+        else usage_die "Unexpected argument: $1. One ref at a time; quote it if it has spaces."; fi
+        shift ;;
+    esac
+  done
+  [[ -z "$id" ]] && usage_die "Error: say which task, e.g. timdo ref $subcmd 3f2a91c0 ... (see: timdo ref --help)"
+  if [[ "$subcmd" != list && "$subcmd" != ls && -z "$what" ]]; then
+    usage_die "Error: say which ref: a URL or kind:id, e.g. timdo ref $subcmd $id github.issue:acme/widgets#12"
+  fi
+  if [[ "$role_set" == true ]]; then role=$(normalise_role "$role"); fi
+
+  local task full_id title_note
+  task=$(resolve_task "$id")
+  full_id=$(echo "$task" | jq -r '.id')
+  title_note=$(echo "$task" | jq -r '"\(.id[0:8]) \"\(.project)\""')
+
+  case "$subcmd" in
+    list|ls)
+      local refs
+      refs=$(api GET "/tasks/$full_id/refs")
+      if ! is_text; then
+        echo "$refs" | jq '.'
+        return
+      fi
+      echo "$task" | jqt '"Links on \"\(.project)\"  " + (where | paint("cyan")) + "  (\($n))"' --argjson n "$(echo "$refs" | jq 'length')"
+      if [[ "$(echo "$refs" | jq 'length')" -eq 0 ]]; then
+        echo "  (none yet) Add one with: timdo ref add ${full_id:0:8} <url or kind:id>"
+      else
+        echo "$refs" | jqt '
+          ref_width as $cw
+          | ([maxlen(.createdByName // "" | first_name), 8] | max) as $bw
+          | ("  " + ("ID" | pad(8)) + "  " + ("ROLE" | pad(11)) + "  " + ("REF" | pad($cw)) + "  " + ("ADDED BY" | pad($bw)) + "  LABEL AND URL" | paint("dim")),
+            (sort_by(role_order) | .[]
+              | "  " + ((.id // "")[0:8] | paint("dim")) + "  " + (.role | role_label | pad(11)) + "  " + ref_cell($cw)
+                + "  " + (.createdByName // "" | first_name | pad($bw)) + "  " + ref_extra | sub(" +$"; ""))'
+      fi
+      ;;
+
+    add)
+      local body res
+      body=$(ref_input "$what" "${role:-link}" "$label" "$kind" "$url")
+      res=$(add_ref "$full_id" "$body")
+      if text_out; then
+        echo "$res" | jqt '
+          (if .existing == true then "Already linked" else c("green") + "Linked" + c("reset") end)
+          + " " + ref_canonical + (if .role != "link" then " (" + (.role | role_label | ascii_downcase) + ")" else "" end)
+          + " " + (if .existing == true then "on" else "to" end) + " " + $t
+          + (if .existing == true then ". Nothing changed." else "" end)' --arg t "$title_note"
+      else
+        echo "$res" | jq '.'
+      fi
+      ;;
+
+    rm|remove|delete)
+      local removed
+      removed=$(remove_ref "$full_id" "$what" "$role")
+      if text_out; then
+        echo "$removed" | jqt '.[] | c("green") + "Removed" + c("reset") + " " + (.role | role_noun) + " " + ref_canonical + " from " + $t' --arg t "$title_note"
+      else
+        echo "$removed" | jq --arg id "$full_id" '{taskId: $id, removed: .}'
+      fi
+      ;;
+  esac
+}
+
+usage_find() {
+  cat <<'EOF'
+Usage: timdo find <url|kind:id> [--role link|source|reported_by|about] [list options]
+       (list options such as -w <workspace> or --mine can go before or after the ref)
+
+Tasks carrying that ref, in every workspace you can see, any status (done included).
+Same as: timdo list all --ref <url|kind:id> [--ref-role <role>]
+
+Examples:
+  timdo find https://github.com/acme/widgets/issues/12
+  timdo find forum.post:4411 --role source
+  timdo --json find acme.member:123456 --role reported_by
+EOF
+}
+
+cmd_find() {
+  local what="" role="" rest=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) usage_find; exit 0 ;;
+      --role|-r|--ref-role) role="${2:-}"; [[ -z "$role" ]] && usage_die "Error: --role needs a value: link, source, reported_by or about."; shift 2 ;;
+      # List options that take a value keep it, so it is never mistaken for the ref
+      -p|--category|--project|--project-category|--project-id|-w|--workspace|--org|-e|--epic|-g|--goal|--customer|--tag|--related-to|--assignee|--unlinked)
+        need_value "$1" "${2:-}"; rest+=("$1" "$2"); shift 2 ;;
+      -*) rest+=("$1"); shift ;;
+      *) if [[ -z "$what" ]]; then what="$1"; else rest+=("$1"); fi; shift ;;
+    esac
+  done
+  if [[ -z "$what" ]]; then
+    usage_find >&2
+    exit 1
+  fi
+  local args=(all --ref "$what")
+  [[ -n "$role" ]] && args+=(--ref-role "$role")
+  cmd_list "${args[@]}" ${rest[@]+"${rest[@]}"}
+}
+
+usage_similar() {
+  cat <<'EOF'
+Usage: timdo similar "Task title" [-p <project> | --project-id <id|KEY|path> | -w <workspace>]
+                     [--limit <1-10>] [--exclude <task id>]
+
+Open tasks that look like this title, best first, before you create it. Words like "the" and
+"with" are ignored, and a title needs at least two other words to compare. Done and deleted
+tasks never show.
+
+  -p, --project <name>         Look in the workspace this project is in (as add -p would)
+  --project-id <id|KEY|path>   Look in this project's workspace
+  -w, --workspace <name>       Look in this workspace
+                               Without any of these: every workspace you can see.
+  --limit <n>                  How many (default 3, at most 10)
+  --exclude <task id>          Leave this task out (e.g. the one you are editing)
+  --title "..."                Give the title this way when it starts with a dash
+
+If one is the same thing, add to it instead of creating a new task:
+  timdo add-note 3f2a91c0 "Also seen on the checkout page"
+
+Examples:
+  timdo similar "Fix the offer page" -p "Acme Solar"
+  timdo --json similar "Offer page broken" -w Acme --limit 5
+EOF
+}
+
+cmd_similar() {
+  local title="" category="" project_q="" workspace="" limit="" exclude=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) usage_similar; exit 0 ;;
+      -p|--project|--category) [[ -z "${2:-}" ]] && usage_die "Error: $1 needs a project name."; category="$2"; shift 2 ;;
+      --project-id) [[ -z "${2:-}" ]] && usage_die "Error: --project-id needs a project id, key or \"Workspace/Project\"."; project_q="$2"; shift 2 ;;
+      -w|--workspace|--org) [[ -z "${2:-}" ]] && usage_die "Error: $1 needs a workspace name."; workspace="$2"; shift 2 ;;
+      --limit|-n)
+        [[ "${2:-}" =~ ^[0-9]+$ && "${2:-0}" -ge 1 ]] || usage_die "Error: --limit needs a whole number from 1 to 10."
+        limit="$2"; shift 2 ;;
+      --exclude) [[ -z "${2:-}" ]] && usage_die "Error: --exclude needs a task id."; exclude="$2"; shift 2 ;;
+      # --title (or everything after a second --) takes a title that starts with a dash
+      --title|-t) [[ -z "${2:-}" ]] && usage_die "Error: --title needs the task title."; title="$2"; shift 2 ;;
+      --) shift; while [[ $# -gt 0 ]]; do title="${title:+$title }$1"; shift; done ;;
+      -*) usage_die "Unknown option for similar: $1 (see: timdo similar --help)" ;;
+      *) title="${title:+$title }$1"; shift ;;
+    esac
+  done
+  if [[ -z "${title// /}" ]]; then
+    usage_similar >&2
+    exit 1
+  fi
+
+  local q project_id="" org_id=""
+  [[ -n "$project_q" ]] && project_id=$(resolve_project "$project_q" | jq -r '.id')
+  [[ -n "$workspace" && -z "$project_id" ]] && org_id=$(resolve_org "$workspace" | jq -r '.id')
+  q=$(similar_query "$title" "$project_id" "$category" "$limit")
+  [[ -n "$org_id" ]] && q+="&orgId=$(urlencode "$org_id")"
+  [[ -n "$exclude" ]] && q+="&excludeId=$(urlencode "$(resolve_task_id "$exclude")")"
+
+  local similar
+  similar=$(api GET "/tasks/similar?$q")
+  if ! is_text; then
+    echo "$similar" | jq '.'
+    return
+  fi
+  local count shown_title
+  count=$(echo "$similar" | jq 'length')
+  shown_title=$(jq -rn --arg t "$title" '$t | gsub("[\\p{Cc}]+"; " ")')
+  if [[ "$count" -eq 0 ]]; then
+    echo "No open tasks look like \"$shown_title\"."
+    # Mirrors the API's rule loosely: under two words of 3+ letters there is nothing to compare
+    local words
+    words=$(printf '%s' "$title" | tr -cs '[:alnum:]' '\n' | awk 'length($0) >= 3' | wc -l)
+    if [[ "$words" -lt 2 ]]; then
+      echo "  A title needs at least two distinctive words to compare, e.g. \"offer page\"."
+    fi
+    return
+  fi
+  if [[ "$count" -eq 1 ]]; then
+    echo "${B}1 open task looks like \"$shown_title\"${R}"
+  else
+    echo "${B}$count open tasks look like \"$shown_title\"${R}"
+  fi
+  echo "$similar" | jqt 'similar_lines(false; $me)' --arg me "$( (my_id) 2>/dev/null || true)"
+  local editable read_only
+  editable=$(echo "$similar" | jq '[.[] | select(.canEdit != false)] | length')
+  read_only=$(echo "$similar" | jq '[.[] | select(.canEdit == false)] | length')
+  if [[ "$editable" -gt 0 ]]; then
+    echo 'For an editable match, add to it: timdo add-note <id> "..."'
+  fi
+  if [[ "$read_only" -gt 0 ]]; then
+    echo 'A match marked "view only" cannot take a note or be merged by you.'
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
 usage_list() {
@@ -465,9 +904,9 @@ Lists the tasks you can see in every workspace you belong to. Shared tasks
 show their workspace/project and who they are assigned to.
 
 Filters (applied by the server):
-  -p, --project <name>        Project (category) name, e.g. Solfit
-  --project-id <id|KEY>       One project by id or key (e.g. SOL)
-  -w, --workspace <name>      One workspace, e.g. "Migrating Dragons" or personal
+  -p, --project <name>        Project (category) name, e.g. Acme Solar
+  --project-id <id|KEY>       One project by id or key (e.g. ASX)
+  -w, --workspace <name>      One workspace, e.g. "Northstar Workshop" or personal
   -e, --epic <title|id>       Tasks in an epic
   -g, --goal <title|id>       Tasks linked to one of your life goals
   --customer <name>           Customer/company tag
@@ -476,6 +915,8 @@ Filters (applied by the server):
   --mine                      Assigned to you (or unassigned and created by you)
   --unassigned                Nobody is assigned
   --assignee <who>            me, unassigned, mine_or_unassigned, a name or an email
+  --ref <url|kind:id>         Tasks carrying that ref, e.g. github.issue:acme/widgets#12
+  --ref-role <role>           With --ref: only as link, source, reported_by or about
 Filters (applied locally):
   --shared                    Only tasks in shared workspaces
   --no-epic, --no-goal, --no-category
@@ -483,7 +924,8 @@ Filters (applied locally):
 
 Examples:
   timdo list do --mine
-  timdo list do -w "Migrating Dragons" --assignee robin
+  timdo list do -w "Northstar Workshop" --assignee robin
+  timdo list all --ref https://github.com/acme/widgets/issues/12
   timdo --json list awaiting
 EOF
 }
@@ -491,6 +933,7 @@ EOF
 cmd_list() {
   local filter="all" category="" project_id="" workspace="" epic="" goal="" customer="" tag=""
   local related_to="" assignee="" shared=false no_epic=false no_goal=false no_category=false unlinked=""
+  local ref="" ref_role=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -511,6 +954,8 @@ cmd_list() {
       --no-goal) no_goal=true; shift ;;
       --no-category|--no-cat) no_category=true; shift ;;
       --unlinked) unlinked="$2"; shift 2 ;;
+      --ref) ref="${2:-}"; [[ -z "$ref" ]] && usage_die "Error: --ref needs a URL or kind:id, e.g. --ref forum.post:4411"; shift 2 ;;
+      --ref-role) need_value "$1" "${2:-}"; ref_role=$(normalise_role "$2"); shift 2 ;;
       do|delay|done|delegate|awaiting|all) filter="$1"; shift ;;
       *) usage_die "Unknown option for list: $1 (see: timdo list --help)" ;;
     esac
@@ -532,6 +977,9 @@ cmd_list() {
   if [[ -n "$assignee" ]]; then
     params+=("assignee=$(urlencode "$(resolve_user_anywhere "$assignee")")")
   fi
+  [[ -n "$ref_role" && -z "$ref" ]] && usage_die "Error: --ref-role only works with --ref <url|kind:id>."
+  [[ -n "$ref" ]] && params+=("ref=$(urlencode "$ref")")
+  [[ -n "$ref_role" ]] && params+=("role=$(urlencode "$ref_role")")
 
   local path="/projects"
   if [[ ${#params[@]} -gt 0 ]]; then
@@ -568,7 +1016,14 @@ cmd_list() {
   fi
 
   if [[ "$(echo "$selected" | jq 'length')" -eq 0 ]]; then
-    echo "No tasks found."
+    if [[ -n "$ref" ]]; then
+      local note=""
+      [[ -n "$ref_role" ]] && note=" as $ref_role"
+      [[ "$filter" != all ]] && note="$note with status $filter"
+      echo "No task you can see carries $ref$note."
+    else
+      echo "No tasks found."
+    fi
     return
   fi
 
@@ -589,7 +1044,7 @@ cmd_list() {
 cmd_get() {
   local id="${1:-}"
   if [[ -z "$id" || "$id" == "-h" || "$id" == "--help" ]]; then
-    echo "Usage: timdo get <id>   Show a task with its workspace, project, people, notes and activity"
+    echo "Usage: timdo get <id>   Show a task with its workspace, project, people, links, notes and activity"
     [[ -z "$id" ]] && exit 1 || exit 0
   fi
   local task full_id
@@ -634,9 +1089,24 @@ cmd_get() {
     row("Customer:"; .customer),
     row("Tags:"; .tags),
     row("Why:"; .reason),
-    row("Gmail thread:"; .gmailThreadId),
+    row("Gmail thread:"; .gmailThreadId as $g | if any((.refs // [])[]; .kind == "gmail.thread" and .ref == $g) then "" else $g end),
     row("Notes:"; .notes)
   ' --arg epic "$epic_title" --arg goal "$goal_title"
+
+  # Links to things outside TimDo, grouped by role (Source, About, Reported by, Link)
+  local refs
+  refs=$(echo "$task" | jq '.refs // []')
+  if [[ "$(echo "$refs" | jq 'length')" -gt 0 ]]; then
+    echo ""
+    echo "${B}Links ($(echo "$refs" | jq 'length'))${R}"
+    echo "$refs" | jqt '
+      ref_width as $cw
+      | sort_by(role_order) | group_by(role_order) | .[]
+      | if length > 3
+        then (.[0:2][] | ref_line($cw)),
+             ("  " + (.[0].role | role_label | pad(11)) + "  " + ("... and \(length - 2) more: timdo ref list \($id)" | paint("dim")))
+        else .[] | ref_line($cw) end' --arg id "${full_id:0:8}"
+  fi
 
   if [[ "$(echo "$linked" | jq 'length')" -gt 0 ]]; then
     echo ""
@@ -666,10 +1136,11 @@ usage_add() {
   cat <<'EOF'
 Usage: timdo add "Task title" -p <project> [options]
 
+  --title "..."                Give the title this way when it starts with a dash
   -p, --project <name>         Project (category) name. Mandatory unless --project-id is given.
                                A name already used in a shared workspace puts the task there;
                                a brand-new name creates the project in your personal workspace.
-  --project-id <id|KEY|path>   Exact project, e.g. SOL or "Migrating Dragons/Solfit"
+  --project-id <id|KEY|path>   Exact project, e.g. ASX or "Northstar Workshop/Acme Solar"
   --assign <who>               me (default), none, or a workspace member's name or email
   -e, --epic <title|id>        Epic
   -g, --goal <title|id>        One of your life goals (private to you)
@@ -682,7 +1153,107 @@ Usage: timdo add "Task title" -p <project> [options]
   --thread <threadId>          Gmail thread
   --customer <name>            Customer/company tag
   --tags <a,b>                 Comma-separated tags
+
+Links to things outside TimDo (each flag repeats; a URL or kind:id, see: timdo ref --help):
+  --ref <x>                    Related material, e.g. https://github.com/acme/widgets/issues/88
+  --source <x>                 Where the task came from, e.g. forum.post:4411. Only one task per
+                               workspace can have a given source; --on-duplicate says what happens
+                               when another task already has it.
+  --reported-by <x>            Who reported it, by their id in the other system, e.g. acme.member:123456
+  --about <x>                  The outside person or thing it concerns
+  --refs-json '<json>'         For scripts: [{"ref":"123456","kind":"acme.member","role":"reported_by","label":"..."}]
+Record people by their id in the other system, not by name or email.
+
+Duplicates:
+  --on-duplicate <mode>        When the --source is already tracked by another task:
+                                 error   (default) create nothing, fail and name that task
+                                 return  create nothing, print that task, exit 0
+                                 report  add this request's links and a "Reported again" note to
+                                         that task, print it, exit 0. Repeats add nothing twice.
+                               Retries with return or report are safe: one outside item, one task.
+  -y, --yes                    Don't ask about similar tasks
+
+On a terminal, add first looks for open tasks with a similar title and asks:
+  Create anyway? [y]es / [n]o / [1-3] add as a note to that task:
+(the default is no; a note carries the title, reason and notes you gave). With --yes, --json,
+or when piped, it never asks: it creates the task and lists similar ones on stderr, as
+  Similar open task: 3f2a91c0 "Broken offer page" (Acme Solar)
+Check without creating: timdo similar "Title" -p <project>
+
+Examples:
+  timdo add "Broken offer page" -p "Acme Solar" --source forum.post:4411 \
+        --reported-by acme.member:123456 --ref https://github.com/acme/widgets/issues/88
+  timdo add "Offer page shows no prices" -p "Acme Solar" --source forum.post:4412 \
+        --reported-by acme.member:123456 --on-duplicate report
 EOF
+}
+
+# similar_query <title> <projectId> <category> [limit]: the query string for GET /tasks/similar
+similar_query() {
+  local q="title=$(urlencode "$1")"
+  if [[ -n "$2" ]]; then q+="&projectId=$(urlencode "$2")"
+  elif [[ -n "$3" ]]; then q+="&category=$(urlencode "$3")"; fi
+  [[ -n "${4:-}" ]] && q+="&limit=$4"
+  echo "$q"
+}
+
+# note_instead <task json> <title> <reason> <notes> <thread> <refs json>: the person said the task
+# they were adding is already there, so put what they typed on it as a note (and add any links).
+note_instead() {
+  local task="$1" title="$2" reason="$3" notes="$4" thread="$5" refs="$6"
+  local full_id title_note note body result
+  full_id=$(echo "$task" | jq -r '.id')
+  title_note=$(echo "$task" | jqt '"\(.id[0:8]) \"\(.title // .project | oneline | safe)\""')
+  note="$title"
+  [[ -n "$reason" ]] && note+=$'\n'"$reason"
+  [[ -n "$notes" ]] && note+=$'\n'"$notes"
+  body=$(jq -n --arg note "$note" --arg t "$thread" '{note: $note, gmailThreadId: (if $t == "" then null else $t end)}')
+  result=$(api POST "/projects/$full_id/updates" -d "$body")
+
+  local ref_lines="" ref_failed=0 total i added
+  total=$(echo "$refs" | jq 'length')
+  for i in $(seq 0 $((total - 1))); do
+    if added=$(add_ref "$full_id" "$(echo "$refs" | jq -c ".[$i]")"); then
+      ref_lines+="$(echo "$added" | jqt 'ref_done_line')"$'\n'
+    else
+      ref_failed=$((ref_failed + 1))
+    fi
+  done
+
+  if text_out; then
+    echo "${GRN}Noted${R} on $title_note as $(echo "$result" | jq -r '.authorName // "you"'). Nothing new was created."
+    if [[ -n "$ref_lines" ]]; then printf '%s' "$ref_lines"; fi
+  else
+    echo "$result" | jq --arg id "$full_id" '. + {created: false, taskId: $id}'
+  fi
+  if [[ "$ref_failed" -gt 0 ]]; then
+    die "Error: $ref_failed of $total links could not be added to ${full_id:0:8} (see above). The note was saved. Do not repeat the add or note request; retry only failed refs with: timdo ref add ${full_id:0:8} <url-or-kind:id> [--role <role>]."
+  fi
+}
+
+# print_similar_hints <create response> <new id> <ids already shown>: similar-task hints on stderr for scripts and non-interactive users
+print_similar_hints() {
+  local created="$1" new_id="$2" shown="${3:-[]}" hints
+  hints=$(echo "$created" | jq -c --argjson shown "$shown" \
+    '[(.similar // [])[] | select(.id as $i | ($shown | index($i)) == null)]')
+  [[ "$(echo "$hints" | jq 'length')" -eq 0 ]] && return 0
+  local editable read_only
+  editable=$(echo "$hints" | jq '[.[] | select(.canEdit != false)] | length')
+  read_only=$(echo "$hints" | jq '[.[] | select(.canEdit == false)] | length')
+  {
+    echo "$hints" | jqt '.[] | similar_hint'
+    if [[ "$editable" -gt 0 ]]; then
+      echo "  Similarity is a suggestion, not proof of a duplicate. Review both tasks and get the user's explicit confirmation of the exact source and target before merging."
+      if [[ "$(echo "$hints" | jq 'length')" -eq 1 ]]; then
+        echo "  After that, run: timdo merge ${new_id:0:8} $(echo "$hints" | jq -r '.[0] | .shortId // .id[0:8]')"
+      else
+        echo "  After that, run: timdo merge ${new_id:0:8} <target-id>"
+      fi
+    fi
+    if [[ "$read_only" -gt 0 ]]; then
+      echo '  A match marked "view only" cannot take a note or be merged by you.'
+    fi
+  } >&2
 }
 
 # Resolve an assignee query for a project in a workspace. Prints a user id or "null".
@@ -724,10 +1295,38 @@ describe_task() {
 cmd_add() {
   local project="" reason="" status="do" priority=5 size="***" notes="" awaitUntil="" gmailThreadId=""
   local category="" project_id="" epic="" goal="" assign="" assign_set=false customer="" tags=""
+  local refs="[]" extra_refs="" on_duplicate="" assume_yes=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -h|--help) usage_add; exit 0 ;;
+      -y|--yes) assume_yes=true; shift ;;
+      --on-duplicate|--on-dup)
+        [[ -z "${2:-}" || "${2:-}" == -* ]] && usage_die "Error: $1 needs a mode: error, return or report (see: timdo add --help)."
+        on_duplicate=$(lower "$2")
+        case "$on_duplicate" in
+          error|return|report) ;;
+          *) usage_die "Error: --on-duplicate must be error, return or report, not \"$2\" (see: timdo add --help)." ;;
+        esac
+        shift 2 ;;
+      --on-duplicate=*|--on-dup=*)
+        on_duplicate=$(lower "${1#*=}")
+        case "$on_duplicate" in
+          error|return|report) ;;
+          *) usage_die "Error: --on-duplicate must be error, return or report, not \"${1#*=}\" (see: timdo add --help)." ;;
+        esac
+        shift ;;
+      --link|--unlink)
+        usage_die "Unknown option: $1. To link two tasks use: timdo ${1#--} <task> <task>. For links to things outside TimDo see: timdo ref --help" ;;
+      --ref|--source|--reported-by|--reported_by|--about)
+        [[ -z "${2:-}" ]] && usage_die "Error: $1 needs a URL or kind:id, e.g. $1 forum.post:4411"
+        refs=$(echo "$refs" | jq --argjson r "$(ref_input "$2" "$(ref_role_for_flag "$1")")" '. + [$r]'); shift 2 ;;
+      --refs-json)
+        extra_refs=$(refs_json_arg "${2:-}")
+        refs=$(echo "$refs" | jq --argjson r "$extra_refs" '. + $r'); shift 2 ;;
+      --title)
+        [[ -z "${2:-}" ]] && usage_die "Error: --title needs the task title."
+        project="$2"; shift 2 ;;
       --reason|-r) reason="$2"; shift 2 ;;
       --status|-s) status="$2"; shift 2 ;;
       --priority) priority="$2"; shift 2 ;;
@@ -788,6 +1387,38 @@ cmd_add() {
   [[ -n "$epic" ]] && epic_id=$(resolve_epic_id "$epic")
   [[ -n "$goal" ]] && goal_id=$(resolve_goal_id "$goal")
 
+  local has_source
+  has_source=$(echo "$refs" | jq -r 'if any(.[]; (.role // "" | ascii_downcase) == "source") then "yes" else "" end')
+  if [[ -n "$on_duplicate" && -z "$has_source" ]]; then
+    echo "Note: --on-duplicate only applies with --source (or a source in --refs-json), so it is ignored here." >&2
+  fi
+
+  # A person at a terminal is asked about similar open tasks before anything is created.
+  # Scripts (--json, piped, --yes) are never asked; --on-duplicate only controls source clashes.
+  local shown="[]"
+  if [[ "$assume_yes" != true ]] && is_text && can_prompt; then
+    local similar
+    if ! similar=$(api GET "/tasks/similar?$(similar_query "$project" "$resolved_project_id" "$category" 3)"); then
+      die "Could not check for similar tasks. Nothing was created. Re-run with --yes to create anyway."
+    fi
+    if ! jq -e 'type == "array"' >/dev/null <<<"$similar"; then
+      die "Could not check for similar tasks. Nothing was created. Re-run with --yes to create anyway."
+    fi
+    if [[ "$(echo "$similar" | jq 'length')" -gt 0 ]]; then
+      shown=$(echo "$similar" | jq -c '[.[].id]')
+      local choice
+      choice=$(ask_similar "$similar")
+      case "$choice" in
+        create) ;;
+        cancel) echo "Cancelled. Nothing was created."; exit 0 ;;
+        *)
+          note_instead "$(echo "$similar" | jq -c --argjson i "$choice" '.[$i - 1]')" \
+            "$project" "$reason" "$notes" "$gmailThreadId" "$refs"
+          return ;;
+      esac
+    fi
+  fi
+
   local body
   body=$(jq -n \
     --arg project "$project" --arg reason "$reason" --arg status "$status" \
@@ -812,15 +1443,38 @@ cmd_add() {
       goalId: (if $goalId == "" then null else $goalId end)
     }
     + (if $projectId != "" then {projectId: $projectId} else {} end)
-    + (if $assignSet then {assigneeId: (if $assigneeId == "null" or $assigneeId == "" then null else $assigneeId end)} else {} end)')
+    + (if $assignSet then {assigneeId: (if $assigneeId == "null" or $assigneeId == "" then null else $assigneeId end)} else {} end)
+    + (if ($refs | length) > 0 then {refs: $refs} else {} end)
+    + (if $onDuplicate != "" then {onDuplicate: $onDuplicate} else {} end)' \
+    --argjson refs "$refs" --arg onDuplicate "$on_duplicate")
 
   local created
+  [[ "$on_duplicate" != report ]] && CLASH_HINT="To add this report to that task instead: --on-duplicate report"
   created=$(api POST /projects -d "$body")
+  CLASH_HINT=""
+
+  # 200 with created: false means --on-duplicate return or report found the task with that source
+  if [[ "$(echo "$created" | jq -r '.created')" == "false" ]]; then
+    if text_out; then
+      echo "$created" | jqt '"Already tracked as \((.id // "")[0:8]) \"\((.project // .title) | oneline | safe)\""'
+      if [[ "$(echo "$created" | jq -r '.reported // false')" == "true" ]]; then
+        echo "  Your report is on that task now (sending the same one again adds nothing)."
+      else
+        echo "  Nothing was created or changed."
+      fi
+    else
+      echo "$created" | jq '.'
+    fi
+    return
+  fi
+
   if text_out; then
     echo "${GRN}Added${R} $(echo "$created" | describe_task)"
+    echo "$created" | jqt '(.refs // []) | sort_by(role_order) | .[] | ref_done_line'
   else
     echo "$created" | jq '.'
   fi
+  print_similar_hints "$created" "$(echo "$created" | jq -r '.id')" "$shown"
 }
 
 usage_update() {
@@ -829,7 +1483,7 @@ Usage: timdo update <id> [options]
 
   --project "..."              Rename the task (historical flag name)
   -p, --category <name>        Move to another project by name
-  --project-id <id|KEY|path>   Move to an exact project, e.g. SOL or "Migrating Dragons/Solfit"
+  --project-id <id|KEY|path>   Move to an exact project, e.g. ASX or "Northstar Workshop/Acme Solar"
   --assign <who>               me, none, or a workspace member's name or email
   --claim                      Assign it to yourself
   --unassign                   Leave it unassigned
@@ -839,6 +1493,15 @@ Usage: timdo update <id> [options]
   -e, --epic <title|id|none>   Epic ("none" clears it)
   -g, --goal <title|id|none>   Your life goal ("none" clears it)
   --thread <threadId>          Gmail thread
+
+Links to things outside TimDo (each flag repeats; a URL or kind:id, see: timdo ref --help).
+They are added to what the task already has, never replacing it:
+  --ref <x>  --source <x>  --reported-by <x>  --about <x>
+  --refs-json '<json>'         For scripts: [{"ref":"123456","kind":"acme.member","role":"about"}]
+  --unref <x>                  Remove a ref (every role it has on this task), or a ref id from: timdo ref list
+
+Example:
+  timdo update 3f2a91c0 --ref https://github.com/acme/widgets/pull/7 --unref github.issue:acme/widgets#12
 
 Viewers cannot edit; the API refuses with "View only: ...".
 EOF
@@ -852,10 +1515,22 @@ cmd_update() {
   fi
   shift
   local body="{}" assign="" assign_set=false project_q=""
+  local refs="[]" extra_refs="" unrefs=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -h|--help) usage_update; exit 0 ;;
+      --link|--unlink)
+        usage_die "Unknown option: $1. To link two tasks use: timdo ${1#--} <task> <task>. For links to things outside TimDo see: timdo ref --help" ;;
+      --ref|--source|--reported-by|--reported_by|--about)
+        [[ -z "${2:-}" ]] && usage_die "Error: $1 needs a URL or kind:id, e.g. $1 forum.post:4411"
+        refs=$(echo "$refs" | jq --argjson r "$(ref_input "$2" "$(ref_role_for_flag "$1")")" '. + [$r]'); shift 2 ;;
+      --refs-json)
+        extra_refs=$(refs_json_arg "${2:-}")
+        refs=$(echo "$refs" | jq --argjson r "$extra_refs" '. + $r'); shift 2 ;;
+      --unref)
+        [[ -z "${2:-}" ]] && usage_die "Error: --unref needs a URL, kind:id or ref id, e.g. --unref forum.post:4411"
+        unrefs+=("$2"); shift 2 ;;
       --project|--title) body=$(echo "$body" | jq --arg v "$2" '. + {project: $v}'); shift 2 ;;
       --reason|-r) body=$(echo "$body" | jq --arg v "$2" '. + {reason: $v}'); shift 2 ;;
       --status|-s) body=$(echo "$body" | jq --arg v "$2" '. + {status: $v}'); shift 2 ;;
@@ -923,7 +1598,8 @@ cmd_update() {
     body=$(echo "$body" | jq --arg v "$assignee_id" '. + {assigneeId: (if $v == "null" then null else $v end)}')
   fi
 
-  if [[ "$body" == "{}" ]]; then
+  local ref_count=$(( $(echo "$refs" | jq 'length') + ${#unrefs[@]} ))
+  if [[ "$body" == "{}" && "$ref_count" -eq 0 ]]; then
     usage_die "Nothing to update. See: timdo update --help"
   fi
 
@@ -945,9 +1621,42 @@ cmd_update() {
     body=$(echo "$body" | jq 'del(.awaitUntil)')
   fi
 
-  local after
-  after=$(api PUT "/projects/$full_id" -d "$body")
-  cache_clear
+  local after="$before" put_sent=false
+  if [[ "$body" != "{}" ]]; then
+    after=$(api PUT "/projects/$full_id" -d "$body")
+    put_sent=true
+    cache_clear
+  fi
+
+  # Refs go through their own endpoint after the task change: removals first, then additions.
+  # One failure does not stop the rest; each error is printed and the exit code is 1.
+  local ref_lines="" ref_failed=0
+  if [[ "$ref_count" -gt 0 ]]; then
+    local u removed added i line
+    for u in ${unrefs[@]+"${unrefs[@]}"}; do
+      if removed=$(remove_ref "$full_id" "$u"); then
+        line=$(echo "$removed" | jqt '.[] | "  Removed " + (.role | role_noun) + " " + ref_canonical')
+        [[ -n "$line" ]] && ref_lines+="$line"$'\n'
+      else
+        ref_failed=$((ref_failed + 1))
+      fi
+    done
+    for i in $(seq 0 $(( $(echo "$refs" | jq 'length') - 1 ))); do
+      if added=$(add_ref "$full_id" "$(echo "$refs" | jq -c ".[$i]")"); then
+        ref_lines+="$(echo "$added" | jqt 'ref_done_line')"$'\n'
+      else
+        ref_failed=$((ref_failed + 1))
+      fi
+    done
+    # Show the task as it is now, refs included
+    after=$( (api GET "/projects/$full_id") 2>/dev/null || echo "$after")
+    cache_clear
+  fi
+
+  # Nothing was sent but link changes, and every one failed: nothing changed, so say only that
+  if [[ "$put_sent" == false && "$ref_failed" -gt 0 && "$ref_failed" -eq "$ref_count" ]]; then
+    die "Error: $ref_failed of $ref_count link changes failed (see above). Nothing was changed."
+  fi
 
   if text_out; then
     local changes
@@ -963,9 +1672,17 @@ cmd_update() {
             else "  \($label): \($a[$k] | show) -> \($b[$k] | show)" end)
       | .[]')
     echo "${GRN}Updated${R} $(echo "$after" | describe_task)"
-    if [[ -n "$changes" ]]; then echo "$changes"; else echo "  (no changes)"; fi
+    if [[ -n "$changes" ]]; then echo "$changes"; fi
+    if [[ -n "$ref_lines" ]]; then printf '%s' "$ref_lines"; fi
+    if [[ -z "$changes" && -z "$ref_lines" ]]; then echo "  (no changes)"; fi
   else
     echo "$after" | jq '.'
+  fi
+  if [[ "$ref_failed" -gt 0 ]]; then
+    if [[ "$put_sent" == true ]]; then
+      die "Error: $ref_failed of $ref_count link changes failed (see above). Everything else was saved."
+    fi
+    die "Error: $ref_failed of $ref_count link changes failed (see above). The others were saved."
   fi
 }
 
@@ -1394,6 +2111,7 @@ cmd_search() {
       -h|--help)
         echo "Usage: timdo search \"query\" [--all] [--customer \"...\"]"
         echo "  Full-text search across every workspace you can see. --all includes done tasks."
+        echo "  A URL or kind:id (e.g. github.issue:acme/widgets#12) lists tasks carrying that ref first."
         exit 0 ;;
       --all|-a) include_done=true; shift ;;
       --customer) customer="$2"; shift 2 ;;
@@ -1435,6 +2153,7 @@ cmd_search() {
       + (if (where) != "" then "  " + (where | paint("cyan")) else "" end)
       + (if .isShared == true then "  " + (who | paint("yellow")) else "" end)
       + (if .customer then "  " + ("customer: \(.customer)" | paint("dim")) else "" end)
+      + (if .matchedRef == true then "  " + ("carries this ref" | paint("green")) else "" end)
       + (if .snippet then "\n             " + ("Match: " + (.snippet | gsub("<[^>]*>"; "") | oneline) | paint("dim")) else "" end)
       + (if (.linkedTasks // []) | length > 0 then "\n             Linked: " + ([.linkedTasks[] | "[\(.relationType)] \(.title) (\(.shortId))"] | join(", ")) else "" end)'
 }
@@ -1648,7 +2367,7 @@ usage_activity() {
 Usage: timdo activity [--task <id>] [--epic <id|title>] [--project <name|KEY>] [--workspace <name>] [-n N]
 
 Who did what, newest first, across everything you can see (default 20 entries).
-  08 Oct 14:02  Robin Fairweather  Moved "Fix inverter" from Do to Done  [Solfit]
+  08 Oct 14:02  Robin Fairweather  Moved "Fix inverter" from Do to Done  [Acme Solar]
 EOF
 }
 
@@ -1810,13 +2529,13 @@ Life goals stay private to each person.
   accept <token>                         Accept an invite token
 
 <workspace> is a name, "personal", an id or id prefix. <project> is a name,
-a key such as SOL, or "Workspace/Project".
+a key such as ASX, or "Workspace/Project".
 
 Examples:
   timdo ws list
-  timdo ws show "Migrating Dragons"
-  timdo ws share "Migrating Dragons" robin@example.com --role viewer
-  timdo ws move-project Solfit "Migrating Dragons" --yes
+  timdo ws show "Northstar Workshop"
+  timdo ws share "Northstar Workshop" robin@example.com --role viewer
+  timdo ws move-project Acme Solar "Northstar Workshop" --yes
 EOF
 }
 
@@ -2126,7 +2845,10 @@ TASKS:
   list [status] [opts]         List tasks (all, do, delay, done, delegate, awaiting)
                                --mine --unassigned --assignee <who> -w <workspace> -p <project>
   get <id>                     Task with workspace, project, people, notes and recent activity
-  add "title" -p <project>     Create a task (--assign <who>, --project-id <KEY>, ...)
+  add "title" -p <project>     Create a task (--title for a dash-leading title, --assign, --project-id, ...)
+                               A terminal checks similar open tasks and offers to add a note instead;
+                               --yes or --json skips the prompt. --on-duplicate handles source clashes.
+  similar "title" [-p project] Open tasks that look like this title, without creating anything
   update <id> [opts]           Edit a task (--assign <who>, --claim, --unassign, --done, ...)
   delete <id>                  Soft-delete a task
   add-note <id> "note"         Add a dated note signed with your name (alias: log)
@@ -2134,8 +2856,23 @@ TASKS:
   merge <src> <tgt> [--yes]    Merge source task into target (target survives)
   link <id> <target> [opts]    Link tasks (--type relates_to|blocks|blocked_by|duplicates)
   unlink <id> <target>         Remove a link
-  search <query> [opts]        Full-text search (--all, --customer <name>)
+  search <query> [opts]        Full-text search (--all, --customer <name>); a pasted URL or
+                               kind:id finds tasks carrying that ref first
   activity [opts]              Who did what, newest first (--task, --epic, --project, --workspace, -n)
+
+LINKS TO THINGS OUTSIDE TIMDO (refs):
+  A ref is a URL or kind:id with a role: link (default), source (where the task came from,
+  one task per workspace), reported_by (who reported it) or about (who or what it concerns).
+    github.issue:acme/widgets#12   forum.post:4411   acme.member:123456
+  Record people by their id in the other system, not by name or email.
+  ref list <id>                Links on a task
+  ref add <id> <x> [--role r] [--label "..."]    Adding the same ref twice changes nothing
+  ref rm <id> <x> [--role r]   Remove by URL, kind:id or ref id
+  find <x> [--role r]          Tasks carrying a ref, any status (same as: list all --ref <x>)
+  add/update ... --ref <x> --source <x> --reported-by <x> --about <x>   (update also: --unref <x>)
+  add ... --source <x> --on-duplicate error|return|report
+                               When that source already has a task: fail (default), print that
+                               task, or add this report to it. Safe to retry: one item, one task.
 
 EPICS, GOALS AND OVERVIEWS:
   epic list|get|add|update|delete   Epics (see: timdo epic --help)
@@ -2154,20 +2891,25 @@ WORKSPACES AND SHARING (alias: ws, org):
   workspace move-project <project> <ws> --yes
   whoami                       Who the CLI is acting as, and your workspaces
 
-Run `timdo <command> --help` for the options of list, add, update, epic, workspace,
-activity, audit and search.
+Run `timdo <command> --help` for the options of list, add, update, ref, find, similar,
+epic, workspace, activity, audit and search.
 
 EXAMPLES:
   timdo list do --mine
-  timdo list do -w "Migrating Dragons" --assignee robin
-  timdo add "Check inverter firmware" -p Solfit --assign robin@example.com
+  timdo list do -w "Northstar Workshop" --assignee robin
+  timdo add "Check inverter firmware" -p Acme Solar --assign robin@example.com
   timdo update ea9f --claim --do
   timdo get ea9f
-  timdo activity --project Solfit -n 10
-  timdo ws share "Migrating Dragons" robin@example.com --role viewer
+  timdo activity --project Acme Solar -n 10
+  timdo ws share "Northstar Workshop" robin@example.com --role viewer
   timdo --as robin@example.com list do --mine
   timdo add "Renew passport" -p Personal --status awaiting --await-until 2026-08-03
   timdo merge ea9f 1234 --yes
+  timdo add "Broken offer page" -p "Acme Solar" --source forum.post:4411 --reported-by acme.member:123456
+  timdo ref add ea9f https://github.com/acme/widgets/issues/12
+  timdo find forum.post:4411 --role source
+  timdo similar "Fix the offer page" -p "Acme Solar"
+  timdo add "Offer page shows no prices" -p "Acme Solar" --source forum.post:4412 --on-duplicate report
 HELP
 }
 
@@ -2189,6 +2931,9 @@ case "${1:-help}" in
   customers)           shift; cmd_customers "$@" ;;
   link)                shift; cmd_link "$@" ;;
   unlink)              shift; cmd_unlink "$@" ;;
+  ref|refs)            shift; cmd_ref "$@" ;;
+  find)                shift; cmd_find "$@" ;;
+  similar)             shift; cmd_similar "$@" ;;
   activity|history)    shift; cmd_activity "$@" ;;
   whoami|me)           shift; cmd_whoami "$@" ;;
   login)               shift; cmd_login "$@" ;;

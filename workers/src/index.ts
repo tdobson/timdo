@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import * as schema from './db/schema';
+import { onApiError } from './middleware/apiErrors';
 import { combinedAuthMiddleware, internalAuthMiddleware } from './middleware/auth';
 import activityApp from './routes/activity';
 import aiApp from './routes/ai';
@@ -12,9 +13,9 @@ import goalsApp from './routes/goals';
 import organisationsApp from './routes/organisations';
 import posterApp from './routes/poster';
 import projectsApp from './routes/projects';
+import refsApp from './routes/refs';
 import tasksApp from './routes/tasks';
 import userApp from './routes/user';
-import { AccessError } from './services/accessService';
 import { processAwaitingReturns } from './services/projectService';
 
 export interface Env {
@@ -38,14 +39,8 @@ declare module 'hono' {
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Permission problems surface as 403/404 with a readable message, wherever they're thrown
-app.onError((err, c) => {
-  if (err instanceof AccessError) {
-    return c.json({ error: err.message }, err.status);
-  }
-  console.error('[Unhandled]', err);
-  return c.json({ error: 'Internal Server Error' }, 500);
-});
+// Permission and ref problems become readable 4xx answers, wherever they're thrown
+app.onError(onApiError);
 
 // Debugging middleware to log every request
 app.use('*', async (c, next) => {
@@ -83,6 +78,7 @@ app.use('/api/v2/ai/*', combinedAuthMiddleware);
 app.use('/api/v2/poster/*', combinedAuthMiddleware);
 app.use('/api/v2/activity/*', combinedAuthMiddleware);
 app.use('/api/v2/activity', combinedAuthMiddleware);
+app.use('/api/v2/refs/*', combinedAuthMiddleware);
 
 // Register route handlers.
 app.route('/api/v2/organisations', organisationsApp);
@@ -95,6 +91,7 @@ app.route('/api/v2/users', userApp);
 app.route('/api/v2/ai', aiApp);
 app.route('/api/v2/poster', posterApp);
 app.route('/api/v2/activity', activityApp);
+app.route('/api/v2/refs', refsApp);
 
 // Manual trigger for processing awaiting returns (useful for testing and CLI)
 app.post('/api/v2/projects/process-awaiting', internalAuthMiddleware, async (c) => {

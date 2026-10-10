@@ -58,7 +58,7 @@ test('node mcp/index.js answers initialize and lists the timdo tools', async () 
 
   assert.equal(replies.get(1).result.serverInfo.name, 'timdo');
   const names = replies.get(2).result.tools.map((t) => t.name);
-  for (const n of ['timdo_list_tasks', 'timdo_add_task', 'timdo_whoami', 'timdo_share_workspace']) {
+  for (const n of ['timdo_list_tasks', 'timdo_add_task', 'timdo_whoami', 'timdo_share_workspace', 'timdo_add_ref', 'timdo_find_by_ref']) {
     assert.ok(names.includes(n), `${n} is listed`);
   }
   assert.ok(names.every((n) => n.startsWith('timdo_')), 'only timdo tools are listed');

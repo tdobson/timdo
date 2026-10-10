@@ -13,15 +13,15 @@ jest.mock('../../app/hooks/useOrganisationQueries', () => ({
 const mockSearchResults = [
   {
     id: 'user-1',
-    name: 'Sarah Jenkins',
-    email: 'sarah@xebit.io',
+    name: 'Casey Example',
+    email: 'casey@example.com',
     isMember: true,
     role: 'admin' as const,
   },
   {
     id: 'user-2',
-    name: 'Alex Rivera',
-    email: 'alex@example.com',
+    name: 'Jordan Example',
+    email: 'jordan@example.com',
     isMember: false,
   },
 ];
@@ -32,10 +32,14 @@ describe('MemberAutocomplete', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (useSearchUsers as jest.Mock).mockReturnValue({
-      data: mockSearchResults,
+    (useSearchUsers as jest.Mock).mockImplementation((_orgId: string, query: string) => ({
+      data: query
+        ? mockSearchResults.filter((user) =>
+            `${user.name} ${user.email}`.toLowerCase().includes(query.toLowerCase())
+          )
+        : [],
       isLoading: false,
-    });
+    }));
   });
 
   const renderComponent = () =>
@@ -59,21 +63,23 @@ describe('MemberAutocomplete', () => {
   it('shows autocomplete search results when typing', async () => {
     renderComponent();
     const input = screen.getByPlaceholderText('Search user by name/email or enter new email...');
-    await userEvent.type(input, 'alex');
+    await userEvent.type(input, 'jordan');
 
     await waitFor(() => {
-      expect(screen.getByText('Alex Rivera')).toBeInTheDocument();
-      expect(screen.getByText('alex@example.com')).toBeInTheDocument();
+      expect(useSearchUsers).toHaveBeenLastCalledWith('org-123', 'jordan');
+      expect(screen.getByText('Jordan Example')).toBeInTheDocument();
+      expect(screen.getByText('jordan@example.com')).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('user-option-user-1')).not.toBeInTheDocument();
   });
 
   it('invokes onSelectExistingUser when clicking a non-member search result', async () => {
     renderComponent();
     const input = screen.getByPlaceholderText('Search user by name/email or enter new email...');
-    await userEvent.type(input, 'alex');
+    await userEvent.type(input, 'jordan');
 
     await waitFor(() => {
-      expect(screen.getByText('Alex Rivera')).toBeInTheDocument();
+      expect(screen.getByText('Jordan Example')).toBeInTheDocument();
     });
 
     const userOption = screen.getByTestId('user-option-user-2');

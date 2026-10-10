@@ -1,7 +1,9 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import * as schema from '../db/schema';
+import { parseRef } from '../lib/refs';
 import { getAccessibleProjects, getUserNames } from './accessService';
+import { taskHasRef } from './refService';
 
 type DB = DrizzleD1Database<typeof schema>;
 
@@ -22,6 +24,8 @@ export interface SearchResult {
   orgName: string | null;
   assigneeId: string | null;
   assigneeName: string | null;
+  /** Set when the query was a URL or kind:ref and this task carries it exactly. */
+  matchedRef?: true;
 }
 
 export async function searchTasksForUser(
@@ -51,47 +55,76 @@ export async function searchTasksForUser(
     .map((w) => `"${w}"*`)
     .join(' ');
 
-  if (!sanitized) {
-    return [];
-  }
-
-  const conditions = [
-    sql`Tasks_FTS MATCH ${sanitized}`,
+  const baseConditions = [
     eq(schema.tasks.isDeleted, false),
     inArray(schema.tasks.projectId, accessibleProjectIds),
   ];
-  if (!includeDone) {
-    conditions.push(sql`${schema.tasks.status} != 'done'`);
-  }
   if (customerFilter) {
-    conditions.push(sql`lower(${schema.tasks.customer}) = lower(${customerFilter.trim()})`);
+    baseConditions.push(sql`lower(${schema.tasks.customer}) = lower(${customerFilter.trim()})`);
+  }
+  const conditions = includeDone
+    ? baseConditions
+    : [...baseConditions, sql`${schema.tasks.status} != 'done'`];
+
+  // A pasted URL or kind:id finds the tasks carrying it first, done ones included (like
+  // `?ref=` and `timdo find`): an exact link is a lookup, and each result shows its status
+  const parsed = parseRef(cleanQuery);
+  const refMatches = parsed.ok
+    ? await db
+        .select({
+          id: schema.tasks.id,
+          title: schema.tasks.title,
+          reason: schema.tasks.reason,
+          status: schema.tasks.status,
+          priority: schema.tasks.priority,
+          customer: schema.tasks.customer,
+          tags: schema.tasks.tags,
+          projectId: schema.tasks.projectId,
+          assigneeId: schema.tasks.assigneeId,
+        })
+        .from(schema.tasks)
+        .where(and(taskHasRef(parsed.value), ...baseConditions))
+        .orderBy(sql`${schema.tasks.updatedAt} desc`)
+        .limit(30)
+    : [];
+
+  if (!sanitized && refMatches.length === 0) {
+    return [];
   }
 
-  const rawResults = await db
-    .select({
-      id: schema.tasks.id,
-      title: schema.tasks.title,
-      reason: schema.tasks.reason,
-      status: schema.tasks.status,
-      priority: schema.tasks.priority,
-      customer: schema.tasks.customer,
-      tags: schema.tasks.tags,
-      projectId: schema.tasks.projectId,
-      assigneeId: schema.tasks.assigneeId,
-      snippet: sql<string>`snippet(Tasks_FTS, -1, '<b>', '</b>', '...', 10)`,
-      score: sql<number>`bm25(Tasks_FTS)`,
-    })
-    .from(schema.tasksFts)
-    .innerJoin(schema.tasks, eq(schema.tasksFts.taskId, schema.tasks.id))
-    .where(and(...conditions))
-    .orderBy(sql`bm25(Tasks_FTS)`)
-    .limit(30);
+  const ftsResults = !sanitized
+    ? []
+    : await db
+        .select({
+          id: schema.tasks.id,
+          title: schema.tasks.title,
+          reason: schema.tasks.reason,
+          status: schema.tasks.status,
+          priority: schema.tasks.priority,
+          customer: schema.tasks.customer,
+          tags: schema.tasks.tags,
+          projectId: schema.tasks.projectId,
+          assigneeId: schema.tasks.assigneeId,
+          snippet: sql<string>`snippet(Tasks_FTS, -1, '<b>', '</b>', '...', 10)`,
+          score: sql<number>`bm25(Tasks_FTS)`,
+        })
+        .from(schema.tasksFts)
+        .innerJoin(schema.tasks, eq(schema.tasksFts.taskId, schema.tasks.id))
+        .where(and(sql`Tasks_FTS MATCH ${sanitized}`, ...conditions))
+        .orderBy(sql`bm25(Tasks_FTS)`)
+        .limit(30);
+
+  const matchedIds = new Set(refMatches.map((r) => r.id));
+  const rawResults = [
+    ...refMatches.map((r) => ({ ...r, snippet: undefined, score: 0, matchedRef: true as const })),
+    ...(ftsResults || []).filter((r) => !matchedIds.has(r.id)),
+  ].slice(0, 30);
 
   const names = await getUserNames(
     db,
     rawResults.map((r) => r.assigneeId)
   );
-  return (rawResults || []).map((r: any) => ({
+  return rawResults.map((r: any) => ({
     id: r.id,
     shortId: r.id.slice(0, 8),
     title: r.title,
@@ -108,5 +141,6 @@ export async function searchTasksForUser(
     orgName: projectsById.get(r.projectId)?.orgName ?? null,
     assigneeId: r.assigneeId,
     assigneeName: r.assigneeId ? (names.get(r.assigneeId) ?? null) : null,
+    ...(r.matchedRef ? { matchedRef: true as const } : {}),
   }));
 }

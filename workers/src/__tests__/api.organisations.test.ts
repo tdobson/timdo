@@ -63,8 +63,8 @@ describe('Organisations API Routes', () => {
     it('creates organisation and returns 201', async () => {
       const newOrg = {
         id: 'org-2',
-        name: 'XEBIT',
-        slug: 'xebit',
+        name: 'Northstar Workshop',
+        slug: 'northstar-workshop',
         createdBy: testUserId,
         role: 'owner',
       };
@@ -74,8 +74,8 @@ describe('Organisations API Routes', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: 'XEBIT',
-          slug: 'xebit',
+          name: 'Northstar Workshop',
+          slug: 'northstar-workshop',
         }),
       });
 
@@ -85,8 +85,8 @@ describe('Organisations API Routes', () => {
       expect(organisationService.createOrganisation).toHaveBeenCalledWith(
         expect.anything(),
         testUserId,
-        'XEBIT',
-        'xebit'
+        'Northstar Workshop',
+        'northstar-workshop'
       );
     });
 
@@ -95,7 +95,7 @@ describe('Organisations API Routes', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          slug: 'xebit',
+          slug: 'northstar-workshop',
         }),
       });
 
@@ -107,8 +107,8 @@ describe('Organisations API Routes', () => {
     it('returns organisation by ID if user has access', async () => {
       const mockOrg = {
         id: 'org-1',
-        name: 'XEBIT',
-        slug: 'xebit',
+        name: 'Northstar Workshop',
+        slug: 'northstar-workshop',
         createdBy: testUserId,
         role: 'owner',
       };
@@ -139,8 +139,8 @@ describe('Organisations API Routes', () => {
           orgId: 'org-1',
           userId: testUserId,
           role: 'owner',
-          userName: 'Tim Dobson',
-          userEmail: 'tim@example.com',
+          userName: 'Casey Example',
+          userEmail: 'casey@example.test',
         },
       ];
       vi.mocked(organisationService.getOrganisationMembers).mockResolvedValueOnce(
@@ -162,8 +162,8 @@ describe('Organisations API Routes', () => {
       const searchResults = [
         {
           id: 'user-2',
-          name: 'Sarah Jenkins',
-          email: 'sarah@xebit.io',
+          name: 'Taylor Example',
+          email: 'taylor@example.test',
           isMember: false,
         },
       ];
@@ -171,14 +171,14 @@ describe('Organisations API Routes', () => {
         searchResults as any
       );
 
-      const res = await app.request('/api/v2/organisations/org-1/users/search?q=sarah');
+      const res = await app.request('/api/v2/organisations/org-1/users/search?q=taylor');
       expect(res.status).toBe(200);
       const data = (await res.json()) as any;
       expect(data).toEqual(searchResults);
       expect(organisationService.searchUsersForAutocomplete).toHaveBeenCalledWith(
         expect.anything(),
         expect.any(String),
-        'sarah',
+        'taylor',
         'org-1'
       );
     });
@@ -189,7 +189,7 @@ describe('Organisations API Routes', () => {
       const mockInvite = {
         status: 'invited' as const,
         id: 'invite-1',
-        email: 'sarah@xebit.io',
+        email: 'taylor@example.test',
         role: 'member' as const,
         token: 'invite-token-abc',
         expiresAt: new Date().toISOString(),
@@ -198,7 +198,7 @@ describe('Organisations API Routes', () => {
 
       const res = await app.request(
         '/api/v2/organisations/org-1/invites',
-        json({ email: 'sarah@xebit.io', role: 'member' })
+        json({ email: 'taylor@example.test', role: 'member' })
       );
 
       expect(res.status).toBe(201);
@@ -207,7 +207,7 @@ describe('Organisations API Routes', () => {
         expect.anything(),
         testUserId,
         'org-1',
-        'sarah@xebit.io',
+        'taylor@example.test',
         'member'
       );
     });
@@ -216,15 +216,15 @@ describe('Organisations API Routes', () => {
       const added = {
         status: 'added' as const,
         userId: 'user-2',
-        name: 'Sarah',
-        email: 'sarah@xebit.io',
+        name: 'Taylor Example',
+        email: 'taylor@example.test',
         role: 'viewer' as const,
       };
       vi.mocked(organisationService.inviteMember).mockResolvedValueOnce(added);
 
       const res = await app.request(
         '/api/v2/organisations/org-1/invites',
-        json({ email: 'sarah@xebit.io', role: 'viewer' })
+        json({ email: 'taylor@example.test', role: 'viewer' })
       );
       expect(res.status).toBe(201);
       expect(await res.json()).toEqual(added);
@@ -234,14 +234,14 @@ describe('Organisations API Routes', () => {
       const already = {
         status: 'already_member' as const,
         userId: 'user-2',
-        email: 'sarah@xebit.io',
+        email: 'taylor@example.test',
         role: 'member' as const,
       };
       vi.mocked(organisationService.inviteMember).mockResolvedValueOnce(already);
 
       const res = await app.request(
         '/api/v2/organisations/org-1/invites',
-        json({ email: 'sarah@xebit.io' })
+        json({ email: 'taylor@example.test' })
       );
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual(already);
@@ -250,7 +250,7 @@ describe('Organisations API Routes', () => {
         expect.anything(),
         testUserId,
         'org-1',
-        'sarah@xebit.io',
+        'taylor@example.test',
         'member'
       );
     });
@@ -262,7 +262,7 @@ describe('Organisations API Routes', () => {
 
       const res = await app.request(
         '/api/v2/organisations/org-1/invites',
-        json({ email: 'sarah@xebit.io', role: 'member' })
+        json({ email: 'taylor@example.test', role: 'member' })
       );
 
       expect(res.status).toBe(403);
@@ -276,7 +276,7 @@ describe('Organisations API Routes', () => {
       );
       const res = await app.request(
         '/api/v2/organisations/org-x/invites',
-        json({ email: 'sarah@xebit.io' })
+        json({ email: 'taylor@example.test' })
       );
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: 'Workspace not found' });
@@ -290,7 +290,7 @@ describe('Organisations API Routes', () => {
         (
           await app.request(
             '/api/v2/organisations/org-1/invites',
-            json({ email: 'sarah@xebit.io', role: 'owner' })
+            json({ email: 'taylor@example.test', role: 'owner' })
           )
         ).status
       ).toBe(400);
@@ -479,14 +479,14 @@ describe('Organisations API Routes', () => {
       vi.mocked(organisationService.addProject).mockResolvedValueOnce({ id: 'p-1' } as any);
       const res = await app.request(
         '/api/v2/organisations/org-1/projects',
-        json({ name: 'Solfit', description: 'Roofing' })
+        json({ name: 'Acme Solar', description: 'Roofing' })
       );
       expect(res.status).toBe(201);
       expect(organisationService.addProject).toHaveBeenCalledWith(
         expect.anything(),
         testUserId,
         'org-1',
-        'Solfit',
+        'Acme Solar',
         'Roofing'
       );
     });

@@ -141,7 +141,7 @@ describe('Mutation Gauntlet: Multi-User Collaboration State Mutations', () => {
       id: 'task-303',
       projectId: 'proj-valid-1',
       reporterId: 'user-alice',
-      assigneeId: 'user-sarah',
+      assigneeId: 'user-taylor',
       title: 'Delegated Task',
       status: 'do',
     };
@@ -151,32 +151,32 @@ describe('Mutation Gauntlet: Multi-User Collaboration State Mutations', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        assigneeId: 'user-sarah',
+        assigneeId: 'user-taylor',
       }),
     });
 
     expect(assignRes.status).toBe(200);
     const assignBody: any = await assignRes.json();
-    expect(assignBody.assigneeId).toBe('user-sarah');
+    expect(assignBody.assigneeId).toBe('user-taylor');
     expect(taskService.assignTask).toHaveBeenCalledWith(
       expect.anything(),
       'user-alice',
       'task-303',
-      'user-sarah'
+      'user-taylor'
     );
 
-    // Switch context to teammate (user-sarah)
-    activeUserId = 'user-sarah';
+    // Switch context to teammate (user-taylor)
+    activeUserId = 'user-taylor';
     vi.mocked(taskService.getTasksForUser).mockResolvedValueOnce([reassignedTask] as any);
 
     const mineRes = await app.request('/api/v2/tasks?mine=true');
     expect(mineRes.status).toBe(200);
     const mineBody: any = await mineRes.json();
     expect(mineBody).toHaveLength(1);
-    expect(mineBody[0].assigneeId).toBe('user-sarah');
+    expect(mineBody[0].assigneeId).toBe('user-taylor');
     expect(taskService.getTasksForUser).toHaveBeenCalledWith(
       expect.anything(),
-      'user-sarah',
+      'user-taylor',
       expect.objectContaining({
         mineOnly: true,
       })
@@ -290,7 +290,7 @@ describe('Mutation Gauntlet: Multi-User Collaboration State Mutations', () => {
     activeUserId = 'user-carol';
     vi.mocked(organisationService.acceptInvite).mockResolvedValueOnce({
       success: true,
-      orgId: 'org-xebit',
+      orgId: 'org-northstar',
       role: 'member',
     } as any);
 
@@ -305,7 +305,7 @@ describe('Mutation Gauntlet: Multi-User Collaboration State Mutations', () => {
     expect(acceptRes.status).toBe(200);
     const acceptBody: any = await acceptRes.json();
     expect(acceptBody.success).toBe(true);
-    expect(acceptBody.orgId).toBe('org-xebit');
+    expect(acceptBody.orgId).toBe('org-northstar');
     expect(acceptBody.role).toBe('member');
     expect(organisationService.acceptInvite).toHaveBeenCalledWith(
       expect.anything(),

@@ -27,7 +27,7 @@ describe('Epics API Routes', () => {
           id: 'epic-1',
           userId: 'test-user-id',
           title: 'Acme Solar Implementation',
-          category: 'Solfit',
+          category: 'Acme Solar',
           status: 'active',
           totalTasks: 5,
           doneTasks: 3,
@@ -50,12 +50,12 @@ describe('Epics API Routes', () => {
     it('passes category filter query param', async () => {
       vi.mocked(epicService.getEpicsForUser).mockResolvedValueOnce([]);
 
-      const res = await app.request('/api/v2/epics?category=Solfit');
+      const res = await app.request('/api/v2/epics?category=Acme Solar');
       expect(res.status).toBe(200);
       expect(epicService.getEpicsForUser).toHaveBeenCalledWith(
         expect.anything(),
         'test-user-id',
-        'Solfit'
+        'Acme Solar'
       );
     });
   });
@@ -66,7 +66,7 @@ describe('Epics API Routes', () => {
         id: 'epic-new',
         userId: 'test-user-id',
         title: 'New Epic Project',
-        category: 'Solfit',
+        category: 'Acme Solar',
         status: 'active',
       };
       vi.mocked(epicService.createEpic).mockResolvedValueOnce(newEpic as any);
@@ -76,7 +76,7 @@ describe('Epics API Routes', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: 'New Epic Project',
-          category: 'Solfit',
+          category: 'Acme Solar',
         }),
       });
 
@@ -92,7 +92,7 @@ describe('Epics API Routes', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           // missing title
-          category: 'Solfit',
+          category: 'Acme Solar',
         }),
       });
 
@@ -106,7 +106,7 @@ describe('Epics API Routes', () => {
         id: 'epic-1',
         userId: 'test-user-id',
         title: 'Updated Epic Title',
-        category: 'Solfit',
+        category: 'Acme Solar',
         status: 'completed' as const,
       };
       vi.mocked(epicService.updateEpic).mockResolvedValueOnce(updated as any);

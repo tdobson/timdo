@@ -26,6 +26,16 @@ import {
   buildUpdateMemberRoleArgs,
   buildRemoveMemberArgs,
   buildMoveProjectArgs,
+  buildAddRefArgs,
+  buildFindByRefArgs,
+  buildRefFlags,
+  buildRemoveRefArgs,
+  buildUnrefFlags,
+  normaliseRefRole,
+  normaliseRefs,
+  buildFindSimilarArgs,
+  normaliseOnDuplicate,
+  ON_DUPLICATE,
 } from '../src/timdo-cli.js';
 
 test('DEFAULT_TIMDO_BIN is this repo\'s bin/timdo, found relative to the module', () => {
@@ -51,7 +61,7 @@ test('runTimdoCli passes --json and asUser (as TIMDO_AS) to the binary and parse
   chmodSync(fake, 0o755);
   try {
     const out = await runTimdoCli(['whoami'], fake, { asUser: 'robin@example.com' });
-    assert.deepEqual(out, { argv: ['--json', 'whoami'], as: 'robin@example.com' });
+    assert.deepEqual(out, { argv: ['--json', '--', 'whoami'], as: 'robin@example.com' });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -82,6 +92,7 @@ test('buildAddTaskArgs builds comprehensive add arguments', () => {
   });
   assert.deepEqual(args, [
     'add',
+    '--title',
     'Audit inverter voltage',
     '-r',
     'Prevent trip',
@@ -104,6 +115,13 @@ test('buildAddTaskArgs builds comprehensive add arguments', () => {
     '-n',
     'initial note',
   ]);
+});
+
+test('buildAddTaskArgs sends a dash-prefixed title as a value, never as a CLI flag', () => {
+  assert.deepEqual(
+    buildAddTaskArgs({ project: '--reason', reason: 'Broken offer page', category: 'Acme Solar' }),
+    ['add', '--title', '--reason', '-r', 'Broken offer page', '-p', 'Acme Solar']
+  );
 });
 
 test('buildAddTaskArgs throws when project title is missing', () => {
@@ -274,13 +292,14 @@ test('buildListTasksArgs adds multi-user filters after the existing ones', () =>
 test('buildAddTaskArgs and buildUpdateTaskArgs pass assignment and exact project', () => {
   assert.deepEqual(buildAddTaskArgs({ project: 'Fix inverter', category: 'Acme Solar', assignTo: 'robin@example.com' }), [
     'add',
+    '--title',
     'Fix inverter',
     '-p',
     'Acme Solar',
     '--assign',
     'robin@example.com',
   ]);
-  assert.deepEqual(buildAddTaskArgs({ project: 'Keyed', projectId: 'SOL' }), ['add', 'Keyed', '--project-id', 'SOL']);
+  assert.deepEqual(buildAddTaskArgs({ project: 'Keyed', projectId: 'SOL' }), ['add', '--title', 'Keyed', '--project-id', 'SOL']);
   assert.deepEqual(buildUpdateTaskArgs({ id: 'ab12', claim: true }), ['update', 'ab12', '--claim']);
   assert.deepEqual(buildUpdateTaskArgs({ id: 'ab12', unassign: true }), ['update', 'ab12', '--unassign']);
   assert.deepEqual(buildUpdateTaskArgs({ id: 'ab12', assignTo: 'none', projectId: 'MIG' }), [
@@ -342,4 +361,105 @@ test('collaboration builders produce workspace and activity commands', () => {
     '--yes',
   ]);
   assert.throws(() => buildMoveProjectArgs({ project: 'Acme Solar' }), /required/);
+});
+
+test('normaliseRefRole accepts the API spellings and refuses anything else', () => {
+  assert.equal(normaliseRefRole(), 'link');
+  assert.equal(normaliseRefRole(''), 'link');
+  assert.equal(normaliseRefRole('Source'), 'source');
+  assert.equal(normaliseRefRole('reported-by'), 'reported_by');
+  assert.equal(normaliseRefRole('Reported by'), 'reported_by');
+  assert.throws(() => normaliseRefRole('reporter'), /Role must be link, source, reported_by or about/);
+});
+
+test('normaliseRefs and the ref flag builders', () => {
+  assert.deepEqual(normaliseRefs(), []);
+  assert.deepEqual(normaliseRefs('forum.post:1'), [{ ref: 'forum.post:1' }]);
+  assert.deepEqual(normaliseRefs('123'), [{ ref: '123' }]);
+  assert.deepEqual(normaliseRefs(['a.b:1', { ref: 'c.d:2', role: 'about' }]), [{ ref: 'a.b:1' }, { ref: 'c.d:2', role: 'about' }]);
+  assert.throws(() => normaliseRefs([{ ref: '' }]), /Each ref needs "ref"/);
+  assert.deepEqual(buildRefFlags([{ ref: 'x.y:1', role: 'about' }, { ref: 'x.y:2', url: 'https://example.com/2' }]), [
+    '--about',
+    'x.y:1',
+    '--refs-json',
+    '[{"ref":"x.y:2","role":"link","url":"https://example.com/2"}]',
+  ]);
+  assert.deepEqual(buildUnrefFlags(['x.y:1']), ['--unref', 'x.y:1']);
+  assert.deepEqual(buildUnrefFlags(), []);
+  assert.throws(() => buildUnrefFlags([42]), /removeRefs/);
+});
+
+test('ref values that look like CLI flags are refused, so they cannot switch the user', () => {
+  const smuggled = '--as=victim@example.com';
+  assert.throws(() => buildRefFlags([smuggled]), /never start with "-"/);
+  assert.throws(() => buildUnrefFlags([smuggled, '--json']), /never start with "-"/);
+  assert.throws(
+    () => buildUpdateTaskArgs({ id: '3f2a91c0', status: 'done', removeRefs: [smuggled] }),
+    /never start with "-"/
+  );
+  assert.throws(() => buildAddRefArgs({ id: '3f2a91c0', ref: smuggled }), /never start with "-"/);
+  assert.throws(() => buildAddRefArgs({ id: '--as=x', ref: 'forum.post:1' }), /Task ids/);
+  assert.throws(() => buildAddRefArgs({ id: '3f2a91c0', ref: 'forum.post:1', label: '--json' }), /Labels/);
+  assert.throws(() => buildRemoveRefArgs({ id: '3f2a91c0', ref: smuggled }), /never start with "-"/);
+  assert.throws(() => buildFindByRefArgs({ ref: smuggled }), /never start with "-"/);
+  assert.throws(() => buildListTasksArgs({ ref: smuggled }), /never start with "-"/);
+  // Rich refs travel inside --refs-json, so their labels may say anything
+  assert.deepEqual(buildRefFlags([{ ref: 'forum.post:1', label: '-5 degrees' }]), [
+    '--refs-json',
+    '[{"ref":"forum.post:1","role":"link","label":"-5 degrees"}]',
+  ]);
+});
+
+test('bin/timdo treats everything after "--" as subcommand data, not global flags', async () => {
+  const { createServer } = await import('node:http');
+  const { execFile } = await import('node:child_process');
+  const actingAs = [];
+  const server = createServer((req, res) => {
+    actingAs.push(req.headers['x-timdo-user'] || null);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('[]');
+  });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  const dir = mkdtempSync(join(tmpdir(), 'timdo-mcp-test-'));
+  const env = {
+    ...process.env,
+    TIMDO_API: `http://127.0.0.1:${server.address().port}/api/v2`,
+    TIMDO_SECRET: 'x',
+    TIMDO_AS: '',
+  };
+  const run = (args) =>
+    new Promise((done) => execFile(DEFAULT_TIMDO_BIN, args, { env, cwd: dir }, () => done()));
+  // What buildUpdateTaskArgs made of removeRefs ['--as=victim@example.com', '--json'] before
+  const smuggled = ['update', '3f2a91c0', '--done', '--unref', '--as=victim@example.com', '--unref', '--json'];
+  try {
+    // Without the separator the CLI's global parser takes the flag: the hole being closed
+    await run(['--json', ...smuggled]);
+    assert.ok(actingAs.includes('victim@example.com'));
+    actingAs.length = 0;
+    await run(['--json', '--', ...smuggled]);
+    assert.ok(actingAs.length > 0);
+    assert.ok(!actingAs.includes('victim@example.com'));
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('normaliseOnDuplicate accepts the three modes in any case and refuses anything else', () => {
+  assert.deepEqual(ON_DUPLICATE, ['error', 'return', 'report']);
+  assert.equal(normaliseOnDuplicate(' Report '), 'report');
+  assert.equal(normaliseOnDuplicate('return'), 'return');
+  assert.throws(() => normaliseOnDuplicate('ignore'), /onDuplicate must be error, return or report/);
+});
+
+test('buildAddTaskArgs puts --on-duplicate after the refs, and buildFindSimilarArgs scopes the check', () => {
+  assert.deepEqual(
+    buildAddTaskArgs({ project: 'Broken offer page', category: 'Acme Solar', refs: ['forum.post:4411'], onDuplicate: 'return' }),
+    ['add', '--title', 'Broken offer page', '-p', 'Acme Solar', '--ref', 'forum.post:4411', '--on-duplicate', 'return']
+  );
+  assert.deepEqual(buildFindSimilarArgs({ title: 'Offer page broken', workspace: 'Acme' }), [
+    'similar', '--title', 'Offer page broken', '--workspace', 'Acme',
+  ]);
+  assert.throws(() => buildFindSimilarArgs({ title: '  ' }), /title is required/);
+  assert.throws(() => buildFindSimilarArgs({ title: 'Offer page', excludeId: '--as=x' }), /never start with "-"/);
 });

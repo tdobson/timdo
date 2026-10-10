@@ -20,7 +20,7 @@ describe('epicService', () => {
     seedCollaboration(raw);
   });
 
-  async function newTask(n: number, epicId: string, status = 'do', category = 'Solfit') {
+  async function newTask(n: number, epicId: string, status = 'do', category = 'Acme Solar') {
     return projectService.createProject(db, TIM, {
       id: uuid(n),
       project: `Task ${n}`,
@@ -36,7 +36,7 @@ describe('epicService', () => {
     it('scopes the epic to the named project, defaults to active and records the creator', async () => {
       const created = await epicService.createEpic(db, TIM, {
         title: 'Get Acme Solar Live',
-        category: 'solfit',
+        category: 'acme solar',
         description: 'Get project operational',
       });
 
@@ -45,18 +45,18 @@ describe('epicService', () => {
         userId: TIM,
         title: 'Get Acme Solar Live',
         description: 'Get project operational',
-        category: 'Solfit',
-        projectId: 'proj-solfit',
-        projectKey: 'SOL',
+        category: 'Acme Solar',
+        projectId: 'proj-acme-solar',
+        projectKey: 'ACS',
         orgId: 'org-md',
-        orgName: 'Migrating Dragons',
+        orgName: 'Northstar Workshop',
         isShared: true,
         myRole: 'owner',
         canEdit: true,
         status: 'active',
         createdById: TIM,
-        createdByName: 'Tim Dobson',
-        updatedByName: 'Tim Dobson',
+        createdByName: 'Casey Example',
+        updatedByName: 'Casey Example',
         totalTasks: 0,
         doneTasks: 0,
         progressPercentage: 0,
@@ -64,7 +64,7 @@ describe('epicService', () => {
 
       const activity = await getActivity(db, ROBIN, { epicId: created!.id });
       expect(activity.map((a) => [a.actorName, a.action, a.summary])).toEqual([
-        ['Tim Dobson', 'created', 'Created epic "Get Acme Solar Live"'],
+        ['Casey Example', 'created', 'Created epic "Get Acme Solar Live"'],
       ]);
     });
 
@@ -76,7 +76,7 @@ describe('epicService', () => {
       });
       expect(created).toMatchObject({
         projectId: 'proj-md',
-        category: 'Migrating Dragons',
+        category: 'Northstar Workshop',
         status: 'on_hold',
         myRole: 'member',
       });
@@ -87,7 +87,7 @@ describe('epicService', () => {
         title: 'Shed',
         category: 'Garden',
       });
-      expect(created).toMatchObject({ category: 'Garden', orgName: 'Robin Fairweather' });
+      expect(created).toMatchObject({ category: 'Garden', orgName: 'Jordan Example' });
       expect(await epicService.getEpicsForUser(db, TIM)).toHaveLength(0);
     });
 
@@ -113,14 +113,14 @@ describe('epicService', () => {
         epicService.createEpic(db, ROBIN, { title: 'x', projectId: 'proj-md' })
       ).rejects.toMatchObject({ status: 403 });
       await expect(
-        epicService.createEpic(db, ROBIN, { title: 'x', category: 'Solfit' })
+        epicService.createEpic(db, ROBIN, { title: 'x', category: 'Acme Solar' })
       ).rejects.toThrow(/view-only/);
     });
   });
 
   describe('progress stats', () => {
     it('counts done tasks against all live tasks and rounds the percentage', async () => {
-      const epic = await epicService.createEpic(db, TIM, { title: 'Epic 1', category: 'Solfit' });
+      const epic = await epicService.createEpic(db, TIM, { title: 'Epic 1', category: 'Acme Solar' });
       await newTask(1, epic!.id, 'done');
       await newTask(2, epic!.id, 'done');
       await newTask(3, epic!.id, 'do');
@@ -139,8 +139,8 @@ describe('epicService', () => {
     });
 
     it('rounds thirds and reports zero-task epics as 0%', async () => {
-      const thirds = await epicService.createEpic(db, TIM, { title: 'Thirds', category: 'Solfit' });
-      await epicService.createEpic(db, TIM, { title: 'Empty', category: 'Solfit' });
+      const thirds = await epicService.createEpic(db, TIM, { title: 'Thirds', category: 'Acme Solar' });
+      await epicService.createEpic(db, TIM, { title: 'Empty', category: 'Acme Solar' });
       await newTask(1, thirds!.id, 'done');
       await newTask(2, thirds!.id, 'done');
       await newTask(3, thirds!.id, 'do');
@@ -155,20 +155,20 @@ describe('epicService', () => {
 
   describe('getEpicsForUser', () => {
     it('filters by category, case-insensitively, including unscoped epics', async () => {
-      await epicService.createEpic(db, TIM, { title: 'Solfit epic', category: 'Solfit' });
+      await epicService.createEpic(db, TIM, { title: 'Acme Solar epic', category: 'Acme Solar' });
       await epicService.createEpic(db, TIM, {
         title: 'Dragons epic',
-        category: 'Migrating Dragons',
+        category: 'Northstar Workshop',
       });
       await epicService.createEpic(db, TIM, { title: 'Home epic', category: 'Personal' });
 
-      const solfit = await epicService.getEpicsForUser(db, TIM, 'SOLFIT');
-      expect(solfit.map((e) => e.title)).toEqual(['Solfit epic']);
+      const acmeSolar = await epicService.getEpicsForUser(db, TIM, 'ACME SOLAR');
+      expect(acmeSolar.map((e) => e.title)).toEqual(['Acme Solar epic']);
       const all = await epicService.getEpicsForUser(db, TIM);
-      expect(all.map((e) => e.title).sort()).toEqual(['Dragons epic', 'Home epic', 'Solfit epic']);
-      // Robin is not in Tim's personal workspace
+      expect(all.map((e) => e.title).sort()).toEqual(['Acme Solar epic', 'Dragons epic', 'Home epic']);
+      // Jordan is not in Casey's personal workspace
       const robins = await epicService.getEpicsForUser(db, ROBIN);
-      expect(robins.map((e) => e.title).sort()).toEqual(['Dragons epic', 'Solfit epic']);
+      expect(robins.map((e) => e.title).sort()).toEqual(['Acme Solar epic', 'Dragons epic']);
       expect(await epicService.getEpicsForUser(db, STRANGER)).toEqual([]);
     });
 
@@ -181,7 +181,7 @@ describe('epicService', () => {
     it('updates title and status, attributes the change and logs it', async () => {
       const epic = await epicService.createEpic(db, TIM, {
         title: 'Original Title',
-        category: 'Solfit',
+        category: 'Acme Solar',
       });
 
       const updated = await epicService.updateEpic(db, ROBIN, epic!.id, {
@@ -192,9 +192,9 @@ describe('epicService', () => {
       expect(updated).toMatchObject({
         title: 'New Title',
         status: 'completed',
-        createdByName: 'Tim Dobson',
+        createdByName: 'Casey Example',
         updatedById: ROBIN,
-        updatedByName: 'Robin Fairweather',
+        updatedByName: 'Jordan Example',
       });
       const actions = (await getActivity(db, TIM, { epicId: epic!.id })).map((a) => a.summary);
       expect(actions).toEqual(
@@ -207,13 +207,13 @@ describe('epicService', () => {
     });
 
     it('does not log a no-op update', async () => {
-      const epic = await epicService.createEpic(db, TIM, { title: 'Same', category: 'Solfit' });
+      const epic = await epicService.createEpic(db, TIM, { title: 'Same', category: 'Acme Solar' });
       await epicService.updateEpic(db, TIM, epic!.id, { title: 'Same', status: 'active' });
       expect(await getActivity(db, TIM, { epicId: epic!.id })).toHaveLength(1);
     });
 
     it('moves the epic to another project by category', async () => {
-      const epic = await epicService.createEpic(db, TIM, { title: 'Mover', category: 'Solfit' });
+      const epic = await epicService.createEpic(db, TIM, { title: 'Mover', category: 'Acme Solar' });
       const moved = await epicService.updateEpic(db, TIM, epic!.id, { category: 'Personal' });
       expect(moved).toMatchObject({ projectId: 'proj-personal', category: 'Personal' });
       expect(await epicService.getEpicForUser(db, ROBIN, epic!.id)).toBeNull();
@@ -227,7 +227,7 @@ describe('epicService', () => {
       );
       const epic = await epicService.createEpic(db, TIM, {
         title: 'Goal epic',
-        category: 'Solfit',
+        category: 'Acme Solar',
       });
       await epicService.updateEpic(db, TIM, epic!.id, { goalId: 'g-tim' });
       await epicService.updateEpic(db, ROBIN, epic!.id, { goalId: null });
@@ -237,7 +237,7 @@ describe('epicService', () => {
     });
 
     it('returns null for epics the user cannot see and throws for viewers', async () => {
-      const epic = await epicService.createEpic(db, TIM, { title: 'Locked', category: 'Solfit' });
+      const epic = await epicService.createEpic(db, TIM, { title: 'Locked', category: 'Acme Solar' });
       expect(await epicService.updateEpic(db, STRANGER, epic!.id, { title: 'x' })).toBeNull();
 
       await orgService.updateMemberRole(db, TIM, 'org-md', ROBIN, 'viewer');
@@ -252,7 +252,7 @@ describe('epicService', () => {
     it('deletes the epic, unlinks its tasks and logs it', async () => {
       const epic = await epicService.createEpic(db, TIM, {
         title: 'To Delete',
-        category: 'Solfit',
+        category: 'Acme Solar',
       });
       await newTask(1, epic!.id);
 
@@ -266,14 +266,14 @@ describe('epicService', () => {
         (a) => a.action === 'deleted'
       );
       expect(entry).toMatchObject({
-        actorName: 'Robin Fairweather',
-        projectId: 'proj-solfit',
+        actorName: 'Jordan Example',
+        projectId: 'proj-acme-solar',
         summary: 'Deleted epic "To Delete"',
       });
     });
 
     it('returns false for unknown epics, outsiders and viewers', async () => {
-      const epic = await epicService.createEpic(db, TIM, { title: 'Keep', category: 'Solfit' });
+      const epic = await epicService.createEpic(db, TIM, { title: 'Keep', category: 'Acme Solar' });
       expect(await epicService.deleteEpic(db, TIM, 'nope')).toBe(false);
       expect(await epicService.deleteEpic(db, STRANGER, epic!.id)).toBe(false);
       await orgService.updateMemberRole(db, TIM, 'org-md', ROBIN, 'viewer');

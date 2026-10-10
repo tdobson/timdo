@@ -53,7 +53,7 @@ describe('taskService', () => {
   describe('createTask', () => {
     it('creates a task in the given project with the creator as reporter and assignee', async () => {
       const task = await createTask(db, TIM, {
-        projectId: 'proj-solfit',
+        projectId: 'proj-acme-solar',
         title: 'Build task collaboration API',
         status: 'do',
         priority: 8,
@@ -62,7 +62,7 @@ describe('taskService', () => {
 
       expect(task).toBeDefined();
       expect(task).toMatchObject({
-        projectId: 'proj-solfit',
+        projectId: 'proj-acme-solar',
         title: 'Build task collaboration API',
         reporterId: TIM,
         assigneeId: TIM,
@@ -78,12 +78,12 @@ describe('taskService', () => {
       expect(task!.statusLastChangedOn).toBeTruthy();
 
       const [entry] = await getActivity(db, ROBIN, { taskId: task!.id });
-      expect(entry).toMatchObject({ action: 'created', actorName: 'Tim Dobson' });
+      expect(entry).toMatchObject({ action: 'created', actorName: 'Casey Example' });
     });
 
     it('honours an explicit null or other assignee', async () => {
-      expect((await newTask(TIM, 1, 'proj-solfit', { assigneeId: null }))?.assigneeId).toBeNull();
-      expect((await newTask(TIM, 2, 'proj-solfit', { assigneeId: ROBIN }))?.assigneeId).toBe(
+      expect((await newTask(TIM, 1, 'proj-acme-solar', { assigneeId: null }))?.assigneeId).toBeNull();
+      expect((await newTask(TIM, 2, 'proj-acme-solar', { assigneeId: ROBIN }))?.assigneeId).toBe(
         ROBIN
       );
       await expect(newTask(TIM, 3, 'proj-personal', { assigneeId: ROBIN })).rejects.toThrow(
@@ -94,7 +94,7 @@ describe('taskService', () => {
     it('refuses projects the user cannot see (404) or only view (403)', async () => {
       await expect(newTask(TIM, 1, 'proj-stranger')).rejects.toMatchObject({ status: 404 });
       await orgService.updateMemberRole(db, TIM, 'org-md', ROBIN, 'viewer');
-      const err = await newTask(ROBIN, 2, 'proj-solfit').catch((e) => e);
+      const err = await newTask(ROBIN, 2, 'proj-acme-solar').catch((e) => e);
       expect(err).toBeInstanceOf(AccessError);
       expect(err).toMatchObject({ status: 403 });
     });
@@ -102,12 +102,12 @@ describe('taskService', () => {
 
   describe('reading', () => {
     beforeEach(async () => {
-      await newTask(TIM, 1, 'proj-solfit', { customer: 'Acme Solar', tags: 'roof,urgent' });
-      await newTask(TIM, 2, 'proj-solfit', { assigneeId: null, status: 'delay' });
+      await newTask(TIM, 1, 'proj-acme-solar', { customer: 'Acme Solar', tags: 'roof,urgent' });
+      await newTask(TIM, 2, 'proj-acme-solar', { assigneeId: null, status: 'delay' });
       await newTask(ROBIN, 3, 'proj-md', { tags: 'URGENT' });
       await newTask(TIM, 4, 'proj-personal', { status: 'done' });
       await newTask(STRANGER, 5, 'proj-stranger');
-      await newTask(TIM, 6, 'proj-solfit');
+      await newTask(TIM, 6, 'proj-acme-solar');
       await updateTask(db, TIM, uuid(6), { isDeleted: true });
     });
 
@@ -152,7 +152,7 @@ describe('taskService', () => {
           ('r2', '${uuid(3)}', '${uuid(1)}', 'relates_to'),
           ('r3', '${uuid(5)}', '${uuid(1)}', 'relates_to');
       `);
-      // Task 5 is in a workspace Tim can't see, so it stays hidden
+      // Task 5 is in a workspace Casey can't see, so it stays hidden
       expect(titles(await getTasksForUser(db, TIM, { relatedTo: uuid(1) }))).toEqual([
         'Task 2',
         'Task 3',
@@ -181,7 +181,7 @@ describe('taskService', () => {
 
   describe('claim and assign', () => {
     it('claims a task by setting the assignee to the current user', async () => {
-      await newTask(TIM, 1, 'proj-solfit', { assigneeId: null });
+      await newTask(TIM, 1, 'proj-acme-solar', { assigneeId: null });
       const claimed = await claimTask(db, ROBIN, uuid(1));
       expect(claimed).toMatchObject({ assigneeId: ROBIN, updatedBy: ROBIN, reporterId: TIM });
 
@@ -189,39 +189,39 @@ describe('taskService', () => {
         (a) => a.action === 'assigned'
       );
       expect(entry).toMatchObject({
-        actorName: 'Robin Fairweather',
-        summary: 'Assigned "Task 1" to Robin Fairweather',
+        actorName: 'Jordan Example',
+        summary: 'Assigned "Task 1" to Jordan Example',
       });
     });
 
     it('returns null when claiming a task the user cannot see', async () => {
-      await newTask(TIM, 1, 'proj-solfit');
+      await newTask(TIM, 1, 'proj-acme-solar');
       expect(await claimTask(db, STRANGER, uuid(1))).toBeNull();
       expect(await claimTask(db, TIM, 'missing')).toBeNull();
     });
 
     it('stops viewers claiming', async () => {
-      await newTask(TIM, 1, 'proj-solfit', { assigneeId: null });
+      await newTask(TIM, 1, 'proj-acme-solar', { assigneeId: null });
       await orgService.updateMemberRole(db, TIM, 'org-md', ROBIN, 'viewer');
       await expect(claimTask(db, ROBIN, uuid(1))).rejects.toBeInstanceOf(AccessError);
     });
 
     it('reassigns to another workspace member, unassigns, and rejects outsiders', async () => {
-      await newTask(TIM, 1, 'proj-solfit');
+      await newTask(TIM, 1, 'proj-acme-solar');
       expect((await assignTask(db, TIM, uuid(1), ROBIN))?.assigneeId).toBe(ROBIN);
       expect((await assignTask(db, TIM, uuid(1), null))?.assigneeId).toBeNull();
       await expect(assignTask(db, TIM, uuid(1), STRANGER)).rejects.toThrow(/isn't in/);
 
       const summaries = (await getActivity(db, TIM, { taskId: uuid(1) })).map((a) => a.summary);
       expect(summaries).toEqual(
-        expect.arrayContaining(['Assigned "Task 1" to Robin Fairweather', 'Unassigned "Task 1"'])
+        expect.arrayContaining(['Assigned "Task 1" to Jordan Example', 'Unassigned "Task 1"'])
       );
     });
   });
 
   describe('updateTask', () => {
     it('maps title and other fields onto the shared update path', async () => {
-      await newTask(TIM, 1, 'proj-solfit');
+      await newTask(TIM, 1, 'proj-acme-solar');
       const updated = await updateTask(db, ROBIN, uuid(1), {
         title: 'Renamed',
         status: 'done',
@@ -239,7 +239,7 @@ describe('taskService', () => {
     });
 
     it('moves a task to another visible project', async () => {
-      await newTask(TIM, 1, 'proj-solfit');
+      await newTask(TIM, 1, 'proj-acme-solar');
       expect((await updateTask(db, TIM, uuid(1), { projectId: 'proj-personal' }))?.projectId).toBe(
         'proj-personal'
       );
@@ -249,7 +249,7 @@ describe('taskService', () => {
     });
 
     it('clears reason and notes when null is passed', async () => {
-      await newTask(TIM, 1, 'proj-solfit', { reason: 'Old reason', notes: 'Old notes' });
+      await newTask(TIM, 1, 'proj-acme-solar', { reason: 'Old reason', notes: 'Old notes' });
       const updated = await updateTask(db, TIM, uuid(1), { reason: null, notes: null });
       expect(updated).toMatchObject({ reason: null, notes: null });
     });
@@ -259,7 +259,7 @@ describe('taskService', () => {
     it('adds a note with author and thread, and lists notes newest first', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date('2026-10-01T09:00:00.000Z'));
-      await newTask(TIM, 1, 'proj-solfit');
+      await newTask(TIM, 1, 'proj-acme-solar');
 
       const note = await addTaskUpdate(
         db,
@@ -271,7 +271,7 @@ describe('taskService', () => {
       expect(note).toMatchObject({
         taskId: uuid(1),
         authorId: TIM,
-        authorName: 'Tim Dobson',
+        authorName: 'Casey Example',
         note: 'Updated PR with fixes',
         gmailThreadId: 'gmail-thread-99',
       });
@@ -281,14 +281,14 @@ describe('taskService', () => {
 
       const notes = await getTaskUpdates(db, TIM, uuid(1));
       expect(notes?.map((n) => [n.authorName, n.note])).toEqual([
-        ['Robin Fairweather', 'Reviewed'],
-        ['Tim Dobson', 'Updated PR with fixes'],
+        ['Jordan Example', 'Reviewed'],
+        ['Casey Example', 'Updated PR with fixes'],
       ]);
       expect(await getTaskUpdates(db, STRANGER, uuid(1))).toBeNull();
     });
 
     it('returns null for tasks the user cannot see, and throws for viewers', async () => {
-      await newTask(TIM, 1, 'proj-solfit');
+      await newTask(TIM, 1, 'proj-acme-solar');
       expect(await addTaskUpdate(db, STRANGER, uuid(1), 'x')).toBeNull();
       await orgService.updateMemberRole(db, TIM, 'org-md', ROBIN, 'viewer');
       await expect(addTaskUpdate(db, ROBIN, uuid(1), 'x')).rejects.toBeInstanceOf(AccessError);
@@ -300,12 +300,12 @@ describe('taskService', () => {
       raw.exec(`
         INSERT INTO Goals (id, user_id, type, title) VALUES
           ('goal-1', '${TIM}', 'aim', 'Health & Fitness'),
-          ('goal-robin', '${ROBIN}', 'aim', 'Robin aim');
+          ('goal-robin', '${ROBIN}', 'aim', 'Jordan aim');
       `);
     });
 
     it('links and unlinks a personal life goal, idempotently', async () => {
-      await newTask(TIM, 1, 'proj-solfit');
+      await newTask(TIM, 1, 'proj-acme-solar');
 
       const linked = await linkPersonalGoal(db, TIM, uuid(1), 'goal-1');
       expect(linked).toMatchObject({ taskId: uuid(1), userId: TIM, goalId: 'goal-1' });
@@ -315,7 +315,7 @@ describe('taskService', () => {
       expect(await getTaskPersonalGoals(db, TIM, uuid(1))).toEqual([
         expect.objectContaining({ goalId: 'goal-1', title: 'Health & Fitness', type: 'aim' }),
       ]);
-      // Goals are private: Robin sees none on the same shared task
+      // Goals are private: Jordan sees none on the same shared task
       expect(await getTaskPersonalGoals(db, ROBIN, uuid(1))).toEqual([]);
 
       expect(await unlinkPersonalGoal(db, TIM, uuid(1), 'goal-1')).toBe(true);
@@ -324,7 +324,7 @@ describe('taskService', () => {
     });
 
     it("rejects other people's goals and invisible tasks", async () => {
-      await newTask(TIM, 1, 'proj-solfit');
+      await newTask(TIM, 1, 'proj-acme-solar');
       await expect(linkPersonalGoal(db, TIM, uuid(1), 'goal-robin')).rejects.toThrow(
         /Goal not found/
       );

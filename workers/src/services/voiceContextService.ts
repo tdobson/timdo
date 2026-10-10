@@ -6,16 +6,21 @@
  * describeContextForPrompt() turns that into compact text for the LLM.
  * resolveProposals() checks the LLM's proposals against the same context: names become
  * ids, view-only and unknown targets are dropped or flagged, and each proposal gains the
- * labels the review screen shows (workspace, project, assignee).
+ * labels the review screen shows (workspace, project, assignee). Proposed links (refs) are
+ * checked with the shared parser and against the links already in use in that workspace.
+ * addSimilarTasks() then looks up open tasks like each proposed new task, so the review screen
+ * can say "Looks like an existing task" and offer to add a note there instead.
  */
 import { eq } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import * as schema from '../db/schema';
+import { canonicalRef, normaliseRole, parseRef, shortRefLabel, type RefRole } from '../lib/refs';
 import { canEdit, getAccessibleProjects, type AccessibleProject, type Role } from './accessService';
 import { getEpicsForUser } from './epicService';
 import { getGoalsForUser } from './goalService';
 import { getOrganisationMembers } from './organisationService';
 import { getProjectsForUser, type TaskView } from './projectService';
+import { findSimilarTasks, type SimilarQuery, type SimilarTask } from './similarService';
 
 type DB = DrizzleD1Database<typeof schema>;
 
@@ -65,6 +70,11 @@ export interface VoiceContext {
   tasks: VoiceTask[];
   epics: VoiceEpic[];
   goals: VoiceGoal[];
+  /**
+   * Open tasks like a title, from the database (set by loadVoiceContext). A context built
+   * by hand has none, and its proposals simply carry no duplicate hints.
+   */
+  findSimilar?: (query: SimilarQuery) => Promise<SimilarTask[]>;
 }
 
 /* ------------------------------------------------------------------ loading */
@@ -137,6 +147,8 @@ export async function loadVoiceContext(
       status: e.status,
     })),
     goals: (goalsRaw as any[]).map((g) => ({ id: g.id, title: g.title })),
+    // Always the database, never the client's cache: it decides what is offered as a duplicate
+    findSimilar: (query) => findSimilarTasks(db, userId, query, projects),
   };
 }
 
@@ -203,6 +215,93 @@ export function describeEpics(ctx: VoiceContext): string {
     .join('\n');
 }
 
+/** Kinds the parser knows without any refs in use: voice may propose them anywhere */
+const BUILT_IN_KINDS = new Set([
+  'github.issue',
+  'github.pr',
+  'gmail.thread',
+  'sentry.issue',
+  'email',
+  'url',
+]);
+/** Kinds whose ids say nothing useful as an example (or are long, or are addresses) */
+const NO_EXAMPLE_KINDS = new Set(['gmail.thread', 'email', 'url']);
+const KINDS_PER_WORKSPACE = 10;
+const REPOS_PER_WORKSPACE = 5;
+
+const isGithub = (kind: string) => kind === 'github.issue' || kind === 'github.pr';
+
+/** "acme/widgets" from "acme/widgets#12", or null */
+function repoOf(ref: string): string | null {
+  const m = /^([^/\s#]+\/[^/\s#]+)#\d+$/.exec(ref);
+  return m ? m[1] : null;
+}
+
+interface KindsInUse {
+  /** kind -> how many refs use it, most used first when listed */
+  counts: Map<string, number>;
+  /** kind -> one example id */
+  examples: Map<string, string>;
+  /** GitHub repositories linked from issues or PRs, "owner/repo" */
+  repos: Set<string>;
+}
+
+/** The ref kinds already used on the tasks of each workspace, keyed by workspace id. */
+export function refKindsInUse(ctx: VoiceContext): Map<string, KindsInUse> {
+  const projectOrg = new Map(ctx.projects.map((p) => [p.id, p.orgId]));
+  const byOrg = new Map<string, KindsInUse>();
+  for (const t of ctx.tasks) {
+    const orgId = (t.projectId && projectOrg.get(t.projectId)) || t.orgId;
+    if (!orgId || !Array.isArray(t.refs) || t.refs.length === 0) {
+      continue;
+    }
+    let entry = byOrg.get(orgId);
+    if (!entry) {
+      entry = { counts: new Map(), examples: new Map(), repos: new Set() };
+      byOrg.set(orgId, entry);
+    }
+    for (const r of t.refs) {
+      entry.counts.set(r.kind, (entry.counts.get(r.kind) ?? 0) + 1);
+      if (!entry.examples.has(r.kind)) {
+        entry.examples.set(r.kind, r.ref);
+      }
+      const repo = isGithub(r.kind) ? repoOf(r.ref) : null;
+      if (repo) {
+        entry.repos.add(repo);
+      }
+    }
+  }
+  return byOrg;
+}
+
+/**
+ * One line per workspace that has links: the kinds in use with an example id, and the
+ * GitHub repositories, e.g. `- Acme Solar: github.issue (acme/widgets), acme.member (e.g. 123456)`.
+ */
+export function describeRefKinds(ctx: VoiceContext): string {
+  const inUse = refKindsInUse(ctx);
+  const lines = ctx.workspaces
+    .filter((w) => inUse.has(w.id))
+    .map((w) => {
+      const entry = inUse.get(w.id)!;
+      const repos = Array.from(entry.repos).slice(0, REPOS_PER_WORKSPACE).join(', ');
+      const kinds = Array.from(entry.counts.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, KINDS_PER_WORKSPACE)
+        .map(([kind]) => {
+          if (isGithub(kind)) {
+            return repos ? `${kind} (${repos})` : kind;
+          }
+          if (NO_EXAMPLE_KINDS.has(kind)) {
+            return kind;
+          }
+          return `${kind} (e.g. ${clip(entry.examples.get(kind))})`;
+        });
+      return `- ${w.name}: ${kinds.join(', ')}`;
+    });
+  return lines.length ? lines.join('\n') : '(none yet)';
+}
+
 /** How many done tasks the model sees (most recently finished first) */
 const DONE_TASK_LIMIT = 100;
 /** Long notes are cut to this many characters */
@@ -211,10 +310,23 @@ const TEXT_LIMIT = 160;
 const clip = (text: string | null | undefined) =>
   text && text.length > TEXT_LIMIT ? `${text.slice(0, TEXT_LIMIT)}...` : text || undefined;
 
+/** Links per task in the prompt; canonical text only, never labels or URLs */
+const REFS_PER_TASK = 10;
+
+const compactRefs = (t: VoiceTask) =>
+  Array.isArray(t.refs) && t.refs.length > 0
+    ? {
+        refs: Array.from(new Set(t.refs.map((r) => clip(canonicalRef(r))!))).slice(
+          0,
+          REFS_PER_TASK
+        ),
+      }
+    : {};
+
 /**
  * Tasks in a compact shape: enough to find, update and answer questions about them.
  * Open tasks carry clipped notes; done tasks are trimmed to the most recent ones with just
- * their title, project and assignee, which keeps the prompt small for busy accounts.
+ * their title, project, assignee and links, which keeps the prompt small for busy accounts.
  */
 export function compactTasks(ctx: VoiceContext) {
   const byId = new Map(ctx.projects.map((p) => [p.id, p]));
@@ -240,6 +352,7 @@ export function compactTasks(ctx: VoiceContext) {
       workspace: project?.orgName ?? t.orgName ?? null,
       assignee: t.assigneeName ?? (t.assigneeId ? 'someone' : 'unassigned'),
       ...(project && !canEdit(project.role) ? { viewOnly: true } : {}),
+      ...compactRefs(t),
     };
     if (t.status === 'done') {
       return base;
@@ -283,7 +396,7 @@ function levenshtein(a: string, b: string): number {
 
 /**
  * Pick the candidates whose label best matches the spoken text: exact first, then the
- * same letters ignoring spaces and punctuation ("Sol fit" = "Solfit"), then a near miss
+ * same letters ignoring spaces and punctuation ("Acme-Solar" = "Acme Solar"), then a near miss
  * of at most two letters for longer names (Whisper mishearing).
  */
 function bestMatches<T>(spoken: string, items: T[], labels: (item: T) => string[]): T[] {
@@ -352,7 +465,7 @@ export function matchPerson(spoken: string, people: VoicePerson[], meId: string)
     (p) => norm(first(p)) === n,
     (p) => !!last(p) && norm(last(p)) === n,
     (p) => norm(p.email.split('@')[0]) === n,
-    // "Rob" for Robin, "Robin H" for Robin Fairweather
+    // "Jor" for Jordan, "Jordan E" for Jordan Example
     (p) => n.length >= 2 && (norm(first(p)).startsWith(n) || norm(p.name).startsWith(n)),
     (p) => n.length >= 5 && levenshtein(norm(first(p)), n) <= 1,
   ];
@@ -407,8 +520,32 @@ export interface ResolvedProposal {
   epicId: string | null;
   epicTitle: string | null;
   goalId: string | null;
+  /** Links to add once the task change succeeds (create and update only) */
+  refs?: VoiceRefAdd[];
+  /** Links to take off the task (update only) */
+  removeRefs?: VoiceRefRemove[];
   /** Problems with this change, also included in the response's warnings */
   warnings: string[];
+  /** For create: open tasks that look like this one, best first (absent when none) */
+  similar?: SimilarTask[];
+}
+
+/** A link a change would add, checked with the shared parser. */
+export interface VoiceRefAdd {
+  /** Canonical `kind:ref` */
+  ref: string;
+  role: RefRole;
+  kind: string;
+  url: string | null;
+  /** The default label, e.g. "GitHub issue acme/widgets#12" */
+  label: string;
+}
+
+/** A link a change would take off; role null means every role it has on the task. */
+export interface VoiceRefRemove {
+  /** Canonical `kind:ref` */
+  ref: string;
+  role: RefRole | null;
 }
 
 export interface ResolveResult {
@@ -589,6 +726,284 @@ function resolveGoal(ctx: VoiceContext, title: string | null | undefined, warnin
   return null;
 }
 
+/* ------------------------------------------------------------------ links (refs) */
+
+const DIGIT_WORDS = new Map(
+  Object.entries({
+    zero: '0',
+    oh: '0',
+    nought: '0',
+    one: '1',
+    two: '2',
+    three: '3',
+    four: '4',
+    five: '5',
+    six: '6',
+    seven: '7',
+    eight: '8',
+    nine: '9',
+  })
+);
+
+/** "four four one one" -> "4411" when an id was spelt out digit by digit; anything else as is */
+export function spokenDigits(id: string): string {
+  const words = id
+    .trim()
+    .toLowerCase()
+    .split(/[\s-]+/)
+    .filter(Boolean);
+  if (words.length === 0 || !words.every((w) => DIGIT_WORDS.has(w))) {
+    return id;
+  }
+  return words.map((w) => DIGIT_WORDS.get(w)).join('');
+}
+
+/** Spoken digits in the id part of what the model heard: after the last # or after kind: */
+function tidyHeard(text: string): string {
+  const t = text.trim();
+  if (/^(https?|mailto):/i.test(t)) {
+    return t;
+  }
+  const hash = t.lastIndexOf('#');
+  if (hash >= 0) {
+    return `${t.slice(0, hash + 1)}${spokenDigits(t.slice(hash + 1))}`;
+  }
+  const colon = t.indexOf(':');
+  return colon > 0
+    ? `${t.slice(0, colon + 1)}${spokenDigits(t.slice(colon + 1))}`
+    : spokenDigits(t);
+}
+
+function taskOrgId(ctx: VoiceContext, t: VoiceTask): string | null {
+  return (t.projectId && ctx.projects.find((p) => p.id === t.projectId)?.orgId) || t.orgId || null;
+}
+
+/** "GitHub issue 12 on widgets" with no owner: find the repository among those in use */
+function completeGithubRef(
+  kind: string,
+  ref: string,
+  repos: string[]
+): { ref: string } | { heard: string } {
+  const m = /^(?:(.*?)#)?(\d+)$/.exec(ref.trim());
+  const what = kind === 'github.pr' ? 'pull request' : 'GitHub issue';
+  if (!m) {
+    return { heard: `${what} ${ref}` };
+  }
+  const repoPart = (m[1] || '').trim();
+  const heard = `${what} ${m[2]}${repoPart ? ` on ${repoPart}` : ''}`;
+  // Exact names only: near misses are other repositories as often as mishearings
+  const hits = repoPart
+    ? repos.filter((r) => [r, r.split('/')[1] || r].some((name) => norm(name) === norm(repoPart)))
+    : repos.length === 1
+      ? repos
+      : [];
+  return hits.length === 1 ? { ref: `${hits[0]}#${m[2]}` } : { heard };
+}
+
+/**
+ * Check the links the model wants to add. Each must parse; GitHub refs need a known
+ * repository; a bare kind such as `member` becomes the workspace's `acme.member`; links the
+ * task already has are skipped; a source another task already owns becomes a plain link.
+ */
+function resolveRefAdds(
+  ctx: VoiceContext,
+  raw: unknown,
+  orgId: string | null,
+  wsName: string,
+  before: VoiceTask | null,
+  warnings: string[]
+): VoiceRefAdd[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const inUse = refKindsInUse(ctx);
+  const here = orgId ? inUse.get(orgId) : undefined;
+  const repos = Array.from(here?.repos ?? []);
+  const anyRepo = new Set(Array.from(inUse.values()).flatMap((e) => Array.from(e.repos)));
+  const out: VoiceRefAdd[] = [];
+
+  for (const item of raw) {
+    const said = typeof item === 'string' ? item : item?.ref;
+    if (typeof said !== 'string' || !said.trim()) {
+      continue;
+    }
+    const heard = tidyHeard(said);
+    const spokenRole = typeof item === 'object' ? item?.role : undefined;
+    let role = normaliseRole(typeof spokenRole === 'string' ? spokenRole : undefined);
+    if (!role) {
+      warnings.push(
+        `I didn't recognise "${spokenRole}" as a role (link, source, reported by or about), so ${heard} is added as a plain link.`
+      );
+      role = 'link';
+    }
+    const explicitKind =
+      typeof item === 'object' && typeof item?.kind === 'string' ? item.kind : '';
+    let parsed = parseRef(heard, explicitKind || undefined);
+    if (!parsed.ok) {
+      warnings.push(`I couldn't make a link out of "${said.trim()}", so I left it out.`);
+      continue;
+    }
+
+    let { kind, ref } = parsed.value;
+    if (isGithub(kind) && !repoOf(ref)) {
+      const done = completeGithubRef(kind, ref, repos);
+      if ('heard' in done) {
+        warnings.push(
+          `I heard ${done.heard} but couldn't tell which repository it's in, so I left it out. Paste its URL on the task instead.`
+        );
+        continue;
+      }
+      parsed = parseRef(`${kind}:${done.ref}`);
+    } else if (isGithub(kind) && !anyRepo.has(repoOf(ref)!)) {
+      warnings.push(
+        `No task links to the ${repoOf(ref)} repository yet, so check ${canonicalRef({ kind, ref })} is right before applying.`
+      );
+    } else if (!BUILT_IN_KINDS.has(kind) && !here?.counts.has(kind)) {
+      if (!kind.includes('.')) {
+        // "member 4411": the workspace's own member kind, if there is exactly one
+        const known = Array.from(here?.counts.keys() ?? []).filter(
+          (k) => !BUILT_IN_KINDS.has(k) && [kind, `${kind}s`].includes(k.split('.').pop()!)
+        );
+        if (known.length !== 1) {
+          warnings.push(
+            known.length > 1
+              ? `"${heard}" could be ${known.join(' or ')}, so I left that link out.`
+              : `I couldn't tell which system "${heard}" belongs to, so I left that link out.`
+          );
+          continue;
+        }
+        parsed = parseRef(ref, known[0]);
+      } else {
+        warnings.push(
+          `Nothing in the ${wsName} workspace links to ${kind} yet, so check ${canonicalRef({ kind, ref })} is right before applying.`
+        );
+      }
+    }
+    if (!parsed.ok) {
+      warnings.push(`I couldn't make a link out of "${said.trim()}", so I left it out.`);
+      continue;
+    }
+    ({ kind, ref } = parsed.value);
+    const canonical = canonicalRef({ kind, ref });
+
+    if (role === 'source' && orgId) {
+      const owner = ctx.tasks.find(
+        (t) =>
+          t.id !== before?.id &&
+          taskOrgId(ctx, t) === orgId &&
+          (t.refs ?? []).some((r) => r.role === 'source' && r.kind === kind && r.ref === ref)
+      );
+      if (owner) {
+        warnings.push(
+          `${canonical} is already the source of "${owner.project}", so it's added as a plain link instead.`
+        );
+        role = 'link';
+      }
+    }
+    // A ref the task has already, given without a role, is the model echoing the task back
+    const roleGiven = typeof spokenRole === 'string' && spokenRole.trim() !== '';
+    const already =
+      out.some((r) => r.role === role && r.ref === canonical) ||
+      (before?.refs ?? []).some(
+        (r) => (r.role === role || !roleGiven) && r.kind === kind && r.ref === ref
+      );
+    if (already) {
+      continue;
+    }
+    out.push({ ref: canonical, role, kind, url: parsed.value.url, label: parsed.value.label });
+  }
+  return out;
+}
+
+/**
+ * Match the links the model wants to remove against the ones on the task: by canonical form
+ * or URL, else by a unique ending ("#12", "4411"). Without the task's links (an old client
+ * cache) a well-formed ref is passed through and the API says if it isn't there.
+ */
+function resolveRefRemovals(
+  raw: unknown,
+  before: VoiceTask,
+  title: string,
+  warnings: string[]
+): VoiceRefRemove[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const onTask = Array.isArray(before.refs) ? before.refs : null;
+  const out: VoiceRefRemove[] = [];
+  const add = (ref: string, role: RefRole | null) => {
+    if (!out.some((o) => o.ref === ref && o.role === role)) {
+      out.push({ ref, role });
+    }
+  };
+
+  for (const item of raw) {
+    const said = typeof item === 'string' ? item : item?.ref;
+    if (typeof said !== 'string' || !said.trim()) {
+      continue;
+    }
+    const heard = tidyHeard(said);
+    const parsed = parseRef(heard);
+    if (!onTask) {
+      if (parsed.ok) {
+        add(canonicalRef(parsed.value), null);
+      } else {
+        warnings.push(`I couldn't tell which link "${said.trim()}" is, so I didn't remove it.`);
+      }
+      continue;
+    }
+    let hits = parsed.ok
+      ? onTask.filter((r) => r.kind === parsed.value.kind && r.ref === parsed.value.ref)
+      : [];
+    if (hits.length === 0) {
+      const text = heard.toLowerCase();
+      const clipped = text.endsWith('...') ? text.slice(0, -3) : null;
+      // "member:4411" for acme.member:4411, "github.issue:widgets#12" for acme/widgets#12
+      const id = parsed.ok ? parsed.value.ref.toLowerCase() : null;
+      const sameKind = (k: string) =>
+        parsed.ok && (k === parsed.value.kind || k.split('.').pop() === parsed.value.kind);
+      hits = onTask.filter((r) => {
+        const c = canonicalRef(r).toLowerCase();
+        const rid = r.ref.toLowerCase();
+        const url = (r.url || '').toLowerCase();
+        if (clipped) {
+          return c.startsWith(clipped) || (!!url && url.startsWith(clipped));
+        }
+        if (
+          id &&
+          sameKind(r.kind) &&
+          (rid === id || rid.endsWith(`#${id}`) || rid.endsWith(`/${id}`))
+        ) {
+          return true;
+        }
+        return (
+          c === text ||
+          rid === text ||
+          url === text ||
+          shortRefLabel(r.kind, r.ref).toLowerCase() === text ||
+          [`:${text}`, `/${text}`, `#${text}`].some((end) => c.endsWith(end)) ||
+          (text.startsWith('#') && c.endsWith(text))
+        );
+      });
+    }
+    const distinct = Array.from(new Set(hits.map((r) => canonicalRef(r))));
+    if (distinct.length === 0) {
+      warnings.push(`${title} isn't linked to "${said.trim()}", so there was nothing to remove.`);
+      continue;
+    }
+    if (distinct.length > 1) {
+      warnings.push(
+        `"${said.trim()}" matches more than one link on ${title} (${distinct.join(', ')}), so I didn't remove any.`
+      );
+      continue;
+    }
+    for (const r of hits) {
+      add(canonicalRef(r), r.role);
+    }
+  }
+  return out;
+}
+
 function taskLabel(after: Record<string, any> | null | undefined, before?: VoiceTask | null) {
   return `"${(after?.project || before?.project || 'that task').toString().trim()}"`;
 }
@@ -631,6 +1046,13 @@ export function resolveProposals(changes: RawChange[], ctx: VoiceContext): Resol
   for (const change of changes) {
     const warnings: string[] = [];
     const after = change.after ? { ...change.after } : null;
+    // Links are checked below and carried on the proposal, not inside the task fields
+    const rawRefs = after?.refs;
+    const rawRemoveRefs = after?.removeRefs;
+    if (after) {
+      delete after.refs;
+      delete after.removeRefs;
+    }
     const base = {
       type: change.type,
       before: null as VoiceTask | null,
@@ -922,6 +1344,13 @@ export function resolveProposals(changes: RawChange[], ctx: VoiceContext): Resol
       }
     }
 
+    /* ---------- links ---------- */
+    const refs = resolveRefAdds(ctx, rawRefs, orgId, orgName ?? 'your personal', before, warnings);
+    const removeRefs =
+      change.type === 'update' && before
+        ? resolveRefRemovals(rawRemoveRefs, before, taskLabel(after, before), warnings)
+        : [];
+
     const resolvedAfter = {
       ...(after || {}),
       category: projectName,
@@ -949,9 +1378,61 @@ export function resolveProposals(changes: RawChange[], ctx: VoiceContext): Resol
       epicId: epic.epicId,
       epicTitle: epic.epicTitle,
       goalId,
+      ...(refs.length ? { refs } : {}),
+      ...(removeRefs.length ? { removeRefs } : {}),
       warnings: [],
     });
   }
 
   return { proposals, warnings: Array.from(new Set(allWarnings)) };
+}
+
+/* ------------------------------------------------------------------ likely duplicates */
+
+/** New tasks checked per voice command: one similar-task query each */
+export const SIMILAR_LOOKUPS_PER_COMMAND = 5;
+/** Existing tasks offered per new task */
+const SIMILAR_PER_CREATE = 3;
+
+/**
+ * Look for open tasks like each proposed new task, in the workspace it would land in, and put
+ * them on the proposal as `similar`. Only the first few creates are checked, in parallel. Never
+ * throws: a lookup that fails only means that proposal has no hint.
+ */
+export async function addSimilarTasks(
+  proposals: ResolvedProposal[],
+  ctx: VoiceContext
+): Promise<void> {
+  const findSimilar = ctx.findSimilar;
+  if (!findSimilar) {
+    return;
+  }
+  const creates = proposals
+    .filter(
+      (p) =>
+        p.type === 'create' &&
+        typeof p.after?.project === 'string' &&
+        p.after.project.trim() &&
+        (p.projectId || p.orgId)
+    )
+    .slice(0, SIMILAR_LOOKUPS_PER_COMMAND);
+
+  await Promise.all(
+    creates.map(async (p) => {
+      // A project that doesn't exist yet: search the workspace it will be made in
+      const scope = p.projectId ? { projectId: p.projectId } : { orgId: p.orgId! };
+      try {
+        const similar = await findSimilar({
+          title: String(p.after!.project).trim(),
+          ...scope,
+          limit: SIMILAR_PER_CREATE,
+        });
+        if (similar.length > 0) {
+          p.similar = similar;
+        }
+      } catch (error) {
+        console.warn('Similar-task lookup for a voice create failed:', error);
+      }
+    })
+  );
 }

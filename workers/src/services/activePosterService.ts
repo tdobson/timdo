@@ -133,8 +133,7 @@ function renderWrappedText(
 }
 
 /**
- * Generate active tasks SVG poster matching the classic "TIM DOBSON'S PROJECTS"
- * layout from Image #11 / PrintableSvgPoster:
+ * Generate the active tasks A2 poster:
  * - DO table (Dark header #333) with Project, Reason, Bigness, Next first step / Notes
  * - AWAITING table (Medium header #888) with 2 columns (Project, Returns)
  * - DELAY table (Medium-dark header #666) with 2 columns (Project, Reason)
@@ -143,7 +142,7 @@ function renderWrappedText(
  * - Supports category filtering
  */
 export function generateActiveTasksPosterSvg(data: ActiveTasksPosterData): string {
-  const { tasks = [], categories, user = 'TIM DOBSON' } = data;
+  const { tasks = [], categories, user } = data;
 
   // 1. Filter out 'done' status (only active momentum: do, awaiting, delay)
   const validStatuses = new Set(['do', 'awaiting', 'delay']);
@@ -444,7 +443,9 @@ export function generateActiveTasksPosterSvg(data: ActiveTasksPosterData): strin
 
   const categorySub =
     categories && categories.length > 0 ? ` [${categories.join(' & ').toUpperCase()}]` : '';
-  const fullTitle = `${user.toUpperCase()}'S PROJECTS${categorySub}`;
+  const userName = user?.trim();
+  const heading = userName ? `${userName.toUpperCase()}'S PROJECTS` : 'ACTIVE TASKS';
+  const fullTitle = `${heading}${categorySub}`;
 
   // Outer Boundary
   // Calculate dynamic title underline based on text width estimate (~6.8mm per char at 11px Arial bold)

@@ -12,11 +12,11 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
             {
               id: 'task-1',
               project: 'Draft design system mockups',
-              reason: 'Required for Solfit launch',
+              reason: 'Required for Acme Solar launch',
               status: 'do',
               priority: 8,
               size: '**',
-              category: 'Solfit',
+              category: 'Acme Solar',
               notes: 'Initial thoughts',
               orderIndex: 0,
             },
@@ -83,10 +83,10 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
     // Add dated note
     await page.fill(
       'textarea[placeholder*="Write an update or note"]',
-      'Verified inverter specs with team'
+      'Verified equipment specs with the team'
     );
     await page.click('button:has-text("Save Note")');
-    await expect(page.locator('text=Verified inverter specs with team')).toBeVisible();
+    await expect(page.locator('text=Verified equipment specs with the team')).toBeVisible();
   });
 
   test('filters board by category', async ({ page }) => {
@@ -98,7 +98,7 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
           {
             id: 'task-1',
             project: 'Draft design system mockups',
-            category: 'Solfit',
+            category: 'Acme Solar',
             status: 'do',
             priority: 8,
             size: '**',
@@ -118,8 +118,8 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
     });
 
     await page.goto('/board');
-    await page.click('span:has-text("Solfit"), button:has-text("Solfit"), div:has-text("Solfit")');
-    await expect(page).toHaveURL(/category=Solfit/);
+    await page.click('span:has-text("Acme Solar"), button:has-text("Acme Solar"), div:has-text("Acme Solar")');
+    await expect(page).toHaveURL(/category=Acme(%20|\+)Solar/);
   });
 
   test('navigates to project category detail view', async ({ page }) => {
@@ -131,7 +131,7 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
           {
             id: 'task-1',
             project: 'Draft design system mockups',
-            category: 'Solfit',
+            category: 'Acme Solar',
             status: 'do',
             priority: 8,
             size: '**',
@@ -149,15 +149,15 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
           {
             id: 'epic-1',
             title: 'Get Acme Solar Live',
-            category: 'Solfit',
+            category: 'Acme Solar',
             status: 'active',
           },
         ]),
       });
     });
 
-    await page.goto('/projects/Solfit');
-    await expect(page.locator('text=Solfit')).toBeVisible();
+    await page.goto(`/projects/${encodeURIComponent('Acme Solar')}`);
+    await expect(page.locator('text=Acme Solar')).toBeVisible();
     await expect(page.locator('text=Get Acme Solar Live')).toBeVisible();
   });
 
@@ -170,7 +170,7 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
           id: 'epic-1',
           title: 'Get Acme Solar Live',
           description: 'Deploy solar monitoring',
-          category: 'Solfit',
+          category: 'Acme Solar',
           status: 'active',
         }),
       });
@@ -188,7 +188,7 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
             status: 'do',
             priority: 7,
             size: '**',
-            category: 'Solfit',
+            category: 'Acme Solar',
           },
         ]),
       });
@@ -217,7 +217,7 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
           {
             id: 'goal-1',
             type: 'focus',
-            title: 'Solfit Commercial Traction',
+            title: 'Acme Solar Commercial Traction',
             description: 'Close flagship enterprise contracts',
             orderIndex: 0,
             isActive: true,
@@ -243,7 +243,7 @@ test.describe('TimDo Hierarchy & Detail Pages', () => {
     });
 
     await page.goto('/goals');
-    await expect(page.locator('text=Solfit Commercial Traction')).toBeVisible();
+    await expect(page.locator('text=Acme Solar Commercial Traction')).toBeVisible();
     await expect(page.locator('button:has-text("Download SVG")')).toBeVisible();
   });
 });

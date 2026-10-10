@@ -37,8 +37,6 @@ import classes from './PosterCanvas.module.css';
 
 type PosterType = 'wall-of-done' | 'active-tasks' | 'goals-rhythm';
 
-const FALLBACK_CATEGORIES = ['Solfit', 'Crew', 'Personal', 'Migrating Dragons', 'Mavala', 'Xebit'];
-
 export default function PosterStudioPage() {
   const { data: session } = useSession();
   const [posterType, setPosterType] = useState<PosterType>('wall-of-done');
@@ -77,7 +75,7 @@ export default function PosterStudioPage() {
         set.add(p.category);
       }
     });
-    return set.size > 0 ? Array.from(set).sort((a, b) => a.localeCompare(b)) : FALLBACK_CATEGORIES;
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [myTasks]);
 
   const handlePrint = () => {

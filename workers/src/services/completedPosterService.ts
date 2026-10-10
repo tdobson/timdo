@@ -3,31 +3,9 @@ import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import * as schema from '../db/schema';
 import { getEpicsForUser } from './epicService';
 import { getProjectsForUser } from './projectService';
+import { getUserOrganisations } from './organisationService';
 
 type DB = DrizzleD1Database<typeof schema>;
-
-export const WORK_CATEGORIES = [
-  'Solfit',
-  'Migrating Dragons',
-  'Xebit',
-  'Mavala',
-  'Caving Crew',
-] as const;
-
-export const PREFIX_CATEGORY_MAP: Record<string, string> = {
-  solfit: 'Solfit',
-  crew: 'Caving Crew',
-  cavingcrew: 'Caving Crew',
-  'caving crew': 'Caving Crew',
-  personal: 'Personal',
-  mavala: 'Mavala',
-  md: 'Migrating Dragons',
-  'migrating dragons': 'Migrating Dragons',
-  xebit: 'Xebit',
-};
-
-const PREFIX_REGEX =
-  /^(Solfit|Crew|Caving Crew|Personal|Mavala|MD|Migrating Dragons|Xebit)\s*:\s*(.*)$/i;
 
 export interface OrdinalDateInfo {
   day: string;
@@ -91,11 +69,9 @@ export function formatOrdinalDate(date: Date): string {
   return formatOrdinalSuperscript(date).fullText;
 }
 
-// Helper to normalize any category string (e.g. 'Crew' -> 'Caving Crew', 'md' -> 'Migrating Dragons')
-export function normalizeCategory(cat: string): string {
-  const trimmed = cat.trim();
-  const lower = trimmed.toLowerCase();
-  return PREFIX_CATEGORY_MAP[lower] || trimmed;
+// Categories are project names. Matching ignores surrounding whitespace and case only.
+export function normalizeCategory(category: string): string {
+  return category.trim();
 }
 
 export function mapAndCleanTaskCategoryAndTitle(task: {
@@ -105,36 +81,21 @@ export function mapAndCleanTaskCategoryAndTitle(task: {
   title: string;
   category: string;
 } {
-  let rawCategory = task.category?.trim() || null;
+  const rawCategory = task.category?.trim() || null;
   let title = task.project.trim();
 
-  // If category is not set, attempt to extract from prefix
-  if (!rawCategory) {
-    const match = title.match(PREFIX_REGEX);
-    if (match) {
-      const matchedPrefix = match[1].toLowerCase();
-      rawCategory = PREFIX_CATEGORY_MAP[matchedPrefix] || match[1];
-      title = match[2].trim();
-    }
-  } else {
-    // If title has redundant prefix matching category, strip it
-    const match = title.match(PREFIX_REGEX);
-    if (match) {
-      title = match[2].trim();
-    }
-  }
-
-  // Normalize category names
   if (rawCategory) {
-    rawCategory = normalizeCategory(rawCategory);
+    const prefix = title.slice(0, rawCategory.length);
+    const afterPrefix = title.slice(rawCategory.length);
+    const delimiter = afterPrefix.match(/^\s*:\s*/);
+    if (prefix.toLowerCase() === rawCategory.toLowerCase() && delimiter) {
+      title = afterPrefix.slice(delimiter[0].length).trim();
+    }
   }
-
-  // Default to Personal if still unassigned
-  const finalCategory = rawCategory || 'Personal';
 
   return {
     title,
-    category: finalCategory,
+    category: normalizeCategory(rawCategory || 'Personal'),
   };
 }
 
@@ -194,6 +155,13 @@ export interface CompletedTaskInput {
   statusLastChangedOn?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
+  orgId?: string | null;
+}
+
+export interface PosterOrganisationMetadata {
+  id: string;
+  isPersonal: boolean;
+  memberCount?: number;
 }
 
 export function partitionCompletedTasks(
@@ -201,12 +169,17 @@ export function partitionCompletedTasks(
   epicsMap: Record<string, { id: string; title: string; goalId?: string | null }> = {},
   goalsMap: Record<string, { id: string; title: string; icon?: string | null }> = {},
   categories?: string[],
-  timeframe?: '6m' | '12m' | 'all'
+  timeframe?: '6m' | '12m' | 'all',
+  organisations: PosterOrganisationMetadata[] = []
 ): CompletedPosterData {
   const normalizedCategories =
     categories && categories.length > 0
-      ? categories.map((c) => normalizeCategory(c).toLowerCase())
+      ? categories.map((category) => normalizeCategory(category).toLowerCase())
       : null;
+  const personalWorkspaceById = new Map(organisations.map((org) => [org.id, org.isPersonal]));
+  const taskIsInPersonalWorkspace = new Map(
+    tasks.map((task) => [task.id, task.orgId ? (personalWorkspaceById.get(task.orgId) ?? true) : true])
+  );
 
   // Sort all completed tasks ascending by completion date
   const sortedTasks = [...tasks].sort((a, b) => {
@@ -291,34 +264,27 @@ export function partitionCompletedTasks(
       return normalizedCategories.includes(item.category.toLowerCase());
     });
 
-  // Split into Personal (cols 1-3) and Work/Ventures (col 4)
-  const isWorkCategory = (cat: string) => (WORK_CATEGORIES as readonly string[]).includes(cat);
-
   const personalItems = preparedItems
-    .filter((item) => !isWorkCategory(item.category))
+    .filter((item) => taskIsInPersonalWorkspace.get(item.id) ?? true)
     .sort((a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime());
 
-  const workItems = preparedItems
-    .filter((item) => isWorkCategory(item.category))
+  const otherWorkspaceItems = preparedItems
+    .filter((item) => !(taskIsInPersonalWorkspace.get(item.id) ?? true))
     .sort((a, b) => {
-      const catOrderA = WORK_CATEGORIES.indexOf(a.category as any);
-      const catOrderB = WORK_CATEGORIES.indexOf(b.category as any);
-      if (catOrderA !== catOrderB) {
-        return (catOrderA === -1 ? 99 : catOrderA) - (catOrderB === -1 ? 99 : catOrderB);
+      const categoryOrder = a.category.localeCompare(b.category, undefined, { sensitivity: 'base' });
+      if (categoryOrder !== 0) {
+        return categoryOrder;
       }
       return new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime();
     });
 
-  // Distribute Personal tasks down full vertical columns:
-  // Column 0 runs all the way down (Tier 1 -> Tier 2 -> Tier 3),
-  // then Column 1 runs down (Tier 1 -> Tier 2 -> Tier 3),
-  // then Column 2 runs down (Tier 1 -> Tier 2 -> Tier 3).
-  // Column 3 is Work/Ventures running down (Tier 1 -> Tier 2 -> Tier 3).
+  // Distribute personal workspace tasks down the first three columns.
+  // Tasks in every other workspace share the fourth column.
   const personalColSize = Math.ceil(personalItems.length / 3);
   const fullCol0 = personalItems.slice(0, personalColSize);
   const fullCol1 = personalItems.slice(personalColSize, personalColSize * 2);
   const fullCol2 = personalItems.slice(personalColSize * 2);
-  const fullCol3 = workItems;
+  const fullCol3 = otherWorkspaceItems;
 
   const col0PerTier = Math.ceil(fullCol0.length / 3);
   const col1PerTier = Math.ceil(fullCol1.length / 3);
@@ -354,10 +320,11 @@ export async function getCompletedPosterData(
 ): Promise<CompletedPosterData> {
   // The Wall of Done is personal: the tasks you did (assigned to you, or yours and unassigned),
   // across every workspace you belong to.
-  const [allMine, visibleEpics, userGoals] = await Promise.all([
+  const [allMine, visibleEpics, userGoals, organisations] = await Promise.all([
     getProjectsForUser(db, userId, { assignee: 'me' }),
     getEpicsForUser(db, userId),
     db.select().from(schema.goals).where(eq(schema.goals.userId, userId)),
+    getUserOrganisations(db, userId),
   ]);
   const completedTasks = allMine.filter((t) => t.status === 'done');
   const userEpics = visibleEpics;
@@ -372,5 +339,5 @@ export async function getCompletedPosterData(
     goalsMap[goal.id] = { id: goal.id, title: goal.title, icon: goal.icon };
   }
 
-  return partitionCompletedTasks(completedTasks, epicsMap, goalsMap, categories, timeframe);
+  return partitionCompletedTasks(completedTasks, epicsMap, goalsMap, categories, timeframe, organisations);
 }

@@ -17,6 +17,8 @@ export interface SearchResult {
   projectName?: string | null;
   orgName?: string | null;
   assigneeName?: string | null;
+  /** The query was a link or kind:id and this task carries it exactly (listed first) */
+  matchedRef?: true;
 }
 
 /**

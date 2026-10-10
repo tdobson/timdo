@@ -156,6 +156,7 @@ export const taskUpdates = sqliteTable('TaskUpdates', {
     .references(() => users.id, { onDelete: 'cascade' }),
   note: text('note').notNull(),
   gmailThreadId: text('gmail_thread_id'),
+  dedupeKey: text('dedupe_key'),
   createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });
@@ -217,6 +218,26 @@ export const taskRelations = sqliteTable('TaskRelations', {
     .notNull()
     .default('relates_to'),
   reason: text('reason'),
+  createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
+});
+
+// Pointers from a task to things outside TimDo; org_id copies the task's workspace (migration 0008)
+export const taskRefs = sqliteTable('TaskRefs', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id')
+    .notNull()
+    .references(() => tasks.id, { onDelete: 'cascade' }),
+  orgId: text('org_id')
+    .notNull()
+    .references(() => organisations.id, { onDelete: 'cascade' }),
+  role: text('role', { enum: ['link', 'source', 'reported_by', 'about'] })
+    .notNull()
+    .default('link'),
+  kind: text('kind').notNull(),
+  ref: text('ref').notNull(),
+  url: text('url'),
+  label: text('label'), // display only, never written to the activity log
   createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
 });

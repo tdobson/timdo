@@ -1,4 +1,19 @@
 import { z } from 'zod';
+import { refInputListSchema, refsNotOnUpdate } from './refValidators';
+
+export const ON_DUPLICATE = ['error', 'return', 'report'] as const;
+export type OnDuplicate = (typeof ON_DUPLICATE)[number];
+
+/**
+ * What a create does when a `source` ref in `refs` already has a live task in the workspace:
+ * `error` (409, the default), `return` (200, that task) or `report` (200, that task with the
+ * request's other refs and a note added). Ignored without a source ref.
+ */
+export const onDuplicateSchema = z
+  .enum(ON_DUPLICATE, {
+    errorMap: () => ({ message: 'onDuplicate must be error, return or report' }),
+  })
+  .optional();
 
 const statusEnum = z.enum(['do', 'delay', 'done', 'delegate', 'awaiting']);
 const sizeEnum = z.enum(['*', '**', '***', '****', '*****']);
@@ -29,25 +44,33 @@ const projectBaseSchema = z.object({
   assigneeId: optionalText,
 });
 
-export const projectCreateSchema = projectBaseSchema.refine(
-  (data) => {
-    // When status is 'awaiting', awaitUntil must be a non-null, non-empty string
-    if (data.status === 'awaiting') {
-      return data.awaitUntil != null && data.awaitUntil.length > 0;
+export const projectCreateSchema = projectBaseSchema
+  .extend({
+    /** Links to add with the task, in the same batch. One source at most. */
+    refs: refInputListSchema.optional(),
+    onDuplicate: onDuplicateSchema,
+  })
+  .refine(
+    (data) => {
+      // When status is 'awaiting', awaitUntil must be a non-null, non-empty string
+      if (data.status === 'awaiting') {
+        return data.awaitUntil != null && data.awaitUntil.length > 0;
+      }
+      return true;
+    },
+    {
+      message: "awaitUntil is required when status is 'awaiting'",
+      path: ['awaitUntil'],
     }
-    return true;
-  },
-  {
-    message: "awaitUntil is required when status is 'awaiting'",
-    path: ['awaitUntil'],
-  }
-);
+  );
 export type ProjectCreatePayload = z.infer<typeof projectCreateSchema>;
 
 export const projectUpdateSchema = projectBaseSchema.partial().extend({
   updatedAt: z.string().datetime().optional(),
   statusLastChangedOn: z.string().datetime().optional(),
   isDeleted: z.boolean().optional(),
+  refs: refsNotOnUpdate,
+  removeRefs: refsNotOnUpdate,
 });
 export type ProjectUpdatePayload = z.infer<typeof projectUpdateSchema>;
 

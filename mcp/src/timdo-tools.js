@@ -4,6 +4,7 @@
 // A task's "category" is its project's name. Everyone in a workspace sees all of its
 // projects, epics, tasks, notes and activity. Roles: owner, admin, member, viewer
 // (viewer is read-only). Life goals are private to each person.
+// Refs link a task to things outside TimDo (issues, posts, mail, member ids) as a URL or kind:id.
 
 import {
   runTimdoCli,
@@ -29,6 +30,12 @@ import {
   buildUpdateMemberRoleArgs,
   buildRemoveMemberArgs,
   buildMoveProjectArgs,
+  buildAddRefArgs,
+  buildRemoveRefArgs,
+  buildFindByRefArgs,
+  buildFindSimilarArgs,
+  REF_ROLES,
+  ON_DUPLICATE,
 } from './timdo-cli.js';
 
 const MODEL =
@@ -39,7 +46,55 @@ const MODEL =
 
 const TASK_FIELDS_NOTE =
   'Each task includes orgName (workspace), projectName/projectKey, isShared, myRole, canEdit, ' +
-  'assigneeId/assigneeName, reporterName (created by), updatedByName (last updated by) and isMine.';
+  'assigneeId/assigneeName, reporterName (created by), updatedByName (last updated by), isMine, ' +
+  'and refs (links to things outside TimDo, each with id, role, canonical "kind:id", url and label).';
+
+// Written for an agent that has never seen TimDo: what a ref is, the roles, examples, safety, privacy.
+const REFS_NOTE =
+  'A ref links a task to something outside TimDo: a GitHub issue or PR, a forum post, an email or Gmail thread, ' +
+  'an error report, a member of another system, any web page. Give it as a URL, or as kind:id where kind is a ' +
+  'lowercase dotted name (invent one for your own system), e.g. github.issue:acme/widgets#12 or acme.member:123456. ' +
+  'Roles: link = related material (the default); source = where the task came from (a ref can be the source of only ' +
+  'one task per workspace; adding it to an existing task when another holds it fails with "Already tracked: ... is ' +
+  'already the source of <short id> <title>" and names the existing task); reported_by = an outside person ' +
+  'or account who reported it (many allowed); about = the outside person or thing the task concerns. ' +
+  'Adding the same ref with the same role again is safe and changes nothing, so retries are fine. ' +
+  'Record people by their id in the other system (e.g. acme.member:123456), never by name or email address.';
+
+// How to avoid duplicates, for an agent about to create a task
+const DUPLICATES_NOTE =
+  'Avoid duplicates. When the task comes from free text (something a person asked for, an email, a chat), call ' +
+  'timdo_find_similar with the title first; if an open task already covers it and canEdit is true, add a note there ' +
+  'with timdo_add_note instead of creating. If canEdit is false, the match is read-only: do not try to add a note or ' +
+  'merge it, and tell the user they need an editor in that workspace. When it comes from an outside system (a forum post, ' +
+  'an issue, an error report, a webhook), pass that item as a source ref and onDuplicate: "report": the first call ' +
+  'creates the task, and every later call for the same item adds its new refs and a "Reported again" note to that task ' +
+  'instead, so retries and repeats are safe. The result is the task plus created (true for a new task; false when ' +
+  'onDuplicate found the existing one, with reported: true after a report) and similar (up to 3 open tasks that look alike, ' +
+  'each with canEdit). Similarity is a suggestion, not proof of a duplicate. Review both tasks and get the user\'s explicit confirmation of the exact source and target before calling timdo_merge_tasks. ' +
+  'Call it only if canEdit is true on both tasks; the merge acts immediately and archives the source into the target.';
+
+const REF_ITEM = {
+  type: 'object',
+  properties: {
+    ref: {
+      type: 'string',
+      description:
+        'A URL, or kind:id such as github.issue:acme/widgets#12 or forum.post:4411. When kind is given, just the id (e.g. 123456).',
+    },
+    role: { type: 'string', enum: REF_ROLES, description: 'link (default), source, reported_by or about' },
+    label: {
+      type: 'string',
+      description: 'Optional short display text (max 200), e.g. "Forum thread". Avoid people\'s names and contact details.',
+    },
+    kind: { type: 'string', description: 'Optional kind for a bare id, e.g. acme.member with ref 123456' },
+    url: {
+      type: 'string',
+      description: 'Optional http(s) link to open for this ref, when TimDo cannot build one (e.g. a member profile page)',
+    },
+  },
+  required: ['ref'],
+};
 
 const AS_USER = {
   type: 'string',
@@ -92,17 +147,20 @@ export const TIMDO_TOOLS = [
       noGoal: bool('Only tasks not linked to any of your life goals'),
       noCategory: bool('Only tasks with no project'),
       unlinked: str('Only tasks missing a hierarchy link', { enum: ['epic', 'goal', 'category', 'any'] }),
+      ref: str(
+        'Only tasks carrying this ref (a URL or kind:id, e.g. github.issue:acme/widgets#12). With ref and no status, every status is listed (done included).'
+      ),
     }
   ),
   tool(
     'timdo_get_task',
-    'Get one TimDo task: workspace, project, epic, assignee, created by, last updated by, linked tasks, notes (with author names) and recent activity.',
+    'Get one TimDo task: workspace, project, epic, assignee, created by, last updated by, refs (links to things outside TimDo, sorted by role: Source, About, Reported by, Link; each with an id you can pass to timdo_remove_ref), linked tasks, notes (with author names) and recent activity.',
     { id: str('Task ID (prefix or full UUID)') },
     ['id']
   ),
   tool(
     'timdo_add_task',
-    'Create a TimDo task. "category" picks the project by name: a project already in a shared workspace puts the task there (so collaborators see it); a new name creates the project in your personal workspace. New tasks are assigned to the creator unless assignTo says otherwise. Viewers cannot create tasks.',
+    `Create a TimDo task. "category" picks the project by name: a project already in a shared workspace puts the task there (so collaborators see it); a new name creates the project in your personal workspace. New tasks are assigned to the creator unless assignTo says otherwise. Viewers cannot create tasks. Optional refs are added with the task after validation. If a source ref is already tracked, onDuplicate controls the answer: error (default) returns 409 with the existing task, return gives that task back unchanged with created: false, and report adds the other refs and one report note, then returns created: false, reported: true. ${DUPLICATES_NOTE} ${REFS_NOTE}`,
     {
       project: str('Task title / name'),
       reason: str('Why this task matters'),
@@ -121,14 +179,52 @@ export const TIMDO_TOOLS = [
       linkTaskId: str('Task ID or prefix to link with after creation'),
       linkType: str('Relationship when linkTaskId is given (default: relates_to)', { enum: RELATIONS }),
       awaitUntil: str('Return date YYYY-MM-DD (needed when status is awaiting)'),
-      thread: str('Associated Gmail thread ID'),
+      thread: str('Associated Gmail thread ID (also recorded as a gmail.thread ref)'),
       notes: str('Initial notes or next action'),
+      refs: {
+        type: 'array',
+        maxItems: 20,
+        items: REF_ITEM,
+        description:
+          'Links to things outside TimDo, e.g. [{"ref":"forum.post:4411","role":"source"},{"ref":"acme.member:123456","role":"reported_by"},{"ref":"https://github.com/acme/widgets/issues/88"}]',
+      },
+      onDuplicate: str(
+        'What to do when a source ref in refs is already the source of a live task in that workspace. ' +
+          '"error" (default): create nothing and fail with "Already tracked: ..." naming that task. ' +
+          '"return": create nothing and return that task with created: false. ' +
+          '"report": add this call\'s other refs and a note \'Reported again: "<project>"\' (plus notes) to that task, ' +
+          'and return it with created: false, reported: true; repeating the same report adds nothing twice. ' +
+          'Use "report" for items from outside systems. Ignored when refs has no source.',
+        { enum: ON_DUPLICATE }
+      ),
     },
     ['project']
   ),
   tool(
+    'timdo_find_similar',
+    'Find open TimDo tasks that look like a task you are about to create, best first. Call it before timdo_add_task ' +
+      'whenever the title comes from free text, so you do not make a duplicate: if a result is the same thing, add a ' +
+      'note to it with timdo_add_note (or update it with timdo_update_task) instead of creating. Matching is by the ' +
+      'title\'s words: common words such as "the" and words under 3 letters are ignored, a title needs at least 2 ' +
+      'other words, and a task must share at least half of them (in its title, reason or notes). Titles are limited to ' +
+      '500 characters. An empty array means nothing looks similar, so go ahead and create. Done and deleted tasks never ' +
+      'appear. Scope it like the create: project searches the workspace that project is in; projectId the same by id or ' +
+      'key; workspace one workspace; none of them every workspace you can see. Returns [{ id, shortId, title, status, ' +
+      'projectId, projectName, orgId, orgName, assigneeId, assigneeName, score, canEdit }], where score (0.5 to 1) is ' +
+      'the share of the title\'s words found. Only add a note when canEdit is true; a read-only match cannot be edited.',
+    {
+      title: str('The title you would create, e.g. "Fix the offer page"'),
+      project: str('Project (category) name you would create in, e.g. Acme Solar: searches that project\'s workspace'),
+      projectId: str('Exact project by id, key (e.g. ACME) or "Workspace/Project": searches its workspace'),
+      workspace: str('Only this workspace, e.g. "Acme" or "personal"'),
+      limit: { type: 'number', description: 'How many results, 1 to 10 (default 3)' },
+      excludeId: str('Leave this task out (ID or prefix), e.g. the task you are editing'),
+    },
+    ['title']
+  ),
+  tool(
     'timdo_update_task',
-    'Update a TimDo task: status, details, project, epic, or who it is assigned to. Assignees must be members of the task\'s workspace. Viewers cannot edit (error "View only: ...").',
+    `Update a TimDo task: status, details, project, epic, who it is assigned to, and its refs. Assignees must be members of the task's workspace. Viewers cannot edit (error "View only: ..."). refs are added to the ones the task already has (never replacing them); removeRefs takes refs away. Each ref change is tried even if another fails; any failure makes the call fail with the reasons, but the rest are saved. ${REFS_NOTE}`,
     {
       id: str('Task ID (prefix or full UUID) to update'),
       project: str('New title for the task'),
@@ -150,8 +246,15 @@ export const TIMDO_TOOLS = [
       linkType: str('Relationship when linkTaskId is given (default: relates_to)', { enum: RELATIONS }),
       size: str('Size/effort (* to *****)'),
       awaitUntil: str('Return date YYYY-MM-DD (when status is awaiting)'),
-      thread: str('Associated Gmail thread ID'),
+      thread: str('Associated Gmail thread ID (also recorded as a gmail.thread ref)'),
       notes: str('Updated task notes'),
+      refs: { type: 'array', items: REF_ITEM, description: 'Refs to add, e.g. [{"ref":"https://github.com/acme/widgets/pull/7"}]' },
+      removeRefs: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Refs to remove: each a URL or kind:id (every role it has on this task goes), or a ref id from timdo_get_task, e.g. ["github.issue:acme/widgets#12"]',
+      },
     },
     ['id']
   ),
@@ -178,7 +281,7 @@ export const TIMDO_TOOLS = [
   ),
   tool(
     'timdo_search_tasks',
-    'Full-text search (SQLite FTS5, BM25) across tasks in every workspace you can see. Results include match snippets, linked tasks, and orgName/projectName/assigneeName.',
+    'Full-text search (SQLite FTS5, BM25) across tasks in every workspace you can see. Results include match snippets, linked tasks, and orgName/projectName/assigneeName. If the query is a URL or kind:id, tasks carrying exactly that ref come first, marked matchedRef: true, done ones included (check status) whatever includeDone says.',
     {
       query: str('Free-text query (title, reason, notes, customer, tags)'),
       includeDone: { type: 'boolean', default: false, description: 'Include done tasks (default: false)' },
@@ -238,7 +341,7 @@ export const TIMDO_TOOLS = [
   }),
   tool(
     'timdo_merge_tasks',
-    'Merge two TimDo tasks: notes and history move to the target, the source is archived. Needs edit rights on both. Acts immediately.',
+    'Merge two TimDo tasks: notes and history move to the target, and the source is archived. Needs edit rights on both. Acts immediately. Call only after reviewing both tasks and getting explicit user confirmation of the exact source and target.',
     {
       sourceId: str('Task ID (prefix or UUID) to absorb and archive'),
       targetId: str('Task ID (prefix or UUID) that survives'),
@@ -265,6 +368,40 @@ export const TIMDO_TOOLS = [
     'Remove a link between two TimDo tasks.',
     { taskId: str('First task ID or prefix'), targetTaskId: str('Second task ID or prefix') },
     ['taskId', 'targetTaskId']
+  ),
+
+  // Refs: links to things outside TimDo
+  tool(
+    'timdo_add_ref',
+    `Add one ref to an existing TimDo task. ${REFS_NOTE} Returns the ref (id, role, kind, ref, canonical, url, label, displayLabel) with existing: true if it was already there. Needs edit rights on the task (viewers get "View only: ...").`,
+    {
+      id: str('Task ID (prefix or full UUID)'),
+      ref: REF_ITEM.properties.ref,
+      role: REF_ITEM.properties.role,
+      label: REF_ITEM.properties.label,
+      kind: REF_ITEM.properties.kind,
+      url: REF_ITEM.properties.url,
+    },
+    ['id', 'ref']
+  ),
+  tool(
+    'timdo_remove_ref',
+    'Remove a ref (a link to something outside TimDo) from a TimDo task. ref is what was added, as a URL or kind:id (both forms match: https://github.com/acme/widgets/issues/12 is github.issue:acme/widgets#12), or the ref\'s id from timdo_get_task. Without role, every role of that ref on the task is removed. Returns { taskId, removed: [refs] }. Fails with "Not found: that link isn\'t on this task" when nothing matches. Needs edit rights.',
+    {
+      id: str('Task ID (prefix or full UUID)'),
+      ref: str('URL, kind:id (e.g. forum.post:4411) or ref id'),
+      role: str('Only remove it in this role', { enum: REF_ROLES }),
+    },
+    ['id', 'ref']
+  ),
+  tool(
+    'timdo_find_by_ref',
+    'Find TimDo tasks that carry a ref (a link to something outside TimDo), in every workspace you can see, any status including done. Use it to look up the task for an outside item, e.g. { "ref": "forum.post:4411", "role": "source" }. To create one only if it does not exist yet, call timdo_add_task with that source ref and onDuplicate "report" (or "return") instead: checking first and then creating can race with another caller, the single create cannot. ref is a URL or kind:id; a URL and its kind:id form find the same tasks. Returns an array of tasks (empty when none), each with its refs.',
+    {
+      ref: str('URL or kind:id, e.g. https://github.com/acme/widgets/issues/12 or acme.member:123456'),
+      role: str('Only tasks carrying it in this role', { enum: REF_ROLES }),
+    },
+    ['ref']
   ),
 
   // Collaboration
@@ -363,6 +500,10 @@ export const TIMDO_ARG_BUILDERS = {
   timdo_list_customers: () => buildListCustomersArgs(),
   timdo_link_tasks: (a) => buildLinkTasksArgs(a),
   timdo_unlink_tasks: (a) => buildUnlinkTasksArgs(a),
+  timdo_add_ref: (a) => buildAddRefArgs(a),
+  timdo_remove_ref: (a) => buildRemoveRefArgs(a),
+  timdo_find_by_ref: (a) => buildFindByRefArgs(a),
+  timdo_find_similar: (a) => buildFindSimilarArgs(a),
   timdo_activity: (a) => buildActivityArgs(a),
   timdo_whoami: () => buildWhoamiArgs(),
   timdo_list_workspaces: () => buildListWorkspacesArgs(),
@@ -375,6 +516,14 @@ export const TIMDO_ARG_BUILDERS = {
 
 const asText = (result) => ({ content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
 
+/** CLI errors suggest CLI commands; point an agent at the matching tool instead. */
+export function toolHints(message) {
+  return String(message)
+    .replace(/timdo get (\S+?)(?=[\s.,]|$)/g, 'timdo_get_task with id "$1"')
+    .replace(/timdo ref list (\S+?)(?=[\s.,]|$)/g, 'timdo_get_task with id "$1" (its refs)')
+    .replace(/--on-duplicate (error|return|report)\b/g, 'call timdo_add_task again with onDuplicate "$1"');
+}
+
 /**
  * Handle a timdo_* tool call. Returns an MCP result, or null when the name is not a TimDo tool.
  * Errors (including "View only: ..." from the API) are thrown for the caller to report.
@@ -384,10 +533,17 @@ export async function handleTimdoTool(name, rawArgs = {}, run = runTimdoCli) {
   if (!build) return null;
   const args = rawArgs || {};
   const options = args.asUser ? { asUser: args.asUser } : {};
-  const result = await run(build(args), undefined, options);
+  let result;
+  try {
+    result = await run(build(args), undefined, options);
+  } catch (e) {
+    throw new Error(toolHints(e.message || String(e)));
+  }
 
-  // Optional link straight after creating or updating a task
-  if ((name === 'timdo_add_task' || name === 'timdo_update_task') && args.linkTaskId) {
+  // Optional link straight after creating or updating a task. onDuplicate "return" promises no
+  // writes, so the task it hands back is not linked.
+  const returnedOnly = name === 'timdo_add_task' && result?.created === false && !result?.reported;
+  if ((name === 'timdo_add_task' || name === 'timdo_update_task') && args.linkTaskId && !returnedOnly) {
     const taskId = name === 'timdo_add_task' ? result?.id : args.id;
     if (taskId) {
       try {

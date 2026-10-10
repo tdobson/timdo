@@ -56,11 +56,15 @@ export function EditProjectModal({ opened, onClose, project, onSave }: EditProje
     },
   });
 
-  const handleSubmit = (values: typeof form.values) => {
+  const handleSubmit = ({ gmailThreadId: threadInput, ...values }: typeof form.values) => {
+    // Links change through their own endpoint (PUT refuses refs), and the thread is only sent
+    // when it was edited, so a stale copy never undoes a change made through links
+    const { refs: _refs, gmailThreadId: oldThread, ...rest } = project;
+    const gmailThreadId = threadInput ? threadInput.trim() : null;
     const updatedProject: Project = {
-      ...project,
+      ...rest,
       ...values,
-      gmailThreadId: values.gmailThreadId ? values.gmailThreadId.trim() : null,
+      ...(gmailThreadId !== (oldThread || null) ? { gmailThreadId } : {}),
       // Update statusLastChangedOn if status changed
       statusLastChangedOn:
         values.status !== project.status ? new Date().toISOString() : project.statusLastChangedOn,

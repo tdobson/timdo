@@ -2,9 +2,12 @@ import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
 import type { Env } from '../index';
 import { AccessError } from '../services/accessService';
+import * as refService from '../services/refService';
 import * as searchService from '../services/searchService';
+import { findSimilarTasks, MAX_LIMIT, MAX_TITLE_LENGTH } from '../services/similarService';
 import * as taskRelationService from '../services/taskRelationService';
 import * as taskService from '../services/taskService';
+import { refInputSchema, sentenceOnError } from '../validators/refValidators';
 import {
   taskAssignSchema,
   taskCreateSchema,
@@ -71,7 +74,38 @@ tasksApp.get('/search', async (c) => {
   return c.json(resultsWithLinks);
 });
 
-// POST /api/v2/tasks - create new task (mandatory projectId)
+// GET /api/v2/tasks/similar?title=&projectId=&orgId=&category=&excludeId=&limit= - open tasks
+// that look like this title, best first (see similarService). [] for fewer than 2 useful words
+tasksApp.get('/similar', async (c) => {
+  const title = c.req.query('title')?.trim();
+  if (!title) {
+    return c.json({ error: 'Say what the task is called: ?title=' }, 400);
+  }
+  if (title.length > MAX_TITLE_LENGTH) {
+    return c.json(
+      { error: `title must be ${MAX_TITLE_LENGTH} characters or fewer` },
+      400
+    );
+  }
+  const limitQuery = c.req.query('limit');
+  const limit = limitQuery ? Number(limitQuery) : undefined;
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+    return c.json({ error: `limit must be a whole number from 1 to ${MAX_LIMIT}` }, 400);
+  }
+  const similar = await findSimilarTasks(c.get('db'), c.get('userId'), {
+    title,
+    projectId: c.req.query('projectId') || undefined,
+    orgId: c.req.query('orgId') || undefined,
+    category: c.req.query('category') || undefined,
+    excludeId: c.req.query('excludeId') || undefined,
+    limit,
+  });
+  return c.json(similar);
+});
+
+// POST /api/v2/tasks - create new task (mandatory projectId). 201 with `created: true` and
+// `similar`; with a source ref already tracked, onDuplicate decides: 409 (error, the default),
+// or 200 with the existing task and `created: false` (return, report)
 tasksApp.post('/', zValidator('json', taskCreateSchema), async (c) => {
   const taskData = c.req.valid('json');
   const userId = c.get('userId');
@@ -79,10 +113,10 @@ tasksApp.post('/', zValidator('json', taskCreateSchema), async (c) => {
 
   try {
     const newTask = await taskService.createTask(db, userId, taskData);
-    return c.json(newTask, 201);
+    return c.json(newTask, (newTask as { created?: boolean }).created === false ? 200 : 201);
   } catch (error: any) {
-    if (error instanceof AccessError) {
-      throw error;
+    if (error instanceof AccessError || error instanceof refService.RefError) {
+      return refService.conflictWithTask(c, error);
     }
     return c.json({ error: error.message || 'Failed to create task' }, 400);
   }
@@ -121,7 +155,7 @@ tasksApp.put('/:id', zValidator('json', taskUpdateSchema), async (c) => {
     }
     return c.json(updated);
   } catch (error: any) {
-    if (error instanceof AccessError) {
+    if (error instanceof AccessError || error instanceof refService.RefError) {
       throw error;
     }
     return c.json({ error: error.message || 'Failed to update task' }, 400);
@@ -156,7 +190,7 @@ tasksApp.post('/:id/assign', zValidator('json', taskAssignSchema), async (c) => 
     }
     return c.json(updated);
   } catch (error: any) {
-    if (error instanceof AccessError) {
+    if (error instanceof AccessError || error instanceof refService.RefError) {
       throw error;
     }
     return c.json({ error: error.message || 'Failed to assign task' }, 400);
@@ -220,7 +254,7 @@ tasksApp.post('/:id/goals', zValidator('json', taskGoalLinkSchema), async (c) =>
     }
     return c.json(linked, 201);
   } catch (error: any) {
-    if (error instanceof AccessError) {
+    if (error instanceof AccessError || error instanceof refService.RefError) {
       throw error;
     }
     return c.json({ error: error.message || 'Failed to link goal' }, 400);
@@ -260,7 +294,7 @@ tasksApp.post('/:id/links', zValidator('json', taskRelationCreateSchema), async 
     );
     return c.json(link, 201);
   } catch (error: any) {
-    if (error instanceof AccessError) {
+    if (error instanceof AccessError || error instanceof refService.RefError) {
       throw error;
     }
     return c.json({ error: error.message || 'Failed to link tasks' }, 400);
@@ -281,11 +315,49 @@ tasksApp.delete('/:id/links/:targetId', async (c) => {
     }
     return c.json({ message: 'Link removed successfully' });
   } catch (error: any) {
-    if (error instanceof AccessError) {
+    if (error instanceof AccessError || error instanceof refService.RefError) {
       throw error;
     }
     return c.json({ error: error.message || 'Failed to remove link' }, 400);
   }
+});
+
+// GET /api/v2/tasks/:id/refs - links to things outside TimDo (anyone who can see the task)
+tasksApp.get('/:id/refs', async (c) => {
+  const refs = await refService.listRefs(c.get('db'), c.get('userId'), c.req.param('id'));
+  return c.json(refs);
+});
+
+// POST /api/v2/tasks/:id/refs - add a link; 201 when new, 200 with existing: true when already there
+tasksApp.post('/:id/refs', zValidator('json', refInputSchema, sentenceOnError), async (c) => {
+  const { ref, existing } = await refService.addRef(
+    c.get('db'),
+    c.get('userId'),
+    c.req.param('id'),
+    c.req.valid('json')
+  );
+  return c.json({ ...ref, existing }, existing ? 200 : 201);
+});
+
+// DELETE /api/v2/tasks/:id/refs?ref=<url|kind:id>&role= - remove by what it points at
+tasksApp.delete('/:id/refs', async (c) => {
+  const ref = c.req.query('ref');
+  if (!ref) {
+    return c.json({ error: 'Say which link to remove: ?ref=<url or kind:id>, or its id' }, 400);
+  }
+  await refService.removeRef(c.get('db'), c.get('userId'), c.req.param('id'), {
+    ref,
+    role: c.req.query('role'),
+  });
+  return c.body(null, 204);
+});
+
+// DELETE /api/v2/tasks/:id/refs/:refId - remove by id (or an unambiguous id prefix)
+tasksApp.delete('/:id/refs/:refId', async (c) => {
+  await refService.removeRef(c.get('db'), c.get('userId'), c.req.param('id'), {
+    refId: c.req.param('refId'),
+  });
+  return c.body(null, 204);
 });
 
 export default tasksApp;

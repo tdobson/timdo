@@ -32,12 +32,12 @@ beforeEach(() => {
   jest.clearAllMocks();
   process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = API;
   useSessionMock.mockReturnValue({
-    data: { user: { name: 'Robin Fairweather' }, accessToken: 'test-token', expires: '1' },
+    data: { user: { name: 'Casey Example' }, accessToken: 'test-token', expires: '1' },
     status: 'authenticated',
   });
   workspaces = [
-    { id: 'org-ed', name: 'Personal Workspace', isPersonal: true, role: 'owner' },
-    { id: 'org-md', name: 'Migrating Dragons', isPersonal: false, role: 'member' },
+    { id: 'org-1', name: 'Personal Workspace', isPersonal: true, role: 'owner' },
+    { id: 'org-2', name: 'Northstar Workshop', isPersonal: false, role: 'member' },
   ];
   fetchMock.mockImplementation((url: string) => {
     if (url === `${API}/organisations/invites/accept`) {
@@ -56,11 +56,11 @@ describe('InvitePage (/invite/[token])', () => {
     acceptResponse = {
       ok: true,
       status: 200,
-      body: { success: true, orgId: 'org-md', role: 'member' },
+      body: { success: true, orgId: 'org-2', role: 'member' },
     };
     render(<InvitePage />);
 
-    expect(await screen.findByText("You've joined Migrating Dragons")).toBeInTheDocument();
+    expect(await screen.findByText("You've joined Northstar Workshop")).toBeInTheDocument();
     expect(screen.getByText(/You're a member: work on tasks, epics and notes/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Go to your tasks' })).toHaveAttribute('href', '/');
 
@@ -93,11 +93,11 @@ describe('InvitePage (/invite/[token])', () => {
     render(<InvitePage />);
 
     expect(await screen.findByText('This invite has already been used')).toBeInTheDocument();
-    expect(screen.getByText(/You're in Migrating Dragons/)).toBeInTheDocument();
+    expect(screen.getByText(/You're in Northstar Workshop/)).toBeInTheDocument();
   });
 
   it('says a used link does not work when they are not in any shared workspace', async () => {
-    workspaces = [{ id: 'org-ed', name: 'Personal Workspace', isPersonal: true, role: 'owner' }];
+    workspaces = [{ id: 'org-1', name: 'Personal Workspace', isPersonal: true, role: 'owner' }];
     acceptResponse = {
       ok: false,
       status: 400,

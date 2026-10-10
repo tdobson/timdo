@@ -25,8 +25,8 @@ jest.mock('../../app/hooks/useOrganisationQueries', () => ({
 
 const mockOrg = {
   id: 'org-123',
-  name: 'XEBIT Team',
-  slug: 'xebit-team',
+  name: 'Northstar Workshop',
+  slug: 'northstar-workshop',
   createdBy: 'user-owner',
 };
 
@@ -36,23 +36,23 @@ const mockMembers = [
     orgId: 'org-123',
     userId: 'user-owner',
     role: 'owner' as const,
-    userName: 'Tim Dobson',
-    userEmail: 'tim@xebit.io',
+    userName: 'Casey Example',
+    userEmail: 'casey@example.com',
   },
   {
     id: 'm-2',
     orgId: 'org-123',
     userId: 'user-admin',
     role: 'admin' as const,
-    userName: 'Sarah Jenkins',
-    userEmail: 'sarah@xebit.io',
+    userName: 'Jordan Example',
+    userEmail: 'jordan@example.com',
   },
   {
     id: 'm-3',
     orgId: 'org-123',
     userId: 'user-member',
     role: 'member' as const,
-    userName: 'Alex Rivera',
+    userName: 'Alex Example',
     userEmail: 'alex@example.com',
   },
 ];
@@ -61,7 +61,7 @@ const mockInvites = [
   {
     id: 'inv-1',
     orgId: 'org-123',
-    email: 'pending@partner.com',
+    email: 'invite@example.com',
     role: 'member' as const,
     token: 'tok-abc',
     invitedBy: 'user-owner',
@@ -110,10 +110,10 @@ describe('OrgSettingsModal', () => {
 
   it('renders organisation title and member list', () => {
     renderModal('user-owner');
-    expect(screen.getByText(/organisation settings: xebit team/i)).toBeInTheDocument();
-    expect(screen.getByText('Tim Dobson')).toBeInTheDocument();
-    expect(screen.getByText('Sarah Jenkins')).toBeInTheDocument();
-    expect(screen.getByText('Alex Rivera')).toBeInTheDocument();
+    expect(screen.getByText(/organisation settings: northstar workshop/i)).toBeInTheDocument();
+    expect(screen.getByText('Casey Example')).toBeInTheDocument();
+    expect(screen.getByText('Jordan Example')).toBeInTheDocument();
+    expect(screen.getByText('Alex Example')).toBeInTheDocument();
   });
 
   it('displays owner badge for the creator/owner', () => {
@@ -134,7 +134,7 @@ describe('OrgSettingsModal', () => {
     const invitesTab = screen.getByRole('tab', { name: /pending invites/i });
     await userEvent.click(invitesTab);
 
-    expect(screen.getByText('pending@partner.com')).toBeInTheDocument();
+    expect(screen.getByText('invite@example.com')).toBeInTheDocument();
     expect(screen.getByText('Pending Invite')).toBeInTheDocument();
   });
 
@@ -143,11 +143,11 @@ describe('OrgSettingsModal', () => {
     const emailInput = screen.getByTestId('invite-email-input');
     const sendBtn = screen.getByTestId('invite-submit-btn');
 
-    await userEvent.type(emailInput, 'colleague@xebit.io');
+    await userEvent.type(emailInput, 'newmember@example.com');
     await userEvent.click(sendBtn);
 
     expect(mockInviteMutate).toHaveBeenCalledWith({
-      email: 'colleague@xebit.io',
+      email: 'newmember@example.com',
       role: 'member',
     });
   });

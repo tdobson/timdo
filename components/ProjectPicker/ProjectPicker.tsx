@@ -19,8 +19,8 @@ export interface ProjectPickerProps
 }
 
 /**
- * Project picker grouped by workspace ("Personal", "Migrating Dragons (shared)"). Only lists
- * projects I can add to: view-only workspaces are left out.
+ * Project picker grouped by workspace. Only lists projects I can add to: view-only workspaces are
+ * left out.
  */
 export function ProjectPicker({
   value,

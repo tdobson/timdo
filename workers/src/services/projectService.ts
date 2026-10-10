@@ -4,10 +4,14 @@
  * tables. Every read is scoped to the workspaces the caller belongs to, every write is
  * permission-checked and recorded in the activity log.
  */
-import { and, asc, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
-import type { DrizzleD1Database } from 'drizzle-orm/d1';
+import { and, asc, desc, eq, inArray, isNotNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import type { BatchItem } from 'drizzle-orm/batch';
+import type { DrizzleD1Database, SQLiteD1Session } from 'drizzle-orm/d1';
+import type { SQLiteAsyncDialect } from 'drizzle-orm/sqlite-core';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
+import { canonicalRef, type ParsedRef, type RefRole } from '../lib/refs';
+import { generateProjectKey } from './migrationService';
 import type {
   ProjectCreatePayload,
   ProjectUpdateBatchPayload,
@@ -17,8 +21,10 @@ import {
   AccessError,
   canEdit,
   canManage,
+  ensurePersonalOrg,
   getAccessibleProjects,
   getUserNames,
+  matchingProjectsForCategory,
   resolveProjectForWrite,
   type AccessibleProject,
   type Role,
@@ -30,6 +36,31 @@ import {
   statusLabel,
   type FieldChanges,
 } from './activityService';
+import {
+  addResolvedRefs,
+  assertSourcesFreeIn,
+  fetchRefRows,
+  findSourceHolder,
+  insertTaskWithRefs,
+  prepareRefsForMerge,
+  normaliseGmailThreadId,
+  prepareRefsForCreate,
+  RefConflictError,
+  RefError,
+  SourceHolderChangedError,
+  hasCurrentSourceHolder,
+  sourceHolderCondition,
+  refViewsFor,
+  releaseSource,
+  sourceConflict,
+  syncGmailThread,
+  taskHasRef,
+  updateRefOrgs,
+  type RefInput,
+  type RefView,
+  type SourceHolderGuard,
+} from './refService';
+import { findSimilarTasks, type SimilarTask } from './similarService';
 import { resolveTaskIdForUser } from './taskService';
 
 type DB = DrizzleD1Database<typeof schema>;
@@ -46,6 +77,9 @@ export interface ProjectFilters {
   assignee?: string;
   orgId?: string;
   projectId?: string;
+  /** Only tasks carrying this ref (already parsed), optionally in one role. */
+  ref?: Pick<ParsedRef, 'kind' | 'ref'>;
+  refRole?: RefRole;
 }
 
 /** A task in the original `/projects` shape, plus who-did-what and sharing context. */
@@ -84,6 +118,8 @@ export interface TaskView {
   updatedById: string | null;
   updatedByName: string | null;
   isMine: boolean;
+  /** Links to things outside TimDo, Source first. Empty when there are none. */
+  refs: RefView[];
 }
 
 function toView(
@@ -91,7 +127,8 @@ function toView(
   project: AccessibleProject,
   userId: string,
   names: Map<string, string>,
-  goalId: string | null
+  goalId: string | null,
+  refs: RefView[]
 ): TaskView {
   return {
     id: task.id,
@@ -129,6 +166,7 @@ function toView(
     updatedById: task.updatedBy ?? task.reporterId,
     updatedByName: names.get(task.updatedBy ?? task.reporterId) ?? null,
     isMine: task.assigneeId === userId || (!task.assigneeId && task.reporterId === userId),
+    refs,
   };
 }
 
@@ -148,16 +186,31 @@ async function personalGoalMap(db: DB, userId: string) {
 
 async function buildViews(db: DB, userId: string, rows: TaskRow[], projects: AccessibleProject[]) {
   const byId = new Map(projects.map((p) => [p.id, p]));
+  const visible = rows.filter((t) => byId.has(t.projectId));
+  // Refs come in one query for the whole list, so their authors can share the names lookup
+  const refs = await fetchRefRows(
+    db,
+    visible.map((t) => byId.get(t.projectId)!.orgId),
+    new Set(visible.map((t) => t.id))
+  );
   const [names, goals] = await Promise.all([
-    getUserNames(
-      db,
-      rows.flatMap((t) => [t.reporterId, t.assigneeId, t.updatedBy])
-    ),
+    getUserNames(db, [
+      ...visible.flatMap((t) => [t.reporterId, t.assigneeId, t.updatedBy]),
+      ...Array.from(refs.values()).flatMap((list) => list.map((r) => r.createdBy)),
+    ]),
     personalGoalMap(db, userId),
   ]);
-  return rows
-    .filter((t) => byId.has(t.projectId))
-    .map((t) => toView(t, byId.get(t.projectId)!, userId, names, goals.get(t.id) ?? null));
+  return visible.map((t) => {
+    const project = byId.get(t.projectId)!;
+    return toView(
+      t,
+      project,
+      userId,
+      names,
+      goals.get(t.id) ?? null,
+      refViewsFor(refs.get(t.id), names, canEdit(project.role))
+    );
+  });
 }
 
 export async function getProjectsForUser(
@@ -219,6 +272,10 @@ export async function getProjectsForUser(
       conditions.push(eq(schema.tasks.assigneeId, a));
     }
   }
+  if (filters.ref) {
+    // Visibility still comes from the project filter above, so other workspaces never leak
+    conditions.push(taskHasRef(filters.ref, filters.refRole));
+  }
   if (filters.relatedTo) {
     const target = await resolveTaskIdForUser(db, userId, filters.relatedTo);
     if (!target) {
@@ -254,8 +311,8 @@ export async function getTaskView(
   return views[0] ?? null;
 }
 
-/** Load a task the user is allowed to change, or throw. */
-async function loadEditable(db: DB, userId: string, taskId: string) {
+/** Load a task the user is allowed to change: null if they can't see it, AccessError if view-only. */
+export async function loadEditable(db: DB, userId: string, taskId: string) {
   const task = await db
     .select()
     .from(schema.tasks)
@@ -345,13 +402,7 @@ async function isOrgMember(db: DB, userId: string, orgId: string) {
   return !!row;
 }
 
-async function setPersonalGoal(db: DB, userId: string, taskId: string, goalId: string | null) {
-  await db
-    .delete(schema.taskUserGoals)
-    .where(and(eq(schema.taskUserGoals.taskId, taskId), eq(schema.taskUserGoals.userId, userId)));
-  if (!goalId) {
-    return;
-  }
+async function validatePersonalGoal(db: DB, userId: string, goalId: string) {
   const goal = await db
     .select({ id: schema.goals.id })
     .from(schema.goals)
@@ -360,15 +411,140 @@ async function setPersonalGoal(db: DB, userId: string, taskId: string, goalId: s
   if (!goal) {
     throw new AccessError('Life goal not found', 404);
   }
-  await db.insert(schema.taskUserGoals).values({ taskId, userId, goalId });
+}
+
+function personalGoalStatements(
+  db: DB,
+  userId: string,
+  taskId: string,
+  goalId: string | null
+): BatchItem<'sqlite'>[] {
+  const statements: BatchItem<'sqlite'>[] = [
+    db
+      .delete(schema.taskUserGoals)
+      .where(and(eq(schema.taskUserGoals.taskId, taskId), eq(schema.taskUserGoals.userId, userId))),
+  ];
+  if (goalId) {
+    statements.push(db.insert(schema.taskUserGoals).values({ taskId, userId, goalId }));
+  }
+  return statements;
+}
+
+async function setPersonalGoal(db: DB, userId: string, taskId: string, goalId: string | null) {
+  if (goalId) {
+    await validatePersonalGoal(db, userId, goalId);
+  }
+  const statements = personalGoalStatements(db, userId, taskId, goalId);
+  await db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+}
+
+/**
+ * What a create answers. A new task has `created: true` and `similar` (likely duplicates in its
+ * workspace, best first). When the request's source ref already has a live task, `onDuplicate`
+ * decides: `error` (default) throws a 409 carrying that task, `return` gives it back untouched,
+ * and `report` adds the request's other refs and a note to it first. Both give `created: false`.
+ */
+export type CreateResult = TaskView & {
+  created: boolean;
+  reported?: true;
+  similar?: SimilarTask[];
+};
+
+interface CreateProjectTarget {
+  project: AccessibleProject;
+  createProject: boolean;
+}
+
+/** Resolve a create destination without creating its project yet. */
+async function planProjectForCreate(
+  db: DB,
+  userId: string,
+  categoryName: string | null | undefined
+): Promise<CreateProjectTarget> {
+  const name = (categoryName || '').trim() || 'General';
+  const all = await getAccessibleProjects(db, userId);
+  const matches = matchingProjectsForCategory(all, name);
+  const editable = matches.find((p) => canEdit(p.role));
+  if (editable) {
+    return { project: editable, createProject: false };
+  }
+  if (matches.length > 0) {
+    throw new AccessError(`You have view-only access to "${matches[0].name}"`);
+  }
+
+  const personal = await db
+    .select({ id: schema.organisations.id, name: schema.organisations.name })
+    .from(schema.organisations)
+    .innerJoin(
+      schema.organisationMembers,
+      eq(schema.organisationMembers.orgId, schema.organisations.id)
+    )
+    .where(
+      and(
+        eq(schema.organisations.isPersonal, true),
+        eq(schema.organisations.createdBy, userId),
+        eq(schema.organisationMembers.userId, userId)
+      )
+    )
+    .get();
+  return {
+    project: {
+      id: uuidv4(),
+      key: generateProjectKey(name),
+      name,
+      orgId: personal?.id ?? '',
+      orgName: personal?.name ?? 'Personal',
+      orgIsPersonal: true,
+      role: 'owner',
+      memberCount: 1,
+      isArchived: false,
+    },
+    createProject: true,
+  };
+}
+
+/** Make the project row alongside the task, so a source race rolls both back. */
+async function createProjectRowForTask(
+  db: DB,
+  userId: string,
+  planned: AccessibleProject
+): Promise<{ project: AccessibleProject; statement: BatchItem<'sqlite'> }> {
+  let orgId = planned.orgId;
+  let orgName = planned.orgName;
+  if (!orgId) {
+    orgId = await ensurePersonalOrg(db, userId);
+    const org = await db
+      .select({ name: schema.organisations.name })
+      .from(schema.organisations)
+      .where(eq(schema.organisations.id, orgId))
+      .get();
+    orgName = org?.name ?? 'Personal';
+  }
+  const now = new Date().toISOString();
+  const row = {
+    id: planned.id,
+    orgId,
+    key: planned.key,
+    name: planned.name,
+    description: null,
+    leadUserId: userId,
+    isArchived: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+  return {
+    project: { ...planned, orgId, orgName },
+    statement: db.insert(schema.projects).values(row),
+  };
 }
 
 export async function createProject(
   db: DB,
   userId: string,
-  data: ProjectCreatePayload & { id: string }
-): Promise<TaskView> {
+  data: ProjectCreatePayload & { id: string; refs?: RefInput[] }
+): Promise<CreateResult> {
   let project: AccessibleProject;
+  let needsProjectInsert = false;
   if (data.projectId) {
     const found = (await getAccessibleProjects(db, userId)).find((p) => p.id === data.projectId);
     if (!found) {
@@ -379,7 +555,9 @@ export async function createProject(
     }
     project = found;
   } else {
-    project = await resolveProjectForWrite(db, userId, data.category);
+    const plan = await planProjectForCreate(db, userId, data.category);
+    project = plan.project;
+    needsProjectInsert = plan.createProject;
   }
 
   const assigneeId = data.assigneeId === undefined ? userId : data.assigneeId;
@@ -389,34 +567,95 @@ export async function createProject(
   if (data.epicId) {
     await assertEpicUsable(db, userId, data.epicId, project);
   }
-
-  const now = new Date().toISOString();
-  await db.insert(schema.tasks).values({
-    id: data.id,
-    projectId: project.id,
-    epicId: data.epicId ?? null,
-    reporterId: userId,
-    assigneeId,
-    title: data.project,
-    reason: data.reason ?? null,
-    status: data.status,
-    priority: data.priority,
-    size: data.size,
-    notes: data.notes ?? null,
-    statusLastChangedOn: now,
-    awaitUntil: data.awaitUntil ?? null,
-    gmailThreadId: data.gmailThreadId ?? null,
-    customer: data.customer ?? null,
-    tags: data.tags ?? null,
-    isDeleted: false,
-    updatedBy: userId,
-    createdAt: now,
-    updatedAt: now,
-  });
   if (data.goalId) {
-    await setPersonalGoal(db, userId, data.id, data.goalId);
+    await validatePersonalGoal(db, userId, data.goalId);
   }
 
+  // Refs are checked before anything is written; a bad ref stops the create
+  const refInputs: RefInput[] = [...(data.refs ?? [])];
+  if (data.gmailThreadId?.trim()) {
+    refInputs.push({ ref: data.gmailThreadId, kind: 'gmail.thread' });
+  }
+  const refRows = await prepareRefsForCreate(db, userId, data.id, project.orgId, refInputs);
+  const source = refRows.find((r) => r.role === 'source');
+  // The column mirrors the newest gmail.thread ref, in its stored (trimmed) form
+  const gmailRefs = refRows.filter((r) => r.kind === 'gmail.thread');
+  const gmailThreadId = gmailRefs.length ? gmailRefs[gmailRefs.length - 1].ref : null;
+
+  const now = new Date().toISOString();
+  const taskInsert = () =>
+    db.insert(schema.tasks).values({
+      id: data.id,
+      projectId: project.id,
+      epicId: data.epicId ?? null,
+      reporterId: userId,
+      assigneeId,
+      title: data.project,
+      reason: data.reason ?? null,
+      status: data.status,
+      priority: data.priority,
+      size: data.size,
+      notes: data.notes ?? null,
+      statusLastChangedOn: now,
+      awaitUntil: data.awaitUntil ?? null,
+      gmailThreadId,
+      customer: data.customer ?? null,
+      tags: data.tags ?? null,
+      isDeleted: false,
+      updatedBy: userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+  // The source index is the lock: check it before writing, then re-resolve if the holder changed
+  // while a duplicate response or a conditional report write was being prepared.
+  const maxSourceAttempts = 3;
+  for (let attempt = 1; ; attempt++) {
+    const holder = source && project.orgId ? await findSourceHolder(db, project.orgId, source) : null;
+    if (source && holder && !holder.isDeleted) {
+      try {
+        return await answerDuplicate(db, userId, holder.taskId, project.orgId, source, data, refRows);
+      } catch (err) {
+        if (!(err instanceof SourceHolderChangedError)) {
+          throw err;
+        }
+        if (attempt >= maxSourceAttempts) {
+          throw new RefError('Source ownership changed while creating. Retry the request.', 409);
+        }
+        continue;
+      }
+    }
+    try {
+      const beforeCreate: BatchItem<'sqlite'>[] = holder ? releaseSource(db, holder) : [];
+      if (needsProjectInsert) {
+        const created = await createProjectRowForTask(db, userId, project);
+        project = created.project;
+        for (const ref of refRows) {
+          ref.orgId = project.orgId;
+        }
+        beforeCreate.push(created.statement);
+      }
+      const afterCreate = data.goalId
+        ? personalGoalStatements(db, userId, data.id, data.goalId)
+        : [];
+      await insertTaskWithRefs(db, taskInsert(), refRows, beforeCreate, afterCreate);
+      break;
+    } catch (err) {
+      if (!(err instanceof RefConflictError || err instanceof SourceHolderChangedError)) {
+        throw err;
+      }
+      if (attempt >= maxSourceAttempts) {
+        if (err instanceof RefConflictError) {
+          const visible = await getTaskView(db, userId, err.taskId);
+          if (visible && visible.orgId === project.orgId) {
+            err.task = visible;
+            throw err;
+          }
+        }
+        throw new RefError('Source ownership changed while creating. Retry the request.', 409);
+      }
+    }
+  }
   await logActivity(db, {
     actorId: userId,
     orgId: project.orgId,
@@ -427,9 +666,125 @@ export async function createProject(
     epicId: data.epicId ?? null,
     action: 'created',
     summary: `Created "${data.project}"`,
+    // Canonical forms only: labels may hold names
+    changes: refRows.length ? { refs: { from: [], to: refRows.map(canonicalRef) } } : null,
   });
 
-  return (await getTaskView(db, userId, data.id))!;
+  const view = (await getTaskView(db, userId, data.id))!;
+  let similar: SimilarTask[] = [];
+  try {
+    similar = await findSimilarTasks(db, userId, {
+      title: data.project,
+      orgId: project.orgId,
+      excludeId: data.id,
+    });
+  } catch (err) {
+    console.error('[Similar tasks] Could not load post-create suggestions', err);
+  }
+  return { ...view, created: true, similar };
+}
+
+/**
+ * A create whose source already has a live task, answered as `onDuplicate` asks. The holder is
+ * in the same workspace as the request, so the caller can see it; `report` needs edit rights
+ * on it, checked before anything is added.
+ */
+async function verifiedDuplicateHolder(
+  db: DB,
+  userId: string,
+  holderId: string,
+  orgId: string,
+  source: { kind: string; ref: string }
+): Promise<TaskView> {
+  const guard: SourceHolderGuard = { taskId: holderId, orgId, kind: source.kind, ref: source.ref, userId };
+  const holder = await getTaskView(db, userId, holderId);
+  if (!holder) {
+    if (!(await hasCurrentSourceHolder(db, guard))) {
+      throw new SourceHolderChangedError();
+    }
+    throw new AccessError('Task not found or access denied', 404);
+  }
+  if (
+    holder.orgId !== orgId ||
+    holder.isDeleted ||
+    !(await hasCurrentSourceHolder(db, guard))
+  ) {
+    throw new SourceHolderChangedError();
+  }
+  return holder;
+}
+
+async function answerDuplicate(
+  db: DB,
+  userId: string,
+  holderId: string,
+  orgId: string,
+  source: { kind: string; ref: string },
+  data: ProjectCreatePayload,
+  refRows: Awaited<ReturnType<typeof prepareRefsForCreate>>
+): Promise<CreateResult> {
+  const mode = data.onDuplicate ?? 'error';
+  const guard: SourceHolderGuard = { taskId: holderId, orgId, kind: source.kind, ref: source.ref, userId };
+  const holder = await verifiedDuplicateHolder(db, userId, holderId, orgId, source);
+  if (mode === 'error') {
+    const err = sourceConflict(source, holder.id, holder.project);
+    err.task = holder;
+    throw err;
+  }
+  if (mode === 'return') {
+    return { ...holder, created: false };
+  }
+
+  let loaded;
+  try {
+    loaded = await loadEditable(db, userId, holderId);
+  } catch (err) {
+    if (err instanceof AccessError && !(await hasCurrentSourceHolder(db, guard))) {
+      throw new SourceHolderChangedError();
+    }
+    throw err;
+  }
+  if (!loaded) {
+    if (!(await hasCurrentSourceHolder(db, guard))) {
+      throw new SourceHolderChangedError();
+    }
+    throw new AccessError('Task not found or access denied', 404);
+  }
+  if (loaded.project.orgId !== orgId || !(await hasCurrentSourceHolder(db, guard))) {
+    throw new SourceHolderChangedError();
+  }
+
+  // Report refs and the note use conditional writes tied to this exact live source holder.
+  const added = await addResolvedRefs(
+    db,
+    userId,
+    holderId,
+    refRows.filter((r) => r.role !== 'source'),
+    guard
+  );
+  const title = data.project.trim();
+  const notes = data.notes?.trim() || '';
+  const sameTitle = title.toLowerCase() === loaded.task.title.trim().toLowerCase();
+  if (!(sameTitle && !notes && added === 0)) {
+    const note = `Reported again: "${title}"${notes ? `\n${notes}` : ''}`;
+    // Keep earlier matching notes idempotent; the unique key handles concurrent report requests.
+    const said = await db
+      .select({ id: schema.taskUpdates.id })
+      .from(schema.taskUpdates)
+      .where(and(eq(schema.taskUpdates.taskId, holderId), eq(schema.taskUpdates.note, note)))
+      .get();
+    if (!said) {
+      await addProjectUpdate(db, {
+        projectId: holderId,
+        userId,
+        note,
+        dedupeKey: await reportNoteDedupeKey(note),
+        sourceGuard: guard,
+      });
+    }
+  }
+  const current = await verifiedDuplicateHolder(db, userId, holderId, orgId, source);
+  return { ...current, created: false, reported: true };
 }
 
 const TRACKED_FIELDS = [
@@ -472,7 +827,6 @@ export async function updateProject(
     'size',
     'notes',
     'awaitUntil',
-    'gmailThreadId',
     'customer',
     'tags',
     'isDeleted',
@@ -480,6 +834,13 @@ export async function updateProject(
     if (data[key] !== undefined) {
       (patch as any)[key] = data[key];
     }
+  }
+  // gmailThreadId is a view onto gmail.thread refs: compare it in stored form, so a form that
+  // saves the field unchanged is not an edit (syncGmailThread below writes the column)
+  const gmailThreadId =
+    data.gmailThreadId === undefined ? undefined : normaliseGmailThreadId(data.gmailThreadId);
+  if (gmailThreadId !== undefined && gmailThreadId !== (task.gmailThreadId?.trim() || null)) {
+    patch.gmailThreadId = gmailThreadId;
   }
 
   // Moving between projects: by id, or by category name (the original API)
@@ -530,16 +891,29 @@ export async function updateProject(
   }
 
   const changes = diffFields(task as any, patch as any, TRACKED_FIELDS);
+  const movesWorkspace = !!patch.projectId && targetProject.orgId !== project.orgId;
 
-  // Life goals are private to each person, so goal links never reach the shared activity log
+  // Validate private goal links before preparing any writes, then batch their replacement with
+  // the task and ref move so a failed move cannot leave a partial change behind.
+  let goalWrites: BatchItem<'sqlite'>[] = [];
   if (data.goalId !== undefined) {
     const current = (await personalGoalMap(db, userId)).get(taskId) ?? null;
-    if ((data.goalId ?? null) !== current) {
-      await setPersonalGoal(db, userId, taskId, data.goalId ?? null);
+    const next = data.goalId ?? null;
+    if (next !== current) {
+      if (next) {
+        await validatePersonalGoal(db, userId, next);
+      }
+      goalWrites = personalGoalStatements(db, userId, taskId, next);
     }
   }
 
-  if (Object.keys(changes).length > 0) {
+  // Source release statements are returned, not committed here. A deleted holder only releases
+  // its source in the same database batch as the successful move.
+  const sourceReleases = movesWorkspace
+    ? await assertSourcesFreeIn(db, targetProject.orgId, { taskId })
+    : [];
+
+  if (Object.keys(changes).length > 0 || goalWrites.length > 0) {
     const now = new Date().toISOString();
     const set: Partial<typeof schema.tasks.$inferInsert> = {
       ...patch,
@@ -552,8 +926,25 @@ export async function updateProject(
     if (changes.status && patch.status !== 'awaiting' && data.awaitUntil === undefined) {
       set.awaitUntil = null;
     }
-    await db.update(schema.tasks).set(set).where(eq(schema.tasks.id, taskId));
-    await logTaskChanges(db, userId, task, targetProject, changes);
+
+    const writes: BatchItem<'sqlite'>[] = [...sourceReleases];
+    if (Object.keys(changes).length > 0) {
+      writes.push(db.update(schema.tasks).set(set).where(eq(schema.tasks.id, taskId)));
+      if (movesWorkspace) {
+        writes.push(updateRefOrgs(db, targetProject.orgId, { taskId }));
+      }
+    }
+    writes.push(...goalWrites);
+    await db.batch(writes as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+
+    if (Object.keys(changes).length > 0) {
+      await logTaskChanges(db, userId, task, targetProject, changes);
+    }
+  }
+
+  // gmailThreadId is a view onto gmail.thread refs
+  if (patch.gmailThreadId !== undefined) {
+    await syncGmailThread(db, userId, task, targetProject.orgId, patch.gmailThreadId ?? null);
   }
 
   return getTaskView(db, userId, taskId, { includeDeleted: true });
@@ -687,7 +1078,7 @@ export async function batchUpdateProjects(
 
 /**
  * Finds all tasks whose awaiting date has passed and returns them to "do" status.
- * Each row is updated independently — one bad row won't block the batch.
+ * Each row is updated independently: one bad row won't block the batch.
  */
 export async function processAwaitingReturns(db: DB) {
   const now = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
@@ -781,6 +1172,33 @@ export async function getProjectUpdates(
   }));
 }
 
+async function reportNoteDedupeKey(note: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(note));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+// D1 batch needs _prepare() to return a D1PreparedQuery with a bindable statement.
+function preparedSqlBatchItem(
+  db: DB,
+  query: SQL,
+  method: 'all' | 'run'
+): BatchItem<'sqlite'> {
+  const internalDb = db as DB & {
+    dialect: SQLiteAsyncDialect;
+    session: SQLiteD1Session<typeof schema, any>;
+  };
+  const prepared = internalDb.session.prepareQuery(
+    internalDb.dialect.sqlToQuery(query),
+    undefined,
+    method,
+    false
+  );
+  return {
+    _: { dialect: 'sqlite', result: undefined },
+    _prepare: () => prepared,
+  } as BatchItem<'sqlite'> & { _prepare: () => typeof prepared };
+}
+
 export async function addProjectUpdate(
   db: DB,
   params: {
@@ -789,13 +1207,38 @@ export async function addProjectUpdate(
     userId: string;
     note: string;
     gmailThreadId?: string | null;
+    dedupeKey?: string;
+    sourceGuard?: SourceHolderGuard;
   }
 ) {
-  const loaded = await loadEditable(db, params.userId, params.projectId);
+  let loaded: Awaited<ReturnType<typeof loadEditable>>;
+  try {
+    loaded = await loadEditable(db, params.userId, params.projectId);
+  } catch (err) {
+    if (
+      params.sourceGuard &&
+      err instanceof AccessError &&
+      !(await hasCurrentSourceHolder(db, params.sourceGuard))
+    ) {
+      throw new SourceHolderChangedError();
+    }
+    throw err;
+  }
   if (!loaded) {
+    if (params.sourceGuard && !(await hasCurrentSourceHolder(db, params.sourceGuard))) {
+      throw new SourceHolderChangedError();
+    }
     return null;
   }
   const { task, project } = loaded;
+  if (
+    params.sourceGuard &&
+    (task.id !== params.sourceGuard.taskId ||
+      project.orgId !== params.sourceGuard.orgId ||
+      !(await hasCurrentSourceHolder(db, params.sourceGuard)))
+  ) {
+    throw new SourceHolderChangedError();
+  }
   const now = new Date().toISOString();
   const row = {
     id: params.id ?? uuidv4(),
@@ -803,14 +1246,70 @@ export async function addProjectUpdate(
     authorId: params.userId,
     note: params.note,
     gmailThreadId: params.gmailThreadId ?? null,
+    ...(params.dedupeKey ? { dedupeKey: params.dedupeKey } : {}),
     createdAt: now,
     updatedAt: now,
   };
-  await db.insert(schema.taskUpdates).values(row);
-  await db
-    .update(schema.tasks)
-    .set({ updatedAt: now, updatedBy: params.userId })
-    .where(eq(schema.tasks.id, task.id));
+  if (params.sourceGuard) {
+    if (!params.dedupeKey) {
+      throw new Error('A guarded report note needs a dedupe key');
+    }
+    const writes: BatchItem<'sqlite'>[] = [
+      preparedSqlBatchItem(
+        db,
+        sql`
+          INSERT INTO TaskUpdates (id, task_id, author_id, note, gmail_thread_id, dedupe_key, created_at, updated_at)
+          SELECT ${row.id}, ${row.taskId}, ${row.authorId}, ${row.note}, ${row.gmailThreadId},
+            ${params.dedupeKey}, ${row.createdAt}, ${row.updatedAt}
+          WHERE ${sourceHolderCondition(params.sourceGuard, true)}
+          ON CONFLICT(task_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+          RETURNING id
+        `,
+        'all'
+      ),
+      preparedSqlBatchItem(
+        db,
+        sql`
+          UPDATE Tasks SET updated_at = ${now}, updated_by = ${params.userId}
+          WHERE id = ${task.id}
+            AND EXISTS (SELECT 1 FROM TaskUpdates WHERE id = ${row.id})
+            AND ${sourceHolderCondition(params.sourceGuard, true)}
+        `,
+        'run'
+      ),
+      preparedSqlBatchItem(
+        db,
+        sql`SELECT 1 WHERE ${sourceHolderCondition(params.sourceGuard, true)}`,
+        'all'
+      ),
+    ];
+    const results = await db.batch(writes as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+    const inserted = results[0] as unknown[][];
+    const holderStillCurrent = results[2] as unknown[][];
+    if (holderStillCurrent.length === 0) {
+      throw new SourceHolderChangedError();
+    }
+    if (inserted.length === 0) {
+      return null;
+    }
+  } else if (params.dedupeKey) {
+    const inserted = await db
+      .insert(schema.taskUpdates)
+      .values(row)
+      .onConflictDoNothing()
+      .returning({ id: schema.taskUpdates.id });
+    if (inserted.length === 0) {
+      return null;
+    }
+  } else {
+    await db.insert(schema.taskUpdates).values(row);
+  }
+  if (!params.sourceGuard) {
+    await db
+      .update(schema.tasks)
+      .set({ updatedAt: now, updatedBy: params.userId })
+      .where(eq(schema.tasks.id, task.id));
+  }
   const preview = params.note.length > 140 ? `${params.note.slice(0, 137)}...` : params.note;
   await logActivity(db, {
     actorId: params.userId,
@@ -889,6 +1388,51 @@ function pickLargerSize(sizeA: string, sizeB: string): '*' | '**' | '***' | '***
   return (rankB > rankA ? sizeB : sizeA) as '*' | '**' | '***' | '****' | '*****';
 }
 
+async function prepareRelationsForMerge(
+  db: DB,
+  targetId: string,
+  sourceId: string
+): Promise<BatchItem<'sqlite'>[]> {
+  const rows = await db
+    .select()
+    .from(schema.taskRelations)
+    .where(
+      or(
+        eq(schema.taskRelations.sourceTaskId, targetId),
+        eq(schema.taskRelations.targetTaskId, targetId),
+        eq(schema.taskRelations.sourceTaskId, sourceId),
+        eq(schema.taskRelations.targetTaskId, sourceId)
+      )
+    );
+  const targetNeighbours = new Set(
+    rows
+      .filter((row) => row.sourceTaskId === targetId || row.targetTaskId === targetId)
+      .map((row) => (row.sourceTaskId === targetId ? row.targetTaskId : row.sourceTaskId))
+      .filter((id) => id !== sourceId)
+  );
+  const statements: BatchItem<'sqlite'>[] = [];
+  for (const row of rows) {
+    const involvesSource = row.sourceTaskId === sourceId || row.targetTaskId === sourceId;
+    if (!involvesSource) {
+      continue;
+    }
+    const neighbourId = row.sourceTaskId === sourceId ? row.targetTaskId : row.sourceTaskId;
+    if (neighbourId === targetId || targetNeighbours.has(neighbourId)) {
+      // The merge creates a self-link, or the target already has the one relation allowed per pair.
+      statements.push(db.delete(schema.taskRelations).where(eq(schema.taskRelations.id, row.id)));
+      continue;
+    }
+    targetNeighbours.add(neighbourId);
+    statements.push(
+      db
+        .update(schema.taskRelations)
+        .set(row.sourceTaskId === sourceId ? { sourceTaskId: targetId } : { targetTaskId: targetId })
+        .where(eq(schema.taskRelations.id, row.id))
+    );
+  }
+  return statements;
+}
+
 export async function mergeProjects(db: DB, userId: string, targetId: string, sourceId: string) {
   if (targetId === sourceId) {
     return null;
@@ -932,49 +1476,90 @@ Merged from "${s.title}" (${s.id.slice(0, 8)}):
     combinedReason = `${combinedReason} (Also: ${s.reason})`;
   }
 
-  await db
-    .update(schema.tasks)
-    .set({
-      priority: Math.max(t.priority, s.priority),
-      size: pickLargerSize(t.size, s.size),
-      notes: combinedNotes || null,
-      reason: combinedReason,
-      epicId: t.epicId ?? s.epicId ?? null,
-      gmailThreadId: t.gmailThreadId ?? s.gmailThreadId ?? null,
-      updatedAt: now,
-      updatedBy: userId,
-    })
-    .where(eq(schema.tasks.id, t.id));
-
-  const goals = await personalGoalMap(db, userId);
-  if (!goals.get(t.id) && goals.get(s.id)) {
-    await setPersonalGoal(db, userId, t.id, goals.get(s.id)!);
-  }
-
+  const [goals, refStatements, relationStatements, targetUpdates, sourceUpdates, newestGmailRef] =
+    await Promise.all([
+      personalGoalMap(db, userId),
+      prepareRefsForMerge(db, s.id, t.id),
+      prepareRelationsForMerge(db, t.id, s.id),
+      db
+        .select({ dedupeKey: schema.taskUpdates.dedupeKey })
+        .from(schema.taskUpdates)
+        .where(eq(schema.taskUpdates.taskId, t.id)),
+      db.select().from(schema.taskUpdates).where(eq(schema.taskUpdates.taskId, s.id)),
+      db
+        .select({ ref: schema.taskRefs.ref })
+        .from(schema.taskRefs)
+        .where(
+          and(
+            inArray(schema.taskRefs.taskId, [t.id, s.id]),
+            eq(schema.taskRefs.kind, 'gmail.thread')
+          )
+        )
+        .orderBy(desc(schema.taskRefs.createdAt), desc(sql`rowid`))
+        .get(),
+    ]);
+  const targetDedupeKeys = new Set(
+    targetUpdates.map((row) => row.dedupeKey).filter((key): key is string => key !== null)
+  );
+  const collidedNotes = sourceUpdates.filter(
+    (row) => row.dedupeKey !== null && targetDedupeKeys.has(row.dedupeKey)
+  );
+  const collisionStatements = collidedNotes.map((row) =>
+    db
+      .update(schema.taskUpdates)
+      .set({
+        taskId: t.id,
+        dedupeKey: `merged:${s.id}:${row.id}`,
+        updatedAt: now,
+      })
+      .where(eq(schema.taskUpdates.id, row.id))
+  );
+  const goalStatements = !goals.get(t.id) && goals.get(s.id)
+    ? personalGoalStatements(db, userId, t.id, goals.get(s.id)!)
+    : [];
   const sourceAuditNote = `[Merged into "${t.title}" (${t.id.slice(0, 8)}) on ${now.slice(0, 10)}]`;
-  await db
-    .update(schema.tasks)
-    .set({
-      isDeleted: true,
-      notes: s.notes ? `${s.notes}\n\n${sourceAuditNote}` : sourceAuditNote,
+
+  const statements: BatchItem<'sqlite'>[] = [
+    db
+      .update(schema.tasks)
+      .set({
+        priority: Math.max(t.priority, s.priority),
+        size: pickLargerSize(t.size, s.size),
+        notes: combinedNotes || null,
+        reason: combinedReason,
+        epicId: t.epicId ?? s.epicId ?? null,
+        gmailThreadId: newestGmailRef?.ref ?? null,
+        updatedAt: now,
+        updatedBy: userId,
+      })
+      .where(eq(schema.tasks.id, t.id)),
+    ...refStatements,
+    ...relationStatements,
+    ...goalStatements,
+    ...collisionStatements,
+    db
+      .update(schema.taskUpdates)
+      .set({ taskId: t.id, updatedAt: now })
+      .where(eq(schema.taskUpdates.taskId, s.id)),
+    db
+      .update(schema.tasks)
+      .set({
+        isDeleted: true,
+        notes: s.notes ? `${s.notes}\n\n${sourceAuditNote}` : sourceAuditNote,
+        updatedAt: now,
+        updatedBy: userId,
+      })
+      .where(eq(schema.tasks.id, s.id)),
+    db.insert(schema.taskUpdates).values({
+      id: uuidv4(),
+      taskId: t.id,
+      authorId: userId,
+      note: `Merged task '${s.title}' (${s.id.slice(0, 8)}) into this task.`,
+      createdAt: now,
       updatedAt: now,
-      updatedBy: userId,
-    })
-    .where(eq(schema.tasks.id, s.id));
-
-  await db
-    .update(schema.taskUpdates)
-    .set({ taskId: t.id, updatedAt: now })
-    .where(eq(schema.taskUpdates.taskId, s.id));
-
-  await db.insert(schema.taskUpdates).values({
-    id: uuidv4(),
-    taskId: t.id,
-    authorId: userId,
-    note: `Merged task '${s.title}' (${s.id.slice(0, 8)}) into this task.`,
-    createdAt: now,
-    updatedAt: now,
-  });
+    }),
+  ];
+  await db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 
   await logActivity(db, {
     actorId: userId,

@@ -10,9 +10,9 @@ export const TASK_EXAMPLES = [
 ];
 
 export const TEAM_EXAMPLES = [
-  'Add a Solfit task for Robin to check the inverter datasheet',
+  'Add a Northstar Workshop task for Casey Example to check the inverter datasheet',
   'Assign the Acme Solar onboarding task to me',
-  "What's Robin working on?",
+  "What's Casey Example working on?",
 ];
 
 // v2: shown once more so existing users see the shared-workspace examples

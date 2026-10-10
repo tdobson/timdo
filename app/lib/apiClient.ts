@@ -32,7 +32,7 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
 
 /**
  * Error thrown for non-2xx API responses. `message` is readable and safe to show to the user
- * (the API sends `{ error }` bodies such as `You have view-only access to "Solfit"`).
+ * (the API sends `{ error }` bodies such as `You have view-only access to "Acme Solar"`).
  */
 export class ApiError extends Error {
   status: number;
@@ -178,6 +178,43 @@ export async function searchTasks<T>(
   });
   return apiCall<T[]>(`${getWorkerApiBaseUrl()}/tasks/search?${params.toString()}`, {
     headers: authHeaders(token),
+  });
+}
+
+/** Where to look for tasks like a new title: one project's workspace, one workspace, or all. */
+export interface SimilarTasksQuery {
+  title: string;
+  projectId?: string | null;
+  orgId?: string | null;
+  excludeId?: string | null;
+  limit?: number;
+}
+
+/**
+ * Open tasks that look like a title someone is about to create (`GET /tasks/similar`), best
+ * first. Pass the query's `signal` so a stale request is dropped when the title changes.
+ */
+export async function findSimilarTasks<T>(
+  query: SimilarTasksQuery,
+  token?: string,
+  signal?: AbortSignal
+): Promise<T[]> {
+  const params = new URLSearchParams({ title: query.title.trim() });
+  if (query.projectId) {
+    params.set('projectId', query.projectId);
+  }
+  if (query.orgId) {
+    params.set('orgId', query.orgId);
+  }
+  if (query.excludeId) {
+    params.set('excludeId', query.excludeId);
+  }
+  if (query.limit !== undefined) {
+    params.set('limit', String(query.limit));
+  }
+  return apiCall<T[]>(`${getWorkerApiBaseUrl()}/tasks/similar?${params.toString()}`, {
+    headers: authHeaders(token),
+    signal,
   });
 }
 

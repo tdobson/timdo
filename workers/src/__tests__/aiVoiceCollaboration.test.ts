@@ -42,9 +42,9 @@ vi.mock('@langchain/groq', () => {
 describe('Voice AI Collaboration & Assignment Parsing', () => {
   const mockAudioFile = new File(['mock audio data'], 'test.webm', { type: 'audio/webm' });
 
-  it('parses task creation with teammate assignment ("for Sarah")', async () => {
+  it('parses task creation with teammate assignment ("for Taylor")', async () => {
     mockInvokeResult = {
-      summary: 'Created task assigned to Sarah',
+      summary: 'Created task assigned to Taylor',
       changes: [
         {
           type: 'create',
@@ -55,9 +55,9 @@ describe('Voice AI Collaboration & Assignment Parsing', () => {
             status: 'do',
             priority: 8,
             size: '**',
-            category: 'XEBIT',
-            projectId: 'proj-xebit-1',
-            assignee: 'Sarah Jenkins',
+            category: 'Northstar Workshop',
+            projectId: 'proj-northstar-1',
+            assignee: 'Taylor Example',
           },
         },
       ],
@@ -73,9 +73,9 @@ describe('Voice AI Collaboration & Assignment Parsing', () => {
     const change = result.proposedChanges[0];
     expect(change.type).toBe('create');
     expect(change.after?.project).toBe('Review OAuth PR');
-    expect(change.after?.category).toBe('XEBIT');
-    expect(change.after?.projectId).toBe('proj-xebit-1');
-    expect(change.after?.assignee).toBe('Sarah Jenkins');
+    expect(change.after?.category).toBe('Northstar Workshop');
+    expect(change.after?.projectId).toBe('proj-northstar-1');
+    expect(change.after?.assignee).toBe('Taylor Example');
   });
 
   it('parses assignment to current user ("assign to me")', async () => {
@@ -91,7 +91,7 @@ describe('Voice AI Collaboration & Assignment Parsing', () => {
             status: 'do',
             priority: 9,
             size: '***',
-            category: 'Solfit',
+            category: 'Acme Solar',
             assignee: 'me',
           },
         },
@@ -161,13 +161,13 @@ describe('Voice AI Collaboration & Assignment Parsing', () => {
         status: 'do',
         priority: 7,
         size: '****',
-        category: 'XEBIT',
-        assignee: 'Tim Dobson',
+        category: 'Northstar Workshop',
+        assignee: 'Casey Example',
       },
     ];
 
     mockInvokeResult = {
-      summary: 'Reassigned Draft investor deck to sarah@xebit.io',
+      summary: 'Reassigned Draft investor deck to taylor@example.test',
       changes: [
         {
           type: 'update',
@@ -178,8 +178,8 @@ describe('Voice AI Collaboration & Assignment Parsing', () => {
             status: 'do',
             priority: 7,
             size: '****',
-            category: 'XEBIT',
-            assignee: 'sarah@xebit.io',
+            category: 'Northstar Workshop',
+            assignee: 'taylor@example.test',
           },
         },
       ],
@@ -194,7 +194,7 @@ describe('Voice AI Collaboration & Assignment Parsing', () => {
     expect(result.proposedChanges).toHaveLength(1);
     const change = result.proposedChanges[0];
     expect(change.type).toBe('update');
-    expect((change.before as any)?.assignee).toBe('Tim Dobson');
-    expect((change.after as any)?.assignee).toBe('sarah@xebit.io');
+    expect((change.before as any)?.assignee).toBe('Casey Example');
+    expect((change.after as any)?.assignee).toBe('taylor@example.test');
   });
 });

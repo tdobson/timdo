@@ -61,12 +61,12 @@ describe('Poster API Routes (/api/v2/poster)', () => {
       );
       vi.mocked(wallOfDoneSvgService.generateWallOfDoneSvg).mockReturnValueOnce(mockSvg);
 
-      const res = await app.request('/api/v2/poster/wall-of-done?categories=Solfit,Crew');
+      const res = await app.request('/api/v2/poster/wall-of-done?categories=Acme Solar,Field Team');
       expect(res.status).toBe(200);
       expect(completedPosterService.getCompletedPosterData).toHaveBeenCalledWith(
         expect.anything(),
         'test-user-id',
-        ['Solfit', 'Crew'],
+        ['Acme Solar', 'Field Team'],
         '6m'
       );
     });
@@ -113,8 +113,8 @@ describe('Poster API Routes (/api/v2/poster)', () => {
 
   describe('GET /api/v2/poster/active', () => {
     const mockTasks = [
-      { id: '1', project: 'Solar quote', reason: 'Review', status: 'do', category: 'Solfit' },
-      { id: '2', project: 'Done item', status: 'done', category: 'Solfit' },
+      { id: '1', project: 'Solar quote', reason: 'Review', status: 'do', category: 'Acme Solar' },
+      { id: '2', project: 'Done item', status: 'done', category: 'Acme Solar' },
     ];
     const mockSvg = '<svg viewBox="0 0 420 594"><text>TimDo • Active Tasks</text></svg>';
 
@@ -143,11 +143,11 @@ describe('Poster API Routes (/api/v2/poster)', () => {
       vi.mocked(projectService.getProjectsForUser).mockResolvedValueOnce(mockTasks as any);
       vi.mocked(activePosterService.generateActiveTasksPosterSvg).mockReturnValueOnce(mockSvg);
 
-      const res = await app.request('/api/v2/poster/active?categories=Solfit,Crew');
+      const res = await app.request('/api/v2/poster/active?categories=Acme Solar,Field Team');
       expect(res.status).toBe(200);
       expect(activePosterService.generateActiveTasksPosterSvg).toHaveBeenCalledWith({
         tasks: mockTasks,
-        categories: ['Solfit', 'Crew'],
+        categories: ['Acme Solar', 'Field Team'],
       });
     });
 
@@ -167,12 +167,12 @@ describe('Poster API Routes (/api/v2/poster)', () => {
       vi.mocked(projectService.getProjectsForUser).mockResolvedValueOnce(mockTasks as any);
       vi.mocked(activePosterService.generateActiveTasksPosterSvg).mockReturnValueOnce(mockSvg);
 
-      const res = await app.request('/api/v2/poster/active?format=json&categories=Solfit');
+      const res = await app.request('/api/v2/poster/active?format=json&categories=Acme Solar');
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Type')).toContain('application/json');
       const json = await res.json();
       expect(json).toEqual({
-        categories: ['Solfit'],
+        categories: ['Acme Solar'],
         tasks: [mockTasks[0]],
         svg: mockSvg,
       });

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local TimDo API on a copy of production data (from the latest backup), with the
-# collaboration migration and legacy sync applied, plus a demo "Migrating Dragons"
-# workspace shared with Robin. Never touches production.
+# collaboration migration and legacy sync applied, plus a demo "Northstar Workshop"
+# workspace shared with Jordan Example. Never touches production.
 #
 #   scripts/local-api.sh [port]     default port 8787
 # CLI against it:  TIMDO_API=http://127.0.0.1:8787/api/v2 TIMDO_SECRET=local-dev-secret bin/timdo list

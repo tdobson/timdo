@@ -31,9 +31,9 @@ EPICS = [
     {
         "id": "epic-1234-abcd",
         "userId": "user-1",
-        "title": "Acme Solar",
+        "title": "Acme Solar Installation",
         "description": "Install rooftop solar system",
-        "category": "Solfit",
+        "category": "Acme Solar",
         "goalId": "goal-aim-1",
         "status": "active",
         "totalTasks": 2,
@@ -49,8 +49,8 @@ GOALS = [
         "id": "goal-aim-1",
         "userId": "user-1",
         "type": "aim",
-        "title": "Renewable Energy Life",
-        "description": "Transition to 100% clean power",
+        "title": "Workshop Planning",
+        "description": "Prepare for the next workshop",
         "icon": "sun",
         "orderIndex": 1,
         "isActive": True,
@@ -61,7 +61,7 @@ GOALS = [
         "id": "goal-focus-1",
         "userId": "user-1",
         "type": "focus",
-        "title": "Solfit Launch",
+        "title": "Acme Solar Launch",
         "description": "Complete product launch",
         "icon": "rocket",
         "orderIndex": 2,
@@ -73,8 +73,8 @@ GOALS = [
         "id": "goal-val-1",
         "userId": "user-1",
         "type": "value",
-        "title": "Relentless Focus",
-        "description": "Do one thing well at a time",
+        "title": "Thoughtful Planning",
+        "description": "Make clear decisions",
         "icon": "target",
         "orderIndex": 3,
         "isActive": True,
@@ -85,8 +85,8 @@ GOALS = [
         "id": "goal-house-1",
         "userId": "user-1",
         "type": "housekeeping",
-        "title": "Daily Inbox Zero",
-        "description": "Triage tasks every morning",
+        "title": "Weekly Task Review",
+        "description": "Review open items once a week",
         "icon": "mail",
         "orderIndex": 4,
         "isActive": True,
@@ -104,7 +104,7 @@ PROJECTS = [
         "status": "do",
         "priority": 8,
         "size": "***",
-        "category": "Solfit",
+        "category": "Acme Solar",
         "epicId": "epic-1234-abcd",
         "goalId": "goal-aim-1",
         "isDeleted": False,
@@ -114,8 +114,8 @@ PROJECTS = [
     {
         "id": "proj-2222-bbbb",
         "userId": "user-1",
-        "project": "Personal tax return",
-        "reason": "HMRC deadline",
+        "project": "Personal workshop notes",
+        "reason": "Prepare before the next workshop",
         "status": "do",
         "priority": 6,
         "size": "**",
@@ -283,9 +283,9 @@ fi
 echo "PASS: epic list"
 
 echo "=== 2. Testing 'bin/timdo epic add' ==="
-EPIC_ADD_JSON=$("$BIN_TIMDO" epic add "Launch Mobile App" -p "Solfit" -g "Renewable Energy Life")
+EPIC_ADD_JSON=$("$BIN_TIMDO" epic add "Launch Mobile App" -p "Acme Solar" -g "Workshop Planning")
 echo "$EPIC_ADD_JSON"
-if [[ "$EPIC_ADD_JSON" != *"Launch Mobile App"* || "$EPIC_ADD_JSON" != *"Solfit"* ]]; then
+if [[ "$EPIC_ADD_JSON" != *"Launch Mobile App"* || "$EPIC_ADD_JSON" != *"Acme Solar"* ]]; then
   echo "FAIL: Expected created epic with title and category" >&2
   exit 1
 fi
@@ -294,34 +294,34 @@ echo "PASS: epic add"
 echo "=== 3. Testing 'bin/timdo goal list' ==="
 GOAL_LIST_OUTPUT=$("$BIN_TIMDO" goal list)
 echo "$GOAL_LIST_OUTPUT"
-if [[ "$GOAL_LIST_OUTPUT" != *"Renewable Energy Life"* || "$GOAL_LIST_OUTPUT" != *"AIM"* || "$GOAL_LIST_OUTPUT" != *"FOCUS"* ]]; then
+if [[ "$GOAL_LIST_OUTPUT" != *"Workshop Planning"* || "$GOAL_LIST_OUTPUT" != *"AIM"* || "$GOAL_LIST_OUTPUT" != *"FOCUS"* ]]; then
   echo "FAIL: Expected grouped goals list" >&2
   exit 1
 fi
 echo "PASS: goal list"
 
 echo "=== 4. Testing 'bin/timdo add' with -p (category), -e (epic), and -g (goal) ==="
-ADD_TASK_JSON=$("$BIN_TIMDO" add "Wire inverter cables" -p "Solfit" -e "Acme Solar" -g "Renewable Energy Life")
+ADD_TASK_JSON=$("$BIN_TIMDO" add "Prepare installation plan" -p "Acme Solar" -e "Acme Solar Installation" -g "Workshop Planning")
 echo "$ADD_TASK_JSON"
-if [[ "$ADD_TASK_JSON" != *"Wire inverter cables"* || "$ADD_TASK_JSON" != *"Solfit"* || "$ADD_TASK_JSON" != *"epic-1234-abcd"* ]]; then
+if [[ "$ADD_TASK_JSON" != *"Prepare installation plan"* || "$ADD_TASK_JSON" != *"Acme Solar"* || "$ADD_TASK_JSON" != *"epic-1234-abcd"* ]]; then
   echo "FAIL: Expected task with category and resolved epicId" >&2
   exit 1
 fi
 echo "PASS: add task with hierarchy"
 
 echo "=== 5. Testing 'bin/timdo list -p <Category>' ==="
-LIST_CAT_OUTPUT=$("$BIN_TIMDO" list do -p "Solfit")
+LIST_CAT_OUTPUT=$("$BIN_TIMDO" list do -p "Acme Solar")
 echo "$LIST_CAT_OUTPUT"
-if [[ "$LIST_CAT_OUTPUT" != *"Order solar panels"* || "$LIST_CAT_OUTPUT" == *"Personal tax return"* ]]; then
-  echo "FAIL: Expected category filtered list containing only Solfit tasks" >&2
+if [[ "$LIST_CAT_OUTPUT" != *"Order solar panels"* || "$LIST_CAT_OUTPUT" == *"Personal workshop notes"* ]]; then
+  echo "FAIL: Expected category filtered list containing only Acme Solar tasks" >&2
   exit 1
 fi
 echo "PASS: list with category filter -p"
 
 echo "=== 6. Testing 'bin/timdo list --epic <Epic>' ==="
-LIST_EPIC_OUTPUT=$("$BIN_TIMDO" list --epic "Acme Solar")
+LIST_EPIC_OUTPUT=$("$BIN_TIMDO" list --epic "Acme Solar Installation")
 echo "$LIST_EPIC_OUTPUT"
-if [[ "$LIST_EPIC_OUTPUT" != *"Order solar panels"* || "$LIST_EPIC_OUTPUT" == *"Personal tax return"* ]]; then
+if [[ "$LIST_EPIC_OUTPUT" != *"Order solar panels"* || "$LIST_EPIC_OUTPUT" == *"Personal workshop notes"* ]]; then
   echo "FAIL: Expected epic filtered list" >&2
   exit 1
 fi
@@ -338,17 +338,17 @@ echo "PASS: poster export"
 
 echo "=== 8. Testing 'bin/timdo poster' with --type and -c/--category ==="
 POSTER_DONE_FILE="$MOCK_DIR/done.svg"
-"$BIN_TIMDO" poster --type done -c Solfit --output "$POSTER_DONE_FILE"
-if [[ ! -f "$POSTER_DONE_FILE" || "$(< "$POSTER_DONE_FILE")" != *"Wall of Done Poster Solfit"* ]]; then
-  echo "FAIL: Expected wall of done poster SVG file with Solfit category" >&2
+"$BIN_TIMDO" poster --type done -c "Acme Solar" --output "$POSTER_DONE_FILE"
+if [[ ! -f "$POSTER_DONE_FILE" || "$(< "$POSTER_DONE_FILE")" != *"Wall of Done Poster Acme Solar"* ]]; then
+  echo "FAIL: Expected wall of done poster SVG file with Acme Solar category" >&2
   exit 1
 fi
 echo "PASS: poster done with category"
 
 POSTER_ACTIVE_FILE="$MOCK_DIR/active.svg"
-"$BIN_TIMDO" poster --type active --category "Solfit,Crew" --output "$POSTER_ACTIVE_FILE"
-if [[ ! -f "$POSTER_ACTIVE_FILE" || "$(< "$POSTER_ACTIVE_FILE")" != *"Active Tasks Poster Solfit,Crew"* ]]; then
-  echo "FAIL: Expected active poster SVG file with Solfit,Crew categories" >&2
+"$BIN_TIMDO" poster --type active --category "Acme Solar,Northstar Workshop" --output "$POSTER_ACTIVE_FILE"
+if [[ ! -f "$POSTER_ACTIVE_FILE" || "$(< "$POSTER_ACTIVE_FILE")" != *"Active Tasks Poster Acme Solar,Northstar Workshop"* ]]; then
+  echo "FAIL: Expected active poster SVG file with Acme Solar,Northstar Workshop categories" >&2
   exit 1
 fi
 echo "PASS: poster active with multiple categories"

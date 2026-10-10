@@ -51,13 +51,13 @@ describe('personal access tokens', () => {
     const { token } = await tokenService.createToken(db, ROBIN, 'cli');
     const res = await call('/whoami', {
       Authorization: `Bearer ${token}`,
-      'X-Timdo-User': 'tim@example.com',
+      'X-Timdo-User': 'casey@example.test',
     });
     expect(res.status).toBe(403);
     // Naming yourself is fine
     const self = await call('/whoami', {
       Authorization: `Bearer ${token}`,
-      'X-Timdo-User': 'Robin@Example.com',
+      'X-Timdo-User': 'Jordan@Example.test',
     });
     expect(await self.json()).toMatchObject({ userId: ROBIN });
   });
@@ -91,7 +91,7 @@ describe('personal access tokens', () => {
   it('keeps the owner secret able to act as anyone, for the owner CLI', async () => {
     const res = await call('/whoami', {
       'X-Internal-Secret': 'owner-secret',
-      'X-Timdo-User': 'robin@example.com',
+      'X-Timdo-User': 'jordan@example.test',
     });
     expect(await res.json()).toEqual({ userId: ROBIN, via: 'internal' });
   });
@@ -135,7 +135,7 @@ describe('token and secret hardening', () => {
   it('refuses X-Timdo-User on a web (JWT) session before checking the token', async () => {
     const res = await app.request(
       '/users/me',
-      { headers: { Authorization: 'Bearer some.jwt.value', 'X-Timdo-User': 'tim@example.com' } },
+      { headers: { Authorization: 'Bearer some.jwt.value', 'X-Timdo-User': 'casey@example.test' } },
       env
     );
     expect(res.status).toBe(403);

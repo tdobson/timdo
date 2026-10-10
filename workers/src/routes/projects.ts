@@ -2,7 +2,9 @@ import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import type { Env } from '../index';
+import { normaliseRole, ROLE_ERROR } from '../lib/refs';
 import * as projectService from '../services/projectService';
+import { conflictWithTask, parseOrThrow } from '../services/refService';
 import {
   projectCreateSchema,
   projectMergeSchema,
@@ -28,6 +30,15 @@ projectsApp.get('/', async (c) => {
   const assignee = c.req.query('assignee');
   const orgId = c.req.query('orgId');
   const projectId = c.req.query('projectId');
+  // ?ref=<url|kind:id>[&role=]: tasks carrying that link, any status. `role` matches
+  // DELETE /tasks/:id/refs; `refRole` is kept as an alias
+  const refQuery = c.req.query('ref');
+  const ref = refQuery ? parseOrThrow(refQuery) : undefined;
+  const roleQuery = c.req.query('role') || c.req.query('refRole');
+  const refRole = roleQuery ? normaliseRole(roleQuery) : undefined;
+  if (refRole === null) {
+    return c.json({ error: ROLE_ERROR }, 400);
+  }
 
   const projects = await projectService.getProjectsForUser(db, userId, {
     category,
@@ -39,6 +50,8 @@ projectsApp.get('/', async (c) => {
     assignee,
     orgId,
     projectId,
+    ref,
+    refRole,
   });
   c.header('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
   return c.json(projects);
@@ -53,16 +66,22 @@ projectsApp.get('/:id', async (c) => {
   return c.json(task);
 });
 
-// POST a new project
+// POST a new task: 201 with `created: true` and `similar`. When a source ref in `refs` already
+// has a task, onDuplicate decides: 409 { error, taskId, task } (error, the default), or 200 with
+// that task and `created: false` (return; report also adds refs and a note, `reported: true`)
 projectsApp.post('/', zValidator('json', projectCreateSchema), async (c) => {
   const projectData = c.req.valid('json');
   const userId = c.get('userId');
   const db = c.get('db');
-  const newProject = await projectService.createProject(db, userId, {
-    id: uuidv4(),
-    ...projectData,
-  });
-  return c.json(newProject, 201);
+  try {
+    const result = await projectService.createProject(db, userId, {
+      id: uuidv4(),
+      ...projectData,
+    });
+    return c.json(result, result.created === false ? 200 : 201);
+  } catch (err) {
+    return conflictWithTask(c, err);
+  }
 });
 
 // PUT (update) a specific project

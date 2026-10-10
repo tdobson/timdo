@@ -8,14 +8,14 @@ import {
 
 describe('runMultiUserMigration helper functions', () => {
   it('generates proper project keys', () => {
-    expect(generateProjectKey('Solfit')).toBe('SOL');
-    expect(generateProjectKey('Crew')).toBe('CRE');
-    expect(generateProjectKey('Mavala Tech')).toBe('MTX');
+    expect(generateProjectKey('Acme Solar')).toBe('ASX');
+    expect(generateProjectKey('Workshop')).toBe('WOR');
+    expect(generateProjectKey('Northstar Workshop')).toBe('NWX');
   });
 
   it('generates slug from organisation name', () => {
-    expect(generateSlug('Tim Dobson')).toBe('tim-dobson');
-    expect(generateSlug('XEBIT Ltd')).toBe('xebit-ltd');
+    expect(generateSlug('Casey Example')).toBe('casey-example');
+    expect(generateSlug('Northstar Workshop')).toBe('northstar-workshop');
   });
 });
 
@@ -40,7 +40,7 @@ describe('runMultiUserMigration', () => {
         statusLastChangedOn: null,
         awaitUntil: null,
         gmailThreadId: 'thread-123',
-        category: 'Solfit',
+        category: 'Acme Solar',
         epicId: null,
         goalId: 'goal-1',
         isDeleted: false,
@@ -91,7 +91,7 @@ describe('runMultiUserMigration', () => {
     expect(result).toBeDefined();
     expect(result.organisation).toBeDefined();
     expect(result.organisation.name).toBe('Personal Workspace');
-    expect(result.migratedProjectsCount).toBe(2); // 'Solfit' and 'Crew'
+    expect(result.migratedProjectsCount).toBe(2); // 'Acme Solar' and 'Crew'
     expect(result.migratedTasksCount).toBe(2);
     expect(orgsStore.length).toBe(1);
     expect(membersStore.length).toBe(1);
@@ -112,7 +112,7 @@ describe('runMultiUserMigration', () => {
   it('is idempotent when re-run for same user', async () => {
     const existingOrg = {
       id: 'org-123',
-      name: 'Tim Dobson',
+      name: 'Casey Example',
       slug: 'tim-dobson',
       createdBy: 'user-1',
     };

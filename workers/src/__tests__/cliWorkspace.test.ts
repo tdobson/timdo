@@ -30,7 +30,7 @@ const task = (id: string, title: string, extra: Record<string, unknown> = {}) =>
   notes: null,
   awaitUntil: null,
   gmailThreadId: null,
-  category: 'Solfit',
+  category: 'Acme Solar',
   customer: null,
   tags: null,
   epicId: null,
@@ -38,20 +38,20 @@ const task = (id: string, title: string, extra: Record<string, unknown> = {}) =>
   isDeleted: false,
   createdAt: '2026-10-01 09:00:00',
   updatedAt: '2026-10-08T13:02:00.000Z',
-  projectId: 'proj-sol',
-  projectKey: 'SOL',
-  projectName: 'Solfit',
+  projectId: 'proj-acme-solar',
+  projectKey: 'ACS',
+  projectName: 'Acme Solar',
   orgId: 'org-md',
-  orgName: 'Migrating Dragons',
+  orgName: 'Northstar Workshop',
   isShared: true,
   myRole: 'owner',
   canEdit: true,
   reporterId: TIM,
-  reporterName: 'Tim Dobson',
+  reporterName: 'Casey Example',
   assigneeId: TIM,
-  assigneeName: 'Tim Dobson',
+  assigneeName: 'Casey Example',
   updatedById: ED,
-  updatedByName: 'Robin Fairweather',
+  updatedByName: 'Jordan Example',
   isMine: true,
   ...extra,
 });
@@ -60,7 +60,7 @@ const TASKS = [
   task('aaaa1111-0000-0000-0000-000000000001', 'Fix inverter'),
   task('bbbb2222-0000-0000-0000-000000000002', 'Check flashing', {
     assigneeId: ED,
-    assigneeName: 'Robin Fairweather',
+    assigneeName: 'Jordan Example',
     isMine: false,
   }),
   task('cccc3333-0000-0000-0000-000000000003', 'Renew passport', {
@@ -82,22 +82,22 @@ const SHARING = [
     role: 'owner',
     memberCount: 1,
     projectCount: 1,
-    members: [{ userId: TIM, userName: 'Tim Dobson', userEmail: 'tim@example.com', role: 'owner', isMe: true }],
+    members: [{ userId: TIM, userName: 'Casey Example', userEmail: 'casey@example.test', role: 'owner', isMe: true }],
     projects: [{ id: 'proj-per', key: 'PER', name: 'Personal', openTasks: 1, doneTasks: 0, epicCount: 0 }],
     invites: [],
   },
   {
     id: 'org-md',
-    name: 'Migrating Dragons',
+    name: 'Northstar Workshop',
     isPersonal: false,
     role: 'owner',
     memberCount: 2,
     projectCount: 1,
     members: [
-      { userId: TIM, userName: 'Tim Dobson', userEmail: 'tim@example.com', role: 'owner', isMe: true },
-      { userId: ED, userName: 'Robin Fairweather', userEmail: 'robin@example.com', role: 'member', isMe: false },
+      { userId: TIM, userName: 'Casey Example', userEmail: 'casey@example.test', role: 'owner', isMe: true },
+      { userId: ED, userName: 'Jordan Example', userEmail: 'jordan@example.test', role: 'member', isMe: false },
     ],
-    projects: [{ id: 'proj-sol', key: 'SOL', name: 'Solfit', openTasks: 2, doneTasks: 5, epicCount: 1 }],
+    projects: [{ id: 'proj-acme-solar', key: 'ACS', name: 'Acme Solar', openTasks: 2, doneTasks: 5, epicCount: 1 }],
     invites: [{ id: 'inv-9', email: 'pending@example.com', role: 'viewer', token: 'tok-9', expiresAt: '2026-11-07T00:00:00Z' }],
   },
 ];
@@ -106,10 +106,10 @@ const ACTIVITY = [
   {
     id: 'act-1',
     actorId: ED,
-    actorName: 'Robin Fairweather',
+    actorName: 'Jordan Example',
     orgId: 'org-md',
-    projectId: 'proj-sol',
-    projectName: 'Solfit',
+    projectId: 'proj-acme-solar',
+    projectName: 'Acme Solar',
     entityType: 'task',
     entityId: TASKS[0].id,
     taskId: TASKS[0].id,
@@ -131,8 +131,8 @@ function handle(req: Req, res: http.ServerResponse) {
   if (req.method === 'GET') {
     if (p === '/users/me') {
       return send(res, 200, req.headers['x-timdo-user']
-        ? { id: ED, email: 'robin@example.com', name: 'Robin Fairweather' }
-        : { id: TIM, email: 'tim@example.com', name: 'Tim Dobson' });
+        ? { id: ED, email: 'jordan@example.test', name: 'Jordan Example' }
+        : { id: TIM, email: 'casey@example.test', name: 'Casey Example' });
     }
     if (p === '/projects') {
       let rows = TASKS;
@@ -146,7 +146,7 @@ function handle(req: Req, res: http.ServerResponse) {
     }
     if (p.startsWith('/projects/') && p.endsWith('/updates')) {
       return send(res, 200, [
-        { id: 'n1', projectId: TASKS[0].id, userId: ED, authorName: 'Robin Fairweather', note: 'Firmware is 2.1.4', gmailThreadId: null, createdAt: '2026-10-08T12:00:00.000Z', canDelete: false },
+        { id: 'n1', projectId: TASKS[0].id, userId: ED, authorName: 'Jordan Example', note: 'Firmware is 2.1.4', gmailThreadId: null, createdAt: '2026-10-08T12:00:00.000Z', canDelete: false },
       ]);
     }
     if (p.startsWith('/tasks/')) return send(res, 200, { linkedTasks: [] });
@@ -156,22 +156,22 @@ function handle(req: Req, res: http.ServerResponse) {
     if (p === '/epics' || p === '/goals') return send(res, 200, []);
   }
   if (req.method === 'PUT' && p.startsWith('/projects/')) {
-    if (viewerMode) return send(res, 403, { error: 'You have view-only access to "Solfit"' });
+    if (viewerMode) return send(res, 403, { error: 'You have view-only access to "Acme Solar"' });
     const id = p.split('/')[2];
     const before = TASKS.find((t) => t.id === id)!;
     const assignee = req.body.assigneeId === undefined ? {} : {
       assigneeId: req.body.assigneeId,
-      assigneeName: req.body.assigneeId === ED ? 'Robin Fairweather' : req.body.assigneeId === TIM ? 'Tim Dobson' : null,
+      assigneeName: req.body.assigneeId === ED ? 'Jordan Example' : req.body.assigneeId === TIM ? 'Casey Example' : null,
     };
     return send(res, 200, { ...before, ...req.body, ...assignee });
   }
   if (req.method === 'POST' && p === '/projects') {
-    if (viewerMode) return send(res, 403, { error: 'You have view-only access to "Solfit"' });
+    if (viewerMode) return send(res, 403, { error: 'You have view-only access to "Acme Solar"' });
     return send(res, 201, { ...TASKS[0], ...req.body, id: 'dddd4444-0000-0000-0000-000000000004' });
   }
   if (req.method === 'POST' && p === '/organisations/org-md/invites') {
     const email = req.body.email;
-    if (email === 'robin@example.com') return send(res, 200, { status: 'already_member', userId: ED, name: 'Robin Fairweather', email, role: 'member' });
+    if (email === 'jordan@example.test') return send(res, 200, { status: 'already_member', userId: ED, name: 'Jordan Example', email, role: 'member' });
     if (email === 'known@example.com') return send(res, 201, { status: 'added', userId: 'u-k', name: 'Known Person', email, role: req.body.role });
     return send(res, 201, { status: 'invited', id: 'inv-1', email, role: req.body.role, token: 'tok-abc', expiresAt: '2026-11-07T00:00:00Z' });
   }
@@ -233,12 +233,12 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
   });
 
   it('list --assignee resolves a name or email to a user id, and --workspace to an org id', async () => {
-    const r = await run(['list', '--assignee', 'robin', '-w', 'Migrating Dragons']);
+    const r = await run(['list', '--assignee', 'jordan', '-w', 'Northstar Workshop']);
     expect(r.code).toBe(0);
     const q = lastGet('/projects')!.query;
     expect(q.get('assignee')).toBe(ED);
     expect(q.get('orgId')).toBe('org-md');
-    await run(['list', '--assignee', 'robin@example.com', '--json']);
+    await run(['list', '--assignee', 'jordan@example.test', '--json']);
     expect(lastGet('/projects')?.query.get('assignee')).toBe(ED);
   });
 
@@ -246,8 +246,8 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
     const r = await run(['list', 'do']);
     const lines = r.stdout.split('\n');
     const shared = lines.find((l) => l.includes('Check flashing'))!;
-    expect(shared).toContain('Migrating Dragons/Solfit');
-    expect(shared).toContain('Robin');
+    expect(shared).toContain('Northstar Workshop/Acme Solar');
+    expect(shared).toContain('Jordan');
     const personal = lines.find((l) => l.includes('Renew passport'))!;
     expect(personal).toContain('Personal');
     expect(personal).not.toContain('Personal Workspace');
@@ -263,10 +263,10 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
   });
 
   it('--as and TIMDO_AS send X-Timdo-User', async () => {
-    await run(['--as', 'robin@example.com', 'whoami']);
-    expect(lastGet('/users/me')?.headers['x-timdo-user']).toBe('robin@example.com');
-    await run(['list', '--json'], { TIMDO_AS: 'robin@example.com' });
-    expect(lastGet('/projects')?.headers['x-timdo-user']).toBe('robin@example.com');
+    await run(['--as', 'jordan@example.test', 'whoami']);
+    expect(lastGet('/users/me')?.headers['x-timdo-user']).toBe('jordan@example.test');
+    await run(['list', '--json'], { TIMDO_AS: 'jordan@example.test' });
+    expect(lastGet('/projects')?.headers['x-timdo-user']).toBe('jordan@example.test');
     await run(['list', '--json']);
     expect(lastGet('/projects')?.headers['x-timdo-user']).toBeUndefined();
   });
@@ -283,12 +283,12 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
   it('get shows workspace, project, people, note authors and activity', async () => {
     const r = await run(['get', 'aaaa1111', '--text']);
     expect(r.code).toBe(0);
-    expect(r.stdout).toMatch(/Workspace:\s+Migrating Dragons\s+\(shared, your role: owner\)/);
-    expect(r.stdout).toMatch(/Project:\s+Solfit \(SOL\)/);
-    expect(r.stdout).toMatch(/Assignee:\s+Tim Dobson \(you\)/);
-    expect(r.stdout).toMatch(/Created by:\s+Tim Dobson/);
-    expect(r.stdout).toMatch(/Last updated:\s+Robin Fairweather/);
-    expect(r.stdout).toMatch(/Robin Fairweather\s+Firmware is 2\.1\.4/);
+    expect(r.stdout).toMatch(/Workspace:\s+Northstar Workshop\s+\(shared, your role: owner\)/);
+    expect(r.stdout).toMatch(/Project:\s+Acme Solar \(ACS\)/);
+    expect(r.stdout).toMatch(/Assignee:\s+Casey Example \(you\)/);
+    expect(r.stdout).toMatch(/Created by:\s+Casey Example/);
+    expect(r.stdout).toMatch(/Last updated:\s+Jordan Example/);
+    expect(r.stdout).toMatch(/Jordan Example\s+Firmware is 2\.1\.4/);
     expect(r.stdout).toContain('Moved "Fix inverter" from Do to Done');
     expect(lastGet('/activity')?.query.get('taskId')).toBe(TASKS[0].id);
   });
@@ -296,37 +296,37 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
   it('get --json adds updates, linked tasks and activity', async () => {
     const r = await run(['--json', 'get', 'aaaa1111']);
     const t = JSON.parse(r.stdout);
-    expect(t.updates[0].authorName).toBe('Robin Fairweather');
+    expect(t.updates[0].authorName).toBe('Jordan Example');
     expect(t.activity).toHaveLength(1);
     expect(t.linkedTasks).toEqual([]);
   });
 
   it('add --assign resolves the member in the target workspace', async () => {
-    const r = await run(['add', 'New thing', '-p', 'Solfit', '--assign', 'Robin', '--json']);
+    const r = await run(['add', 'New thing', '-p', 'Acme Solar', '--assign', 'Jordan', '--json']);
     expect(r.code).toBe(0);
     const post = requests.find((x) => x.method === 'POST' && x.path === '/api/v2/projects')!;
     expect(post.body.assigneeId).toBe(ED);
-    expect(post.body.category).toBe('Solfit');
+    expect(post.body.category).toBe('Acme Solar');
 
-    await run(['add', 'Nobody yet', '-p', 'Solfit', '--assign', 'none', '--json']);
+    await run(['add', 'Nobody yet', '-p', 'Acme Solar', '--assign', 'none', '--json']);
     const post2 = requests.filter((x) => x.method === 'POST' && x.path === '/api/v2/projects').at(-1)!;
     expect(post2.body).toHaveProperty('assigneeId', null);
 
-    await run(['add', 'Default', '-p', 'Solfit', '--json']);
+    await run(['add', 'Default', '-p', 'Acme Solar', '--json']);
     const post3 = requests.filter((x) => x.method === 'POST' && x.path === '/api/v2/projects').at(-1)!;
     expect(post3.body).not.toHaveProperty('assigneeId');
   });
 
   it('add --project-id accepts a project key', async () => {
-    await run(['add', 'Keyed', '--project-id', 'SOL', '--json']);
+    await run(['add', 'Keyed', '--project-id', 'ACS', '--json']);
     const post = requests.find((x) => x.method === 'POST' && x.path === '/api/v2/projects')!;
-    expect(post.body.projectId).toBe('proj-sol');
+    expect(post.body.projectId).toBe('proj-acme-solar');
   });
 
   it('add refuses an assignee who is not in the workspace', async () => {
-    const r = await run(['add', 'X', '-p', 'Solfit', '--assign', 'stranger@example.com']);
+    const r = await run(['add', 'X', '-p', 'Acme Solar', '--assign', 'stranger@example.com']);
     expect(r.code).not.toBe(0);
-    expect(r.stderr).toContain('nobody in "Migrating Dragons" matches "stranger@example.com"');
+    expect(r.stderr).toContain('nobody in "Northstar Workshop" matches "stranger@example.com"');
     expect(requests.some((x) => x.method === 'POST')).toBe(false);
   });
 
@@ -335,14 +335,14 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
     expect(r.code).toBe(0);
     const put = requests.find((x) => x.method === 'PUT')!;
     expect(put.body.assigneeId).toBe(TIM);
-    expect(r.stdout).toContain('Assignee: Robin Fairweather -> Tim Dobson');
+    expect(r.stdout).toContain('Assignee: Jordan Example -> Casey Example');
   });
 
   it('view-only errors are readable and exit non-zero', async () => {
     viewerMode = true;
     const r = await run(['update', 'aaaa1111', '--done']);
     expect(r.code).toBe(1);
-    expect(r.stderr.trim()).toBe('View only: you have view-only access to "Solfit"');
+    expect(r.stderr.trim()).toBe('View only: you have view-only access to "Acme Solar"');
   });
 
   it('missing or unknown task IDs fail with a clear message', async () => {
@@ -354,8 +354,8 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
   });
 
   it('activity prints newest-first lines with actor and project', async () => {
-    const r = await run(['activity', '--workspace', 'Migrating Dragons', '-n', '5']);
-    expect(r.stdout.trim()).toBe('08 Oct 14:02  Robin Fairweather  Moved "Fix inverter" from Do to Done  [Solfit]');
+    const r = await run(['activity', '--workspace', 'Northstar Workshop', '-n', '5']);
+    expect(r.stdout.trim()).toBe('08 Oct 14:02  Jordan Example  Moved "Fix inverter" from Do to Done  [Acme Solar]');
     const q = lastGet('/activity')!.query;
     expect(q.get('orgId')).toBe('org-md');
     expect(q.get('limit')).toBe('5');
@@ -363,27 +363,27 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
 
   it('workspace list and show describe roles, members, projects and invites', async () => {
     const list = await run(['ws', 'list']);
-    expect(list.stdout).toMatch(/Migrating Dragons\s+owner\s+2\s+1\s+shared/);
-    const show = await run(['workspace', 'show', 'migrating dragons']);
-    expect(show.stdout).toMatch(/Robin Fairweather\s+robin@example\.com\s+member/);
-    expect(show.stdout).toMatch(/SOL\s+Solfit\s+2 open\s+5 done\s+1 epics/);
+    expect(list.stdout).toMatch(/Northstar Workshop\s+owner\s+2\s+1\s+shared/);
+    const show = await run(['workspace', 'show', 'Northstar Workshop']);
+    expect(show.stdout).toMatch(/Jordan Example\s+jordan@example\.test\s+member/);
+    expect(show.stdout).toMatch(/ACS\s+Acme Solar\s+2 open\s+5 done\s+1 epics/);
     expect(show.stdout).toContain('https://timdo.tdobson.net/invite/tok-9');
   });
 
   it('workspace share reports added, already a member and invited', async () => {
-    const added = await run(['ws', 'share', 'Migrating Dragons', 'known@example.com', '--role', 'viewer']);
-    expect(added.stdout).toContain('Added Known Person <known@example.com> to "Migrating Dragons" as viewer');
-    const already = await run(['ws', 'share', 'Migrating Dragons', 'robin@example.com']);
+    const added = await run(['ws', 'share', 'Northstar Workshop', 'known@example.com', '--role', 'viewer']);
+    expect(added.stdout).toContain('Added Known Person <known@example.com> to "Northstar Workshop" as viewer');
+    const already = await run(['ws', 'share', 'Northstar Workshop', 'jordan@example.test']);
     expect(already.stdout).toContain('already a member');
-    const invited = await run(['ws', 'share', 'Migrating Dragons', 'new@example.com']);
+    const invited = await run(['ws', 'share', 'Northstar Workshop', 'new@example.com']);
     expect(invited.stdout).toContain('Invited new@example.com');
     expect(invited.stdout).toContain('https://timdo.tdobson.net/invite/tok-abc');
-    const json = await run(['--json', 'ws', 'share', 'Migrating Dragons', 'new@example.com']);
+    const json = await run(['--json', 'ws', 'share', 'Northstar Workshop', 'new@example.com']);
     expect(JSON.parse(json.stdout).inviteUrl).toBe('https://timdo.tdobson.net/invite/tok-abc');
   });
 
   it('workspace role and the org alias resolve members by email', async () => {
-    const r = await run(['org', 'role', 'Migrating Dragons', 'robin@example.com', 'viewer']);
+    const r = await run(['org', 'role', 'Northstar Workshop', 'jordan@example.test', 'viewer']);
     expect(r.code).toBe(0);
     const put = requests.find((x) => x.method === 'PUT')!;
     expect(put.path).toBe(`/api/v2/organisations/org-md/members/${ED}`);
@@ -391,11 +391,11 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
   });
 
   it('move-project needs --yes off a terminal', async () => {
-    const dry = await run(['ws', 'move-project', 'Personal', 'Migrating Dragons']);
+    const dry = await run(['ws', 'move-project', 'Personal', 'Northstar Workshop']);
     expect(dry.code).toBe(1);
     expect(dry.stderr).toContain('--yes');
     expect(requests.some((x) => x.method === 'PUT')).toBe(false);
-    const ok = await run(['ws', 'move-project', 'PER', 'Migrating Dragons', '--yes']);
+    const ok = await run(['ws', 'move-project', 'PER', 'Northstar Workshop', '--yes']);
     expect(ok.code).toBe(0);
     const put = requests.find((x) => x.method === 'PUT')!;
     expect(put.path).toBe('/api/v2/organisations/org-tim/projects/proj-per');
@@ -412,8 +412,8 @@ describe('timdo CLI, multi-user', { timeout: 30_000 }, () => {
 
   it('whoami prints the account in use', async () => {
     const r = await run(['whoami']);
-    expect(r.stdout).toContain('Tim Dobson <tim@example.com>');
-    expect(r.stdout).toContain('Migrating Dragons (owner, 2 members)');
+    expect(r.stdout).toContain('Casey Example <casey@example.test>');
+    expect(r.stdout).toContain('Northstar Workshop (owner, 2 members)');
   });
 
   it('help works without a secret and the script has no em-dashes', async () => {

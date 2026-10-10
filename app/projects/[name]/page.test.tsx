@@ -6,7 +6,7 @@ import ProjectDetailPage from './page';
 
 // Mock next/navigation
 const mockPush = jest.fn();
-let mockParams = { name: 'Solfit' };
+let mockParams = { name: 'Acme Solar' };
 
 jest.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -35,12 +35,12 @@ const mockProjects = [
     id: 'p-1',
     userId: 'user-1',
     project: 'Design Solar Inverter Mounting',
-    reason: 'For Solfit deployment',
+    reason: 'For Acme Solar deployment',
     status: 'do',
     priority: 9,
     size: '***',
-    category: 'Solfit',
-    epicId: 'epic-solfit-1',
+    category: 'Acme Solar',
+    epicId: 'epic-1',
     goalId: 'goal-1',
     isDeleted: false,
     createdAt: '2026-08-31T00:00:00.000Z',
@@ -55,8 +55,8 @@ const mockProjects = [
     awaitUntil: '2026-09-15',
     priority: 5,
     size: '*',
-    category: 'Solfit',
-    epicId: 'epic-solfit-1',
+    category: 'Acme Solar',
+    epicId: 'epic-1',
     goalId: 'goal-1',
     isDeleted: false,
     createdAt: '2026-08-31T00:00:00.000Z',
@@ -70,8 +70,8 @@ const mockProjects = [
     status: 'done',
     priority: 3,
     size: '**',
-    category: 'Solfit',
-    epicId: 'epic-solfit-1',
+    category: 'Acme Solar',
+    epicId: 'epic-1',
     goalId: 'goal-1',
     isDeleted: false,
     createdAt: '2026-08-31T00:00:00.000Z',
@@ -80,7 +80,7 @@ const mockProjects = [
   {
     id: 'p-other',
     userId: 'user-1',
-    project: 'Personal task not in Solfit',
+    project: 'Personal task not in Acme Solar',
     status: 'do',
     priority: 5,
     size: '*',
@@ -93,11 +93,11 @@ const mockProjects = [
 
 const mockEpics = [
   {
-    id: 'epic-solfit-1',
+    id: 'epic-1',
     userId: 'user-1',
     title: 'Deploy Acme Solar Array',
     description: 'Hardware installation and grid connect',
-    category: 'Solfit',
+    category: 'Acme Solar',
     goalId: 'goal-1',
     status: 'active',
     totalTasks: 3,
@@ -138,11 +138,11 @@ describe('ProjectDetailPage (/projects/[name])', () => {
   });
 
   it('renders category title, epics with progress bar, and tasks grouped by DO/AWAITING/DONE', async () => {
-    mockParams = { name: 'Solfit' };
+    mockParams = { name: 'Acme Solar' };
     render(<ProjectDetailPage />);
 
     // Header & Category title
-    expect(await screen.findByText('Solfit')).toBeInTheDocument();
+    expect(await screen.findByText('Acme Solar')).toBeInTheDocument();
 
     // Epic card and progress
     expect(screen.getByText('Deploy Acme Solar Array')).toBeInTheDocument();
@@ -154,33 +154,33 @@ describe('ProjectDetailPage (/projects/[name])', () => {
     expect(screen.getByText('Site survey completed')).toBeInTheDocument();
 
     // Other category tasks should not appear
-    expect(screen.queryByText('Personal task not in Solfit')).not.toBeInTheDocument();
+    expect(screen.queryByText('Personal task not in Acme Solar')).not.toBeInTheDocument();
 
     // Button to add task in project
-    expect(screen.getByRole('button', { name: /New Task in Solfit/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /New Task in Acme Solar/i })).toBeInTheDocument();
     expect(screen.getByText('Personal')).toBeInTheDocument();
   });
 
   it('labels a shared project with its workspace, shows assignees and respects view-only access', async () => {
-    mockParams = { name: 'Solfit' };
+    mockParams = { name: 'Acme Solar' };
     const sharedTasks = mockProjects
-      .filter((p) => p.category === 'Solfit')
+      .filter((p) => p.category === 'Acme Solar')
       .map((p) => ({
         ...p,
-        orgId: 'org-md',
-        orgName: 'Migrating Dragons',
+        orgId: 'org-2',
+        orgName: 'Northstar Workshop',
         isShared: true,
         canEdit: false,
         myRole: 'viewer',
-        assigneeId: 'user-ed',
-        assigneeName: 'Robin Fairweather',
+        assigneeId: 'user-2',
+        assigneeName: 'Jordan Example',
       }));
     fetchMock.mockImplementation((url: string) => {
-      if (url.includes('/organisations/org-md/members')) {
+      if (url.includes('/organisations/org-2/members')) {
         return Promise.resolve({
           ok: true,
           json: async () => [
-            { userId: 'user-ed', userName: 'Robin Fairweather', userEmail: 'ed@x.com', role: 'owner' },
+            { userId: 'user-2', userName: 'Jordan Example', userEmail: 'jordan@example.com', role: 'owner' },
           ],
         });
       }
@@ -195,12 +195,12 @@ describe('ProjectDetailPage (/projects/[name])', () => {
 
     render(<ProjectDetailPage />);
 
-    expect(await screen.findByText('Migrating Dragons')).toBeInTheDocument();
-    expect(await screen.findByText('Shared with Robin Fairweather')).toBeInTheDocument();
-    expect(screen.getAllByRole('img', { name: 'Assigned to Robin Fairweather' }).length).toBe(
+    expect(await screen.findByText('Northstar Workshop')).toBeInTheDocument();
+    expect(await screen.findByText('Shared with Jordan Example')).toBeInTheDocument();
+    expect(screen.getAllByRole('img', { name: 'Assigned to Jordan Example' }).length).toBe(
       sharedTasks.length
     );
-    expect(screen.getByRole('button', { name: /New Task in Solfit/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /New Task in Acme Solar/i })).toBeDisabled();
     expect(screen.getByText('View only')).toBeInTheDocument();
   });
 });

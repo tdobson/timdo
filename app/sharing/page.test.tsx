@@ -22,34 +22,34 @@ configure({ asyncUtilTimeout: 10000 });
 jest.setTimeout(120000);
 
 const API = 'https://worker.example.com/api/v2';
-const TIM = 'user-tim';
-const ED = 'user-ed';
-const VIC = 'user-vic';
+const OWNER = 'user-1';
+const MEMBER = 'user-2';
+const VIEWER = 'user-3';
 
 function personal(): SharingWorkspace {
   return {
-    id: 'org-personal',
+    id: 'org-1',
     name: 'Personal Workspace',
-    slug: 'tim',
+    slug: 'casey',
     isPersonal: true,
     role: 'owner',
     memberCount: 1,
     projectCount: 1,
-    createdBy: TIM,
+    createdBy: OWNER,
     members: [
       {
-        userId: TIM,
-        userName: 'Tim Dobson',
-        userEmail: 'tim@example.com',
+        userId: OWNER,
+        userName: 'Casey Example',
+        userEmail: 'casey@example.com',
         role: 'owner',
         isMe: true,
       },
     ],
     projects: [
       {
-        id: 'proj-crew',
-        key: 'CRE',
-        name: 'Crew',
+        id: 'proj-1',
+        key: 'PER',
+        name: 'Personal Project',
         description: null,
         isArchived: false,
         openTasks: 67,
@@ -63,52 +63,52 @@ function personal(): SharingWorkspace {
 
 function shared(myRole: WorkspaceRole): SharingWorkspace {
   const roles: Record<string, WorkspaceRole> = {
-    [TIM]: 'owner',
-    [ED]: 'member',
-    [VIC]: 'viewer',
+    [OWNER]: 'owner',
+    [MEMBER]: 'member',
+    [VIEWER]: 'viewer',
   };
-  // "Me" is Tim when owner; otherwise Rob holds myRole and Tim stays owner
-  const meId = myRole === 'owner' ? TIM : ED;
-  if (meId === ED) {
-    roles[ED] = myRole;
+  // "Me" is Casey when owner; otherwise Jordan holds myRole and Casey stays owner
+  const meId = myRole === 'owner' ? OWNER : MEMBER;
+  if (meId === MEMBER) {
+    roles[MEMBER] = myRole;
   }
   return {
-    id: 'org-md',
-    name: 'Migrating Dragons',
-    slug: 'md',
+    id: 'org-2',
+    name: 'Northstar Workshop',
+    slug: 'northstar-workshop',
     isPersonal: false,
     role: myRole,
     memberCount: 3,
     projectCount: 2,
-    createdBy: TIM,
+    createdBy: OWNER,
     members: [
       {
-        userId: ED,
-        userName: 'Robin Fairweather',
-        userEmail: 'robin@example.com',
-        role: roles[ED],
-        isMe: meId === ED,
+        userId: MEMBER,
+        userName: 'Jordan Example',
+        userEmail: 'jordan@example.com',
+        role: roles[MEMBER],
+        isMe: meId === MEMBER,
       },
       {
-        userId: TIM,
-        userName: 'Tim Dobson',
-        userEmail: 'tim@example.com',
-        role: roles[TIM],
-        isMe: meId === TIM,
+        userId: OWNER,
+        userName: 'Casey Example',
+        userEmail: 'casey@example.com',
+        role: roles[OWNER],
+        isMe: meId === OWNER,
       },
       {
-        userId: VIC,
-        userName: 'Vic Viewer',
-        userEmail: 'vic@example.com',
-        role: roles[VIC],
+        userId: VIEWER,
+        userName: 'Alex Example',
+        userEmail: 'alex@example.com',
+        role: roles[VIEWER],
         isMe: false,
       },
     ],
     projects: [
       {
-        id: 'proj-solfit',
-        key: 'SOL',
-        name: 'Solfit',
+        id: 'proj-2',
+        key: 'ACS',
+        name: 'Acme Solar',
         description: null,
         isArchived: false,
         openTasks: 37,
@@ -116,7 +116,7 @@ function shared(myRole: WorkspaceRole): SharingWorkspace {
         epicCount: 2,
       },
       {
-        id: 'proj-old',
+        id: 'proj-3',
         key: 'OLD',
         name: 'Old Stuff',
         description: null,
@@ -165,7 +165,7 @@ beforeEach(() => {
       return respond(overview);
     }
     if (url.startsWith(`${API}/users/me`)) {
-      return respond({ id: TIM, email: 'tim@example.com', name: 'Tim Dobson' });
+      return respond({ id: OWNER, email: 'casey@example.com', name: 'Casey Example' });
     }
     if (method === 'POST' && /\/organisations\/[^/]+\/invites$/.test(url)) {
       return respond(inviteResult, true, 201);
@@ -196,23 +196,23 @@ describe('SharingPage', () => {
     render(<SharingPage />);
 
     const cards = await screen.findAllByTestId(/^workspace-card-/);
-    expect(cards[0]).toHaveAttribute('data-testid', 'workspace-card-org-personal');
+    expect(cards[0]).toHaveAttribute('data-testid', 'workspace-card-org-1');
     expect(within(cards[0]).getByRole('heading', { name: 'Personal' })).toBeInTheDocument();
     expect(
       within(cards[0]).getByText('Only you can see this unless you share it')
     ).toBeInTheDocument();
     expect(
-      within(cards[1]).getByText('Shared with Robin Fairweather and Vic Viewer')
+      within(cards[1]).getByText('Shared with Jordan Example and Alex Example')
     ).toBeInTheDocument();
   });
 
   it('lets an owner change anyone, including choosing Owner and Admin', async () => {
     overview = [shared('owner')];
     render(<SharingPage />);
-    const card = await workspaceCard('org-md');
+    const card = await workspaceCard('org-2');
 
-    const edSelect = within(card).getByRole('textbox', { name: 'Role for Robin Fairweather' });
-    await userEvent.click(edSelect);
+    const memberSelect = within(card).getByRole('textbox', { name: 'Role for Jordan Example' });
+    await userEvent.click(memberSelect);
     const options = await screen.findAllByRole('option');
     expect(options.map((o) => o.textContent)).toEqual([
       expect.stringContaining('Owner'),
@@ -220,10 +220,10 @@ describe('SharingPage', () => {
       expect.stringContaining('Member'),
       expect.stringContaining('Viewer'),
     ]);
-    expect(within(card).getByRole('button', { name: 'Remove Robin Fairweather' })).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Remove Jordan Example' })).toBeInTheDocument();
     // Sole owner can't demote themselves
     expect(
-      within(card).queryByRole('textbox', { name: 'Role for Tim Dobson' })
+      within(card).queryByRole('textbox', { name: 'Role for Casey Example' })
     ).not.toBeInTheDocument();
     // Management controls are there
     expect(within(card).getByTestId('share-email-input')).toBeInTheDocument();
@@ -233,36 +233,36 @@ describe('SharingPage', () => {
   it('only lets an admin change members and viewers, between member and viewer', async () => {
     overview = [shared('admin')];
     render(<SharingPage />);
-    const card = await workspaceCard('org-md');
+    const card = await workspaceCard('org-2');
 
-    // Tim is an owner: no select, no remove
+    // Casey is an owner: no select, no remove
     expect(
-      within(card).queryByRole('textbox', { name: 'Role for Tim Dobson' })
+      within(card).queryByRole('textbox', { name: 'Role for Casey Example' })
     ).not.toBeInTheDocument();
     expect(
-      within(card).queryByRole('button', { name: 'Remove Tim Dobson' })
+      within(card).queryByRole('button', { name: 'Remove Casey Example' })
     ).not.toBeInTheDocument();
     expect(
-      within(within(card).getByTestId(`member-row-${TIM}`)).getByText('Owner')
+      within(within(card).getByTestId(`member-row-${OWNER}`)).getByText('Owner')
     ).toBeInTheDocument();
 
-    const vicSelect = within(card).getByRole('textbox', { name: 'Role for Vic Viewer' });
-    await userEvent.click(vicSelect);
+    const viewerSelect = within(card).getByRole('textbox', { name: 'Role for Alex Example' });
+    await userEvent.click(viewerSelect);
     const options = await screen.findAllByRole('option');
     expect(options.map((o) => o.textContent)).toEqual([
       expect.stringContaining('Member'),
       expect.stringContaining('Viewer'),
     ]);
-    expect(within(card).getByRole('button', { name: 'Remove Vic Viewer' })).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Remove Alex Example' })).toBeInTheDocument();
   });
 
   it('shows a read-only view to viewers', async () => {
     overview = [shared('viewer')];
     render(<SharingPage />);
-    const card = await workspaceCard('org-md');
+    const card = await workspaceCard('org-2');
 
-    expect(within(card).getByText('Robin Fairweather')).toBeInTheDocument();
-    expect(within(card).getByText('Solfit')).toBeInTheDocument();
+    expect(within(card).getByText('Jordan Example')).toBeInTheDocument();
+    expect(within(card).getByText('Acme Solar')).toBeInTheDocument();
     expect(within(card).queryAllByRole('textbox', { name: /^Role for/ })).toHaveLength(0);
     expect(within(card).queryByTestId('share-email-input')).not.toBeInTheDocument();
     expect(within(card).queryByRole('button', { name: /add project/i })).not.toBeInTheDocument();
@@ -277,9 +277,9 @@ describe('SharingPage', () => {
     overview = [shared('owner')];
     roleChangeError = 'A workspace needs at least one owner';
     render(<SharingPage />);
-    const card = await workspaceCard('org-md');
+    const card = await workspaceCard('org-2');
 
-    await userEvent.click(within(card).getByRole('textbox', { name: 'Role for Robin Fairweather' }));
+    await userEvent.click(within(card).getByRole('textbox', { name: 'Role for Jordan Example' }));
     await userEvent.click(await screen.findByRole('option', { name: /Viewer/ }));
 
     await waitFor(() =>
@@ -288,13 +288,13 @@ describe('SharingPage', () => {
       )
     );
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
-    expect(putCall?.[0]).toBe(`${API}/organisations/org-md/members/${ED}`);
+    expect(putCall?.[0]).toBe(`${API}/organisations/org-2/members/${MEMBER}`);
     expect(JSON.parse(putCall?.[1].body)).toEqual({ role: 'viewer' });
   });
 
   describe('sharing with someone', () => {
     async function shareWith(email: string) {
-      const card = await workspaceCard('org-md');
+      const card = await workspaceCard('org-2');
       fireEvent.change(within(card).getByTestId('share-email-input'), { target: { value: email } });
       await userEvent.click(within(card).getByRole('button', { name: 'Share' }));
       return card;
@@ -304,35 +304,35 @@ describe('SharingPage', () => {
       overview = [shared('owner')];
       inviteResult = {
         status: 'added',
-        userId: 'user-new',
-        name: 'Nina New',
-        email: 'nina@example.com',
+        userId: 'user-4',
+        name: 'Taylor Example',
+        email: 'taylor@example.com',
         role: 'member',
       };
       render(<SharingPage />);
-      const card = await shareWith('nina@example.com');
+      const card = await shareWith('taylor@example.com');
 
       expect(await within(card).findByTestId('share-result-added')).toHaveTextContent(
-        'Nina New can now see Migrating Dragons'
+        'Taylor Example can now see Northstar Workshop'
       );
       const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
-      expect(post?.[0]).toBe(`${API}/organisations/org-md/invites`);
-      expect(JSON.parse(post?.[1].body)).toEqual({ email: 'nina@example.com', role: 'member' });
+      expect(post?.[0]).toBe(`${API}/organisations/org-2/invites`);
+      expect(JSON.parse(post?.[1].body)).toEqual({ email: 'taylor@example.com', role: 'member' });
     });
 
     it('says when they are already in the workspace', async () => {
       overview = [shared('owner')];
       inviteResult = {
         status: 'already_member',
-        userId: ED,
-        email: 'robin@example.com',
+        userId: MEMBER,
+        email: 'jordan@example.com',
         role: 'member',
       };
       render(<SharingPage />);
-      const card = await shareWith('robin@example.com');
+      const card = await shareWith('jordan@example.com');
 
       expect(await within(card).findByTestId('share-result-already')).toHaveTextContent(
-        'robin@example.com is already in Migrating Dragons as member'
+        'jordan@example.com is already in Northstar Workshop as member'
       );
     });
 
@@ -353,14 +353,14 @@ describe('SharingPage', () => {
       expect(within(result).getByTestId('invite-link')).toHaveTextContent(
         'https://timdo.tdobson.net/invite/tok-123'
       );
-      expect(result).toHaveTextContent('join Migrating Dragons automatically when they sign in');
+      expect(result).toHaveTextContent('join Northstar Workshop automatically when they sign in');
       expect(within(result).getByRole('button', { name: /copy link/i })).toBeInTheDocument();
     });
 
     it('asks for an email address before sharing', async () => {
       overview = [shared('owner')];
       render(<SharingPage />);
-      await shareWith('robin');
+      await shareWith('jordan');
       expect(
         await screen.findByText('Enter an email address, or pick someone from the list')
       ).toBeInTheDocument();
@@ -371,7 +371,7 @@ describe('SharingPage', () => {
   it('lists pending invites with copy and cancel', async () => {
     overview = [shared('owner')];
     render(<SharingPage />);
-    const card = await workspaceCard('org-md');
+    const card = await workspaceCard('org-2');
     const row = within(card).getByTestId('invite-row-inv-1');
     expect(row).toHaveTextContent('new@example.com');
     expect(within(row).getByRole('button', { name: 'Copy invite link' })).toBeInTheDocument();
@@ -383,30 +383,30 @@ describe('SharingPage', () => {
   it('explains who gains and loses access before moving a project', async () => {
     overview = [personal(), shared('owner')];
     render(<SharingPage />);
-    const card = await workspaceCard('org-personal');
+    const card = await workspaceCard('org-1');
 
-    await userEvent.click(within(card).getByRole('button', { name: 'Actions for Crew' }));
+    await userEvent.click(within(card).getByRole('button', { name: 'Actions for Personal Project' }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /move to workspace/i }));
 
     // Only one possible destination, so it's preselected
     const impact = await screen.findByTestId('move-impact');
     expect(impact).toHaveTextContent(
-      "Everyone in Migrating Dragons will be able to see its 236 tasks and 4 epics. People in Personal who aren't in Migrating Dragons will lose access."
+      "Everyone in Northstar Workshop will be able to see its 236 tasks and 4 epics. People in Personal who aren't in Northstar Workshop will lose access."
     );
-    expect(impact).toHaveTextContent('Gains access: Robin Fairweather and Vic Viewer');
+    expect(impact).toHaveTextContent('Gains access: Jordan Example and Alex Example');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Move to Migrating Dragons' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Move to Northstar Workshop' }));
     await waitFor(() => {
       const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
-      expect(put?.[0]).toBe(`${API}/organisations/org-personal/projects/proj-crew`);
-      expect(JSON.parse(put?.[1].body)).toEqual({ orgId: 'org-md' });
+      expect(put?.[0]).toBe(`${API}/organisations/org-1/projects/proj-1`);
+      expect(JSON.parse(put?.[1].body)).toEqual({ orgId: 'org-2' });
     });
   });
 
   it('shows archived projects with a badge', async () => {
     overview = [shared('owner')];
     render(<SharingPage />);
-    const row = await screen.findByTestId('project-row-proj-old');
+    const row = await screen.findByTestId('project-row-proj-3');
     expect(within(row).getByText('Archived')).toBeInTheDocument();
     expect(row).toHaveTextContent('0 open · 3 done · 0 epics');
   });

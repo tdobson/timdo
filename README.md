@@ -30,6 +30,10 @@ This architecture provides a secure, interactive, and personalized user experien
 
 TimDo started as a one-person tool and is now multi-user. Work lives in workspaces, which hold projects, which hold epics and tasks. You can share a workspace with someone as an owner, admin, member or viewer, and everything they do is attributed to them in an activity log. Life goals stay private to each person. [docs/collaboration.md](docs/collaboration.md) has the model and the full API.
 
+### Connecting other systems
+
+A watcher or bot can turn forum posts, issues or form submissions into tasks without making the same task twice: it gives each task the outside item as its source, and TimDo answers a repeat with the task it already has. [docs/integrations.md](docs/integrations.md) has the recipe in curl, CLI and MCP form.
+
 ## Technology Stack
 
 -   **Framework**: Next.js (App Router)

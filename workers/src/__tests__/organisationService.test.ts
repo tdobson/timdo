@@ -33,12 +33,12 @@ describe('Organisation Service', () => {
       ]);
 
       const robins = await orgService.getUserOrganisations(db, ROBIN);
-      expect(robins.map((o) => [o.name, o.role])).toEqual([['Migrating Dragons', 'member']]);
+      expect(robins.map((o) => [o.name, o.role])).toEqual([['Northstar Workshop', 'member']]);
     });
 
     it('gets one workspace only for members', async () => {
       expect(await orgService.getOrganisationById(db, ROBIN, 'org-md')).toMatchObject({
-        name: 'Migrating Dragons',
+        name: 'Northstar Workshop',
         role: 'member',
       });
       expect(await orgService.getOrganisationById(db, STRANGER, 'org-md')).toBeNull();
@@ -67,15 +67,15 @@ describe('Organisation Service', () => {
     });
 
     it('uses an explicit slug when given', async () => {
-      const org = await orgService.createOrganisation(db, TIM, 'XEBIT', 'xebit');
-      expect(org.slug).toBe('xebit');
+      const org = await orgService.createOrganisation(db, TIM, 'Northstar Labs', 'northstar-labs');
+      expect(org.slug).toBe('northstar-labs');
     });
   });
 
   describe('rename and delete', () => {
     it('lets admins rename, not members', async () => {
-      const renamed = await orgService.renameOrganisation(db, TIM, 'org-md', 'Dragons Ltd');
-      expect(renamed?.name).toBe('Dragons Ltd');
+      const renamed = await orgService.renameOrganisation(db, TIM, 'org-md', 'Mountain Workshop Ltd');
+      expect(renamed?.name).toBe('Mountain Workshop Ltd');
       await expect(
         orgService.renameOrganisation(db, ROBIN, 'org-md', 'Mine now')
       ).rejects.toMatchObject({ status: 403 });
@@ -86,7 +86,7 @@ describe('Organisation Service', () => {
 
     it('only deletes empty, non-personal workspaces, and only for owners', async () => {
       const empty = await orgService.createOrganisation(db, TIM, 'Empty');
-      await orgService.inviteMember(db, TIM, empty.id, 'robin@example.com', 'member');
+      await orgService.inviteMember(db, TIM, empty.id, 'jordan@example.test', 'member');
 
       await expect(orgService.deleteOrganisation(db, ROBIN, empty.id)).rejects.toBeInstanceOf(
         AccessError
@@ -104,18 +104,18 @@ describe('Organisation Service', () => {
     it('lists members with names and emails, sorted by name', async () => {
       const members = await orgService.getOrganisationMembers(db, 'org-md');
       expect(members.map((m) => [m.userName, m.userEmail, m.role])).toEqual([
-        ['Robin Fairweather', 'robin@example.com', 'member'],
-        ['Tim Dobson', 'tim@example.com', 'owner'],
+        ['Casey Example', 'casey@example.test', 'owner'],
+        ['Jordan Example', 'jordan@example.test', 'member'],
       ]);
     });
 
     it('finds people you already work with, with a membership indicator', async () => {
-      const byName = await orgService.searchUsersForAutocomplete(db, TIM, 'rob', 'org-md');
+      const byName = await orgService.searchUsersForAutocomplete(db, TIM, 'jor', 'org-md');
       expect(byName).toEqual([
         {
           id: ROBIN,
-          name: 'Robin Fairweather',
-          email: 'robin@example.com',
+          name: 'Jordan Example',
+          email: 'jordan@example.test',
           isMember: true,
           role: 'member',
         },
@@ -123,7 +123,7 @@ describe('Organisation Service', () => {
       const fromPersonal = await orgService.searchUsersForAutocomplete(
         db,
         TIM,
-        'example.com',
+        'example.test',
         'org-tim'
       );
       expect(fromPersonal.map((u) => [u.id, u.isMember]).sort()).toEqual([
@@ -143,7 +143,7 @@ describe('Organisation Service', () => {
         'org-md'
       );
       expect(exact.map((u) => u.id)).toEqual([STRANGER]);
-      // Robin is only a member of org-md: he cannot search from it at all
+      // Jordan is only a member of org-md: he cannot search from it at all
       await expect(
         orgService.searchUsersForAutocomplete(db, ROBIN, 'tim', 'org-md')
       ).rejects.toBeInstanceOf(AccessError);
@@ -174,7 +174,7 @@ describe('Organisation Service', () => {
       const [entry] = await getActivity(db, TIM, { orgId: 'org-tim' });
       expect(entry).toMatchObject({
         action: 'member_added',
-        summary: 'Added Stranger to Tim Dobson as viewer',
+        summary: 'Added Stranger to Casey Example as viewer',
       });
     });
 
@@ -183,13 +183,13 @@ describe('Organisation Service', () => {
         db,
         TIM,
         'org-md',
-        'robin@example.com',
+        'jordan@example.test',
         'viewer'
       );
       expect(result).toEqual({
         status: 'already_member',
         userId: ROBIN,
-        email: 'robin@example.com',
+        email: 'jordan@example.test',
         role: 'member',
       });
       expect(roleOf(ROBIN, 'org-md')).toBe('member');
@@ -274,7 +274,7 @@ describe('Organisation Service', () => {
       );
       expect(entry).toMatchObject({
         actorName: 'New Person',
-        summary: 'Joined Migrating Dragons as viewer',
+        summary: 'Joined Northstar Workshop as viewer',
       });
 
       // Accepting again (e.g. the link opened after sign-in claimed it) is a harmless no-op
@@ -324,7 +324,7 @@ describe('Organisation Service', () => {
 
       expect(await orgService.claimPendingInvites(db, 'user-new', 'NEW@example.com')).toBe(2);
       const orgs = await orgService.getUserOrganisations(db, 'user-new');
-      expect(orgs.map((o) => o.name)).toEqual(['Migrating Dragons']);
+      expect(orgs.map((o) => o.name)).toEqual(['Northstar Workshop']);
     });
   });
 
@@ -335,7 +335,7 @@ describe('Organisation Service', () => {
       const [entry] = await getActivity(db, ROBIN, { orgId: 'org-md' });
       expect(entry).toMatchObject({
         action: 'role_changed',
-        summary: "Changed Robin Fairweather's role from member to admin",
+        summary: "Changed Jordan Example's role from member to admin",
       });
     });
 
@@ -380,7 +380,7 @@ describe('Organisation Service', () => {
       const [entry] = await getActivity(db, TIM, { orgId: 'org-md' });
       expect(entry).toMatchObject({
         action: 'member_removed',
-        summary: 'Removed Robin Fairweather from Migrating Dragons',
+        summary: 'Removed Jordan Example from Northstar Workshop',
       });
       expect(await orgService.removeMember(db, TIM, 'org-md', ROBIN)).toBe(false);
     });
@@ -404,7 +404,7 @@ describe('Organisation Service', () => {
       await expect(orgService.removeMember(db, TIM, 'org-tim', TIM)).rejects.toThrow(/personal/);
       expect(await orgService.removeMember(db, ROBIN, 'org-md', ROBIN)).toBe(true);
       const [entry] = await getActivity(db, TIM, { orgId: 'org-md' });
-      expect(entry).toMatchObject({ action: 'member_left', summary: 'Left Migrating Dragons' });
+      expect(entry).toMatchObject({ action: 'member_left', summary: 'Left Northstar Workshop' });
     });
   });
 
@@ -412,17 +412,17 @@ describe('Organisation Service', () => {
     it('lists projects with task and epic counts, for members only', async () => {
       raw.exec(`
         INSERT INTO Tasks (id, project_id, reporter_id, title, status, is_deleted) VALUES
-          ('t1', 'proj-solfit', '${TIM}', 'Open', 'do', 0),
-          ('t2', 'proj-solfit', '${TIM}', 'Done', 'done', 0),
-          ('t3', 'proj-solfit', '${TIM}', 'Gone', 'do', 1);
+          ('t1', 'proj-acme-solar', '${TIM}', 'Open', 'do', 0),
+          ('t2', 'proj-acme-solar', '${TIM}', 'Done', 'done', 0),
+          ('t3', 'proj-acme-solar', '${TIM}', 'Gone', 'do', 1);
       `);
-      await epicService.createEpic(db, TIM, { title: 'E', category: 'Solfit' });
+      await epicService.createEpic(db, TIM, { title: 'E', category: 'Acme Solar' });
       const projects = await orgService.getOrganisationProjects(db, ROBIN, 'org-md');
       expect(
         projects.map((p) => [p.name, Number(p.openTasks), Number(p.doneTasks), Number(p.epicCount)])
       ).toEqual([
-        ['Migrating Dragons', 0, 0, 0],
-        ['Solfit', 1, 1, 1],
+        ['Acme Solar', 1, 1, 1],
+        ['Northstar Workshop', 0, 0, 0],
       ]);
       await expect(
         orgService.getOrganisationProjects(db, STRANGER, 'org-md')
@@ -432,20 +432,20 @@ describe('Organisation Service', () => {
     });
 
     it('adds a project, refusing duplicate names in the same workspace', async () => {
-      const project = await orgService.addProject(db, TIM, 'org-md', ' Xebit ', 'Client work');
+      const project = await orgService.addProject(db, TIM, 'org-md', ' Northstar Labs ', 'Client work');
       expect(project).toMatchObject({
         orgId: 'org-md',
-        name: 'Xebit',
+        name: 'Northstar Labs',
         description: 'Client work',
         leadUserId: TIM,
       });
-      await expect(orgService.addProject(db, TIM, 'org-md', 'solfit')).rejects.toThrow(
+      await expect(orgService.addProject(db, TIM, 'org-md', 'acme solar')).rejects.toThrow(
         /already a project/
       );
       // Same name in another workspace is fine
-      expect((await orgService.addProject(db, TIM, 'org-tim', 'Solfit')).orgId).toBe('org-tim');
+      expect((await orgService.addProject(db, TIM, 'org-tim', 'Acme Solar')).orgId).toBe('org-tim');
       const [entry] = await getActivity(db, ROBIN, { projectId: project.id });
-      expect(entry).toMatchObject({ action: 'created', summary: 'Created the Xebit project' });
+      expect(entry).toMatchObject({ action: 'created', summary: 'Created the Northstar Labs project' });
     });
 
     it('does not let viewers add projects', async () => {
@@ -457,7 +457,7 @@ describe('Organisation Service', () => {
 
     // Membership is checked before the name clash, so outsiders learn nothing.
     it('tells outsiders nothing about project names in a workspace', async () => {
-      await expect(orgService.addProject(db, STRANGER, 'org-md', 'Solfit')).rejects.toThrow(
+      await expect(orgService.addProject(db, STRANGER, 'org-md', 'Acme Solar')).rejects.toThrow(
         /cannot add projects|not found/i
       );
     });
@@ -469,32 +469,32 @@ describe('Organisation Service', () => {
     });
 
     it("renames a project and keeps its epics' category in step", async () => {
-      const epic = await epicService.createEpic(db, TIM, { title: 'E', category: 'Solfit' });
-      const renamed = await orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-solfit', {
-        name: 'Solfit Ltd',
+      const epic = await epicService.createEpic(db, TIM, { title: 'E', category: 'Acme Solar' });
+      const renamed = await orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-acme-solar', {
+        name: 'Acme Solar Ltd',
         description: 'Roofing',
       });
-      expect(renamed).toMatchObject({ name: 'Solfit Ltd', description: 'Roofing' });
+      expect(renamed).toMatchObject({ name: 'Acme Solar Ltd', description: 'Roofing' });
       const row = raw.prepare('SELECT category FROM Epics WHERE id = ?').get(epic!.id);
-      expect(row.category).toBe('Solfit Ltd');
-      const entry = (await getActivity(db, TIM, { projectId: 'proj-solfit' })).find(
+      expect(row.category).toBe('Acme Solar Ltd');
+      const entry = (await getActivity(db, TIM, { projectId: 'proj-acme-solar' })).find(
         (a) => a.action === 'renamed'
       );
-      expect(entry?.summary).toBe('Renamed the Solfit project to Solfit Ltd');
+      expect(entry?.summary).toBe('Renamed the Acme Solar project to Acme Solar Ltd');
     });
 
     it('archives and unarchives, logging each change once', async () => {
-      await orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-solfit', {
+      await orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-acme-solar', {
         isArchived: true,
       });
-      await orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-solfit', {
+      await orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-acme-solar', {
         isArchived: true,
       });
-      const archived = await orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-solfit', {
+      const archived = await orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-acme-solar', {
         isArchived: false,
       });
       expect(archived?.isArchived).toBe(false);
-      const actions = (await getActivity(db, TIM, { projectId: 'proj-solfit' })).map(
+      const actions = (await getActivity(db, TIM, { projectId: 'proj-acme-solar' })).map(
         (a) => a.action
       );
       expect(actions.sort()).toEqual(['archived', 'unarchived']);
@@ -502,7 +502,7 @@ describe('Organisation Service', () => {
 
     it('refuses project changes from members and for projects in another workspace', async () => {
       await expect(
-        orgService.updateProjectContainer(db, ROBIN, 'org-md', 'proj-solfit', { name: 'x' })
+        orgService.updateProjectContainer(db, ROBIN, 'org-md', 'proj-acme-solar', { name: 'x' })
       ).rejects.toMatchObject({ status: 403 });
       await expect(
         orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-personal', { name: 'x' })
@@ -510,16 +510,16 @@ describe('Organisation Service', () => {
     });
 
     it('refuses to move a project into a workspace that already has that name', async () => {
-      await orgService.addProject(db, TIM, 'org-tim', 'Solfit');
+      await orgService.addProject(db, TIM, 'org-tim', 'Acme Solar');
       await expect(
-        orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-solfit', { orgId: 'org-tim' })
+        orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-acme-solar', { orgId: 'org-tim' })
       ).rejects.toThrow(/already has a project/);
     });
 
     it('refuses renaming a project to a name already used in its workspace', async () => {
       await expect(
-        orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-solfit', {
-          name: 'migrating dragons',
+        orgService.updateProjectContainer(db, TIM, 'org-md', 'proj-acme-solar', {
+          name: 'northstar workshop',
         })
       ).rejects.toThrow(/already/);
     });
@@ -529,7 +529,7 @@ describe('Organisation Service', () => {
     it('shows pending invites only to people who manage the workspace', async () => {
       await orgService.inviteMember(db, TIM, 'org-md', 'new@example.com');
       const tims = await orgService.getSharingOverview(db, TIM);
-      expect(tims.map((o) => o.name)).toEqual(['Tim Dobson', 'Migrating Dragons']);
+      expect(tims.map((o) => o.name)).toEqual(['Casey Example', 'Northstar Workshop']);
       expect(tims[1].invites.map((i) => i.email)).toEqual(['new@example.com']);
       expect(tims[1].projects.every((p) => typeof p.isArchived === 'boolean')).toBe(true);
 

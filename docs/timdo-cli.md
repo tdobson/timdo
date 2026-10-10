@@ -1,189 +1,179 @@
-# timdo CLI
+# TimDo CLI
 
-A bash command-line tool for managing TimDo projects. Designed for both human use and programmatic access from tools like Claude Code.
+`bin/timdo` manages tasks, projects and workspaces from a terminal or script. It uses the same
+permissions as the web app. See [collaboration](collaboration.md) for the data model and
+[integrations](integrations.md) for the API and watcher recipes.
 
-## Setup
+## Setup and authentication
 
 ```bash
 cd bin/
-npm run setup        # creates ~/.config/timdo/config
 npm run install-cli  # symlinks to ~/.local/bin/timdo
 ```
 
-Then edit `~/.config/timdo/config` and set your secret:
-
-```
-TIMDO_SECRET="your-actual-secret"
-```
-
-The secret must match the `INTERNAL_API_SECRET` stored in the Cloudflare Worker. Manage it with `npx wrangler secret put INTERNAL_API_SECRET` from the `workers/` directory.
-
-Make sure `~/.local/bin` is on your PATH.
-
-## Authentication
-
-The CLI uses a static secret (`X-Internal-Secret` header) instead of OAuth/JWT. This avoids interactive login flows, making it suitable for scripts and AI agents. The secret resolves to the first user in the database (single-user app).
-
-## Commands
-
-### list
+Make sure `~/.local/bin` is on your `PATH`. Create a personal token in the web app at
+`/settings/access`, then run:
 
 ```bash
-timdo list              # all active projects, grouped by status
-timdo list do           # only "do" status
-timdo list delay        # only "delay" status
-timdo list done         # only "done" status
-timdo list delegate     # only "delegate" status
-timdo list awaiting     # only "awaiting" status (sorted by return date)
+timdo login
 ```
 
-### add
+Paste the token at the hidden prompt. The CLI checks it and stores it in
+`~/.config/timdo/config`, readable only by you. Avoid passing tokens on the command line,
+where they can appear in shell history. Scripts can use the saved token or provide
+`TIMDO_TOKEN` through their environment.
+
+Each person uses their own token. `TIMDO_SECRET` is the instance owner's administrative
+credential, not a collaborator login. Never share it with people or bots. Only that owner
+credential can use `--as` to preview another account; a personal token cannot impersonate
+another person.
+
+## Find and inspect tasks
 
 ```bash
-timdo add "Fix the roof" --reason "Leaking in rain" --priority 8
-timdo add "Learn piano" -r "Always wanted to" -p 3 --status delay
-timdo add "Review vendor pitch" -r "Evaluate options" --thread "18e47f2ab1234567"
-timdo add "Quick thing" --notes "Call Bob about it"
+timdo list do --mine
+timdo list awaiting
+timdo list all -p "Acme Solar"
+timdo list do -w "Northstar Workshop" --unassigned
+timdo get ea9f
+timdo search "roof"
+timdo --json list do
 ```
 
-Options:
-- `--reason` / `-r` — why the project matters
-- `--status` / `-s` — one of: do, delay, delegate, done, awaiting (default: do)
-- `--priority` / `-p` — 1 to 10 (default: 5)
-- `--size` — complexity: `*` to `*****` (default: `***`)
-- `--notes` / `-n` — freeform notes
-- `--await-until DATE` — return date in YYYY-MM-DD (use with `--status awaiting`)
-- `--thread <threadId>` — attach Gmail thread ID
+Lists include the tasks you can see across your workspaces. Use an unambiguous id prefix for
+a particular task. `search` searches task text; a URL or `kind:id` also finds exact external refs.
 
-### update
+## Create tasks
+
+A project name is required unless you give `--project-id`. A name matching a project you can
+edit uses that project; a new name creates a project in your personal workspace. Use an
+exact id, key or `Workspace/Project` path when names are ambiguous.
 
 ```bash
-timdo update ea9f --done              # mark done (short ID prefix)
-timdo update ea9f --priority 9        # bump priority
-timdo update ea9f --status delay -r "Waiting on parts"
-timdo update ea9f --project "New name"
-timdo update ea9f --thread "18e47f2ab1234567"
+timdo add "Fix the roof" -p "Personal" -r "Leaking in rain" --priority 8
+timdo add "Learn piano" -p "Personal" --priority 3 --status delay
+timdo add "Review supplier proposal" --project-id "Northstar Workshop/Acme Solar" \
+  --reason "Choose an installer" --size "**"
 ```
 
-Short IDs work — provide enough characters of the UUID to be unique (4-8 is usually plenty).
+Common options:
 
-Options: same as `add`, plus `--project` to rename, `--thread <threadId>` to set/update Gmail thread ID, and convenience flags `--done`, `--do`, `--delay`, `--awaiting`, `--delegate`. The `--done`, `--do`, `--delay`, and `--delegate` shorthands clear `awaitUntil`.
+- `-p`, `--project`: project name, not priority.
+- `--project-id`: exact project id, key or path.
+- `-r`, `--reason`: why the task matters.
+- `-s`, `--status`: `do`, `delay`, `delegate`, `awaiting` or `done`; defaults to `do`.
+- `--priority`: 1 to 10; defaults to 5.
+- `--size`: `*` to `*****`; defaults to `***`.
+- `-n`, `--notes`: task details or next step.
+- `--await-until`: return date in `YYYY-MM-DD` format for an awaiting task.
+- `--assign`: `me`, `none`, or a member of the project's workspace.
+- `-e`, `--epic`: epic title or id.
+- `-g`, `--goal`: one of your private life goals.
 
-### add-note / log
+### Avoid duplicates
 
 ```bash
-timdo add-note ea9f "Sent email asking for discount" --thread "18e47f2ab1234567"
-timdo log ea9f "Followed up with supplier via phone"
+timdo similar "Broken offer page" -p "Acme Solar"
+timdo add "Broken offer page" -p "Acme Solar" \
+  --source forum.post:4411 --reported-by forum.member:123456 --on-duplicate report
 ```
 
-Options:
-- `--thread <threadId>` — optional Gmail thread ID to attach to this note
+A task can have one canonical source. A source identifies one task per workspace.
+`--on-duplicate error` is the default: it creates nothing and names the existing task.
+`return` returns that task without adding a report. `report` adds the request's new links and
+a deduplicated report note. Retries are safe while the same task holds that source in the
+requested workspace. See [the full contract](integrations.md) for source changes and deletion.
 
-### notes / updates
+On a terminal, `add` checks for similar open tasks and offers to add a note to one instead.
+With `--yes`, `--json` or piped output, it does not prompt. Similarity is a suggestion, not
+proof that two tasks should be merged.
+
+## Update tasks and notes
 
 ```bash
-timdo notes ea9f       # formatted chronological history of notes
-timdo updates ea9f     # alias for notes
-timdo --json notes ea9f
+timdo update ea9f --done
+timdo update ea9f --project "Check the replacement roof"
+timdo update ea9f --awaiting --await-until 2026-11-01
+timdo update ea9f --claim
+timdo add-note ea9f "Supplier confirmed the replacement date"
+timdo notes ea9f
+timdo activity --task ea9f
+timdo delete ea9f
 ```
 
-### delete
+`delete` soft-deletes the task. Notes are dated and attributed to the caller. Workspace members
+can read them. Use `timdo update --help` for the full option list; create-only duplicate modes
+are not update options.
+
+## External refs
 
 ```bash
-timdo delete ea9f     # soft-delete by ID prefix
+timdo ref add ea9f https://github.com/acme/widgets/issues/88
+timdo ref add ea9f forum.member:123456 --role reported_by
+timdo ref list ea9f
+timdo find forum.post:4411 --role source
+timdo list all --ref https://github.com/acme/widgets/issues/88
 ```
 
-### poster
+The roles are `link`, `source`, `reported_by` and `about`. Record outside people by their id in
+the other system, not their name or email. `--thread` remains a shortcut for a Gmail thread ref.
+
+## Workspaces, epics and goals
 
 ```bash
-# Download default life goals poster
-timdo poster --output ~/life_goals.svg
-
-# Download Wall of Done poster (optionally filtered by categories)
-timdo poster --type done --output ~/wall_of_done.svg
-timdo poster --type done --category Solfit --output ~/solfit_done.svg
-
-# Download Active Tasks Readout worksheet (optionally filtered by categories)
-timdo poster --type active --output ~/active_tasks.svg
-timdo poster --type active --category "Solfit,Migrating Dragons" --output ~/active_workstreams.svg
-```
-
-Options:
-- `--output` / `-o` (required) — output destination file path.
-- `--type` / `-t` — one of: `done` (Wall of Done), `active` (Active Tasks Readout), `goals` (Life Goals & Routines).
-- `--category` / `-c` / `-p` — comma-separated category filter (e.g. `Solfit,Crew`).
-
-### merge
-
-```bash
-timdo merge <source_id> <target_id> [--yes]
-```
-Merges a duplicate or secondary task into a primary target task. Preserves notes and progress history while soft-deleting the source.
-
-### epic
-
-```bash
-timdo epic list [-p <category>]
-timdo epic add "Launch Acme Solar" -p Solfit -d "Complete installer onboarding and first pilot"
-```
-
-### goal
-
-```bash
+timdo ws list
+timdo ws show "Northstar Workshop"
+timdo epic list -p "Acme Solar"
+timdo epic add "Installer pilot" -p "Acme Solar" -d "Complete onboarding and the first pilot"
 timdo goal list
+timdo audit
 ```
 
-### get
+Workspace members see its projects, epics, tasks and activity. Roles determine who can edit.
+Life goals stay private to each person. Sharing a workspace or moving a project between
+workspaces changes who can see the work; check the destination and intended members first.
+
+## Merge
 
 ```bash
-timdo get ea9f        # full details and recent updates for a project
+timdo merge <source_id> <target_id>
 ```
 
-### search
+Check both tasks and the direction before confirming. The target survives; notes and history
+move to it, and the source is archived. `--yes` skips the prompt, so use it only after the exact
+source and target have been approved. A similar-title result is not enough.
+
+## Posters
 
 ```bash
-timdo search "roof"   # case-insensitive name search
+timdo poster --type goals --output ~/life_goals.svg
+timdo poster --type done --output ~/wall_of_done.svg
+timdo poster --type done --category "Acme Solar" --output ~/acme_solar_done.svg
+timdo poster --type active --category "Acme Solar,Northstar Workshop" --output ~/active.svg
 ```
 
-## Output formats
+Task posters show your own tasks across your workspaces. Active posters have Do, Awaiting and
+Delay sections, with optional category filtering. The Wall of Done uses three columns for the
+personal workspace and one for other workspaces; another workspace need not be shared.
+Category filters use actual project names. The fixed six-sheet Wall of Done shows an overflow
+count when a column is full, rather than silently dropping rows. Use the Done view or the
+poster's JSON API response for the full selected task list.
 
-Default output is human-readable text. Pass `--json` before the command for structured JSON, or `--text` to be explicit about the default.
+## Output and configuration
 
-```bash
-timdo --json list do          # JSON array of "do" projects
-timdo --json get ea9f         # JSON array (matching projects)
-timdo --json search "roof"    # JSON array of matches
-```
+Use `--json` before a command for structured output, or `--text` for readable output.
+Write commands such as `add`, `update`, `delete` and `add-note` return JSON when piped and a
+readable summary on a terminal. `add` can print similar-task hints to stderr without corrupting
+its JSON stdout.
 
-`add`, `update`, and `delete` always return JSON (the API response).
+| Variable | Purpose |
+|----------|---------|
+| `TIMDO_CONFIG` | Config file; defaults to `~/.config/timdo/config` |
+| `TIMDO_API` | API base URL; defaults to `https://timdo-v2-api.tdobson.net/api/v2` |
+| `TIMDO_TOKEN` | Your personal token; usually loaded from the config file |
+| `TIMDO_FORMAT` | Output format |
+| `TIMDO_SECRET` | Owner-only administrative credential |
+| `TIMDO_AS` | Account preview identity; only usable for another person with the owner credential |
 
-## Environment variables
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `TIMDO_CONFIG` | `~/.config/timdo/config` | Path to config file |
-| `TIMDO_API` | `https://timdo-v2-api.tdobson.net/api/v2` | API base URL |
-| `TIMDO_FORMAT` | `text` | Default output format |
-| `TIMDO_SECRET` | (required) | API secret, usually set in config file |
-
-## Project data model
-
-| Field | Type | Notes |
-|-------|------|-------|
-| id | UUID | Use short prefix for commands |
-| project | string | Name (required) |
-| reason | string | Why it matters |
-| status | enum | do, delay, done, delegate, awaiting |
-| priority | 1-10 | Higher = more important |
-| size | * to ***** | Complexity estimate |
-| notes | string | Freeform |
-| awaitUntil | string | ISO date (YYYY-MM-DD), required when status is awaiting |
-
-## Dependencies
-
-- `bash`, `curl`, `jq` — all standard on Linux/macOS
-- A running TimDo Workers API with `INTERNAL_API_SECRET` configured
-
-## Source
-
-The CLI lives at `bin/timdo` in the timdo.tdobson.net repo. Install via `cd bin && npm run install-cli`.
+The CLI requires Bash, curl and jq. Run `timdo help` or `timdo <command> --help` for command
+options. The implementation is `bin/timdo`.

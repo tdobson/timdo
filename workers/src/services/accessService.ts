@@ -42,6 +42,19 @@ export const canEdit = (role: Role | null | undefined) =>
   role === 'owner' || role === 'admin' || role === 'member';
 export const canManage = (role: Role | null | undefined) => role === 'owner' || role === 'admin';
 
+/** Exact category matches in the same order used by task creation. */
+export function matchingProjectsForCategory(
+  projects: AccessibleProject[],
+  categoryName: string
+): AccessibleProject[] {
+  const name = categoryName.trim().toLowerCase();
+  const rank = (project: AccessibleProject) =>
+    project.orgIsPersonal ? 0 : project.role === 'owner' ? 1 : 2;
+  return projects
+    .filter((project) => project.name.toLowerCase() === name)
+    .sort((a, b) => rank(a) - rank(b));
+}
+
 export async function getAccessibleProjects(db: DB, userId: string): Promise<AccessibleProject[]> {
   const rows = await db
     .select({
@@ -178,7 +191,7 @@ export async function createProjectInOrg(
 }
 
 /**
- * Turn a category name ("Solfit") into a project the user can write to.
+ * Turn a category name ("Acme Solar") into a project the user can write to.
  * Prefers an exact match the user can edit; if none exists and createIfMissing is set,
  * creates the project in the user's personal workspace.
  */
@@ -190,12 +203,7 @@ export async function resolveProjectForWrite(
 ): Promise<AccessibleProject> {
   const name = (categoryName || '').trim() || 'General';
   const all = await getAccessibleProjects(db, userId);
-  // On a name clash prefer your personal workspace, then ones you own, so nobody can
-  // redirect your tasks by adding you to a workspace with a same-named project.
-  const rank = (p: AccessibleProject) => (p.orgIsPersonal ? 0 : p.role === 'owner' ? 1 : 2);
-  const matches = all
-    .filter((p) => p.name.toLowerCase() === name.toLowerCase())
-    .sort((a, b) => rank(a) - rank(b));
+  const matches = matchingProjectsForCategory(all, name);
   const editable = matches.find((p) => canEdit(p.role));
   if (editable) {
     return editable;

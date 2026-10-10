@@ -6,6 +6,7 @@ import { AccessError } from '../services/accessService';
 import { getActivity } from '../services/activityService';
 import * as epicService from '../services/epicService';
 import * as orgService from '../services/organisationService';
+import * as schema from '../db/schema';
 import * as projectService from '../services/projectService';
 import { createTestDb, ROBIN, seedCollaboration, STRANGER, TIM } from './helpers/testDb';
 
@@ -20,9 +21,9 @@ describe('projectService', () => {
     seedCollaboration(raw);
     raw.exec(`
       INSERT INTO Goals (id, user_id, type, title) VALUES
-        ('g-tim', '${TIM}', 'aim', 'Tim aim'),
-        ('g-tim-2', '${TIM}', 'focus', 'Tim focus'),
-        ('g-robin', '${ROBIN}', 'aim', 'Robin aim');
+        ('g-tim', '${TIM}', 'aim', 'Casey aim'),
+        ('g-tim-2', '${TIM}', 'focus', 'Casey focus'),
+        ('g-robin', '${ROBIN}', 'aim', 'Jordan aim');
     `);
   });
 
@@ -46,8 +47,8 @@ describe('projectService', () => {
 
   describe('createProject', () => {
     it('stores category, epic and personal goal, and fills in the defaults', async () => {
-      const epic = await epicService.createEpic(db, TIM, { title: 'Acme Solar', category: 'Solfit' });
-      const created = await newTask(TIM, 1, 'solfit', {
+      const epic = await epicService.createEpic(db, TIM, { title: 'Acme Solar', category: 'Acme Solar' });
+      const created = await newTask(TIM, 1, 'acme solar', {
         project: 'Install solar panel inverters',
         reason: 'Site trial Monday',
         epicId: epic!.id,
@@ -60,10 +61,10 @@ describe('projectService', () => {
         id: uuid(1),
         project: 'Install solar panel inverters',
         reason: 'Site trial Monday',
-        category: 'Solfit',
-        projectId: 'proj-solfit',
-        projectKey: 'SOL',
-        orgName: 'Migrating Dragons',
+        category: 'Acme Solar',
+        projectId: 'proj-acme-solar',
+        projectKey: 'ACS',
+        orgName: 'Northstar Workshop',
         epicId: epic!.id,
         goalId: 'g-tim',
         customer: 'Acme Solar',
@@ -74,7 +75,7 @@ describe('projectService', () => {
         isDeleted: false,
         userId: TIM,
         reporterId: TIM,
-        reporterName: 'Tim Dobson',
+        reporterName: 'Casey Example',
         assigneeId: TIM,
         updatedById: TIM,
         isMine: true,
@@ -95,7 +96,7 @@ describe('projectService', () => {
         priority: 3,
         size: '*',
       });
-      expect(created).toMatchObject({ category: 'General', orgName: 'Robin Fairweather' });
+      expect(created).toMatchObject({ category: 'General', orgName: 'Jordan Example' });
     });
 
     it('takes an explicit projectId over the category', async () => {
@@ -107,11 +108,11 @@ describe('projectService', () => {
     });
 
     it('supports unassigned tasks and assigning to another workspace member', async () => {
-      const unassigned = await newTask(TIM, 1, 'Solfit', { assigneeId: null });
+      const unassigned = await newTask(TIM, 1, 'Acme Solar', { assigneeId: null });
       expect(unassigned).toMatchObject({ assigneeId: null, assigneeName: null, isMine: true });
 
-      const forRobin = await newTask(TIM, 2, 'Solfit', { assigneeId: ROBIN });
-      expect(forRobin).toMatchObject({ assigneeName: 'Robin Fairweather', isMine: false });
+      const forRobin = await newTask(TIM, 2, 'Acme Solar', { assigneeId: ROBIN });
+      expect(forRobin).toMatchObject({ assigneeName: 'Jordan Example', isMine: false });
 
       await expect(newTask(TIM, 3, 'Personal', { assigneeId: ROBIN })).rejects.toThrow(/isn't in/);
     });
@@ -121,13 +122,13 @@ describe('projectService', () => {
         title: 'Secret',
         category: 'Stranger Things',
       });
-      await expect(newTask(TIM, 1, 'Solfit', { epicId: strangerEpic!.id })).rejects.toMatchObject({
+      await expect(newTask(TIM, 1, 'Acme Solar', { epicId: strangerEpic!.id })).rejects.toMatchObject({
         status: 404,
       });
-      await expect(newTask(TIM, 2, 'Solfit', { epicId: 'missing' })).rejects.toBeInstanceOf(
+      await expect(newTask(TIM, 2, 'Acme Solar', { epicId: 'missing' })).rejects.toBeInstanceOf(
         AccessError
       );
-      await expect(newTask(TIM, 3, 'Solfit', { goalId: 'g-robin' })).rejects.toThrow(/goal/i);
+      await expect(newTask(TIM, 3, 'Acme Solar', { goalId: 'g-robin' })).rejects.toThrow(/goal/i);
     });
   });
 
@@ -136,20 +137,20 @@ describe('projectService', () => {
       const epic = await epicService.createEpic(db, TIM, {
         id: 'epic-1',
         title: 'Epic',
-        category: 'Solfit',
+        category: 'Acme Solar',
       });
       expect(epic?.id).toBe('epic-1');
-      await newTask(TIM, 1, 'Solfit', {
+      await newTask(TIM, 1, 'Acme Solar', {
         epicId: 'epic-1',
         goalId: 'g-tim',
         customer: 'Acme Solar',
         tags: 'roof,urgent',
       });
-      await newTask(TIM, 2, 'Solfit', { customer: 'Eco2Solar', tags: 'office' });
-      await newTask(TIM, 3, 'Migrating Dragons', { goalId: 'g-tim-2', assigneeId: null });
+      await newTask(TIM, 2, 'Acme Solar', { customer: 'Northstar Workshop', tags: 'office' });
+      await newTask(TIM, 3, 'Northstar Workshop', { goalId: 'g-tim-2', assigneeId: null });
       await newTask(TIM, 4, 'Personal', { epicId: undefined, tags: 'URGENT' });
-      await newTask(ROBIN, 5, 'Migrating Dragons');
-      await newTask(TIM, 6, 'Solfit', { epicId: 'epic-1' });
+      await newTask(ROBIN, 5, 'Northstar Workshop');
+      await newTask(TIM, 6, 'Acme Solar', { epicId: 'epic-1' });
       await projectService.deleteProject(db, TIM, uuid(6));
     });
 
@@ -165,7 +166,7 @@ describe('projectService', () => {
 
     it('filters by category (case-insensitive), epic and personal goal', async () => {
       expect(
-        titles(await projectService.getProjectsForUser(db, TIM, { category: ' solfit ' }))
+        titles(await projectService.getProjectsForUser(db, TIM, { category: ' acme solar ' }))
       ).toEqual(['Task 1', 'Task 2']);
       expect(
         titles(await projectService.getProjectsForUser(db, TIM, { epicId: 'epic-1' }))
@@ -176,13 +177,13 @@ describe('projectService', () => {
       expect(
         titles(
           await projectService.getProjectsForUser(db, TIM, {
-            category: 'Solfit',
+            category: 'Acme Solar',
             epicId: 'epic-1',
             goalId: 'g-tim',
           })
         )
       ).toEqual(['Task 1']);
-      // Goal links are personal: Robin has no link to Tim's goal
+      // Goal links are personal: Jordan has no link to Casey's goal
       expect(await projectService.getProjectsForUser(db, ROBIN, { goalId: 'g-tim' })).toEqual([]);
       expect(await projectService.getProjectsForUser(db, TIM, { category: 'Nope' })).toEqual([]);
     });
@@ -244,7 +245,7 @@ describe('projectService', () => {
     it('stamps status changes and clears the return date when leaving awaiting', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date('2026-10-01T09:00:00.000Z'));
-      await newTask(TIM, 1, 'Solfit', { status: 'awaiting', awaitUntil: '2026-12-01' });
+      await newTask(TIM, 1, 'Acme Solar', { status: 'awaiting', awaitUntil: '2026-12-01' });
 
       vi.setSystemTime(new Date('2026-10-02T09:00:00.000Z'));
       const updated = await projectService.updateProject(db, ROBIN, uuid(1), { status: 'do' });
@@ -253,7 +254,7 @@ describe('projectService', () => {
         awaitUntil: null,
         statusLastChangedOn: '2026-10-02T09:00:00.000Z',
         updatedAt: '2026-10-02T09:00:00.000Z',
-        updatedByName: 'Robin Fairweather',
+        updatedByName: 'Jordan Example',
       });
 
       vi.setSystemTime(new Date('2026-10-03T09:00:00.000Z'));
@@ -270,14 +271,14 @@ describe('projectService', () => {
     });
 
     it('moves a task to another project by category name', async () => {
-      await newTask(TIM, 1, 'Solfit');
+      await newTask(TIM, 1, 'Acme Solar');
       const moved = await projectService.updateProject(db, TIM, uuid(1), { category: 'Personal' });
       expect(moved).toMatchObject({ projectId: 'proj-personal', category: 'Personal' });
       expect(await projectService.getTaskView(db, ROBIN, uuid(1))).toBeNull();
     });
 
     it('soft-deletes and restores', async () => {
-      await newTask(TIM, 1, 'Solfit');
+      await newTask(TIM, 1, 'Acme Solar');
       expect(await projectService.deleteProject(db, TIM, uuid(1))).toBe(true);
       expect(await projectService.getProjectsForUser(db, TIM)).toEqual([]);
       expect(await projectService.getTaskView(db, TIM, uuid(1))).toBeNull();
@@ -293,7 +294,7 @@ describe('projectService', () => {
     });
 
     it('refuses deleteProject for viewers with a 403', async () => {
-      await newTask(TIM, 1, 'Solfit');
+      await newTask(TIM, 1, 'Acme Solar');
       await orgService.updateMemberRole(db, TIM, 'org-md', ROBIN, 'viewer');
       await expect(projectService.deleteProject(db, ROBIN, uuid(1))).rejects.toMatchObject({
         status: 403,
@@ -304,7 +305,7 @@ describe('projectService', () => {
 
   describe('batchUpdateProjects', () => {
     it('updates priority and status, skipping rows the caller cannot edit', async () => {
-      await newTask(TIM, 1, 'Solfit');
+      await newTask(TIM, 1, 'Acme Solar');
       await newTask(TIM, 2, 'Personal');
       await newTask(STRANGER, 3, 'Stranger Things');
 
@@ -331,7 +332,7 @@ describe('projectService', () => {
         (a) => a.action === 'completed'
       );
       expect(entry).toMatchObject({
-        actorName: 'Robin Fairweather',
+        actorName: 'Jordan Example',
         summary: 'Moved "Task 1" from Do to Done',
       });
       expect(await getActivity(db, TIM, { taskId: uuid(2) })).toHaveLength(1);
@@ -342,7 +343,7 @@ describe('projectService', () => {
     it('adds notes with authors, lists them oldest first and controls deletion', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date('2026-10-01T09:00:00.000Z'));
-      await newTask(TIM, 1, 'Solfit');
+      await newTask(TIM, 1, 'Acme Solar');
       const first = await projectService.addProjectUpdate(db, {
         projectId: uuid(1),
         userId: TIM,
@@ -352,7 +353,7 @@ describe('projectService', () => {
       expect(first).toMatchObject({
         projectId: uuid(1),
         userId: TIM,
-        authorName: 'Tim Dobson',
+        authorName: 'Casey Example',
         note: 'Called the roofer',
         gmailThreadId: 'thread-1',
         canDelete: true,
@@ -367,15 +368,15 @@ describe('projectService', () => {
 
       const asRobin = await projectService.getProjectUpdates(db, uuid(1), ROBIN);
       expect(asRobin?.map((n) => [n.authorName, n.note, n.canDelete])).toEqual([
-        ['Tim Dobson', 'Called the roofer', false],
-        ['Robin Fairweather', 'Roofer booked', true],
+        ['Casey Example', 'Called the roofer', false],
+        ['Jordan Example', 'Roofer booked', true],
       ]);
       const asTim = await projectService.getProjectUpdates(db, uuid(1), TIM);
       expect(asTim?.every((n) => n.canDelete)).toBe(true);
 
       // Adding a note touches the task's attribution
       expect((await projectService.getTaskView(db, TIM, uuid(1)))?.updatedByName).toBe(
-        'Robin Fairweather'
+        'Jordan Example'
       );
 
       // Owner can delete anyone's note
@@ -398,7 +399,7 @@ describe('projectService', () => {
     });
 
     it('returns null when adding a note to a task the user cannot see', async () => {
-      await newTask(TIM, 1, 'Solfit');
+      await newTask(TIM, 1, 'Acme Solar');
       expect(
         await projectService.addProjectUpdate(db, {
           projectId: uuid(1),
@@ -418,28 +419,28 @@ describe('projectService', () => {
     });
 
     it('returns null if target or source does not exist or is not editable', async () => {
-      await newTask(TIM, 1, 'Solfit');
+      await newTask(TIM, 1, 'Acme Solar');
       await newTask(STRANGER, 2, 'Stranger Things');
       expect(await projectService.mergeProjects(db, TIM, uuid(1), 'missing')).toBeNull();
       expect(await projectService.mergeProjects(db, TIM, 'missing', uuid(1))).toBeNull();
       expect(await projectService.mergeProjects(db, TIM, uuid(1), uuid(2))).toBeNull();
 
       await orgService.updateMemberRole(db, TIM, 'org-md', ROBIN, 'viewer');
-      await newTask(TIM, 3, 'Solfit');
+      await newTask(TIM, 3, 'Acme Solar');
       expect(await projectService.mergeProjects(db, ROBIN, uuid(1), uuid(3))).toBeNull();
       expect(await projectService.getTaskView(db, TIM, uuid(3))).not.toBeNull();
     });
 
     it('merges source into target, re-parents notes and soft-deletes the source', async () => {
-      const epic = await epicService.createEpic(db, TIM, { title: 'Auth', category: 'Solfit' });
-      await newTask(TIM, 1, 'Solfit', {
+      const epic = await epicService.createEpic(db, TIM, { title: 'Auth', category: 'Acme Solar' });
+      await newTask(TIM, 1, 'Acme Solar', {
         project: 'Fix login authentication',
         priority: 6,
         size: '**',
         notes: 'Initial target note',
         reason: 'Auth is broken',
       });
-      await newTask(TIM, 2, 'Solfit', {
+      await newTask(TIM, 2, 'Acme Solar', {
         project: 'Safari auth redirect bug',
         priority: 9,
         size: '****',
@@ -464,7 +465,7 @@ describe('projectService', () => {
         priority: 9,
         size: '****',
         status: 'do',
-        category: 'Solfit',
+        category: 'Acme Solar',
         epicId: epic!.id,
         goalId: 'g-tim',
         gmailThreadId: 'thread-789',
@@ -482,7 +483,7 @@ describe('projectService', () => {
         ])
       );
       expect(notes?.find((n) => n.note === 'Found bug in webkit cookies')?.authorName).toBe(
-        'Robin Fairweather'
+        'Jordan Example'
       );
 
       const source = await projectService.getTaskView(db, TIM, uuid(2), { includeDeleted: true });
@@ -496,19 +497,122 @@ describe('projectService', () => {
         (a) => a.action === 'merged'
       );
       expect(entry).toMatchObject({
-        actorName: 'Tim Dobson',
+        actorName: 'Casey Example',
         summary: 'Merged "Safari auth redirect bug" into "Fix login authentication"',
       });
     });
 
+    it('merges colliding report notes and moves source relations without losing note authors', async () => {
+      const note = 'Reported again: "A site issue"\nConfirmed in the workshop';
+      await newTask(TIM, 1, 'Acme Solar', { project: 'A site issue' });
+      await newTask(TIM, 2, 'Acme Solar', { project: 'A site issue duplicate', goalId: 'g-tim' });
+      await newTask(TIM, 3, 'Acme Solar', { project: 'Related site issue' });
+      await projectService.addProjectUpdate(db, {
+        projectId: uuid(1),
+        userId: TIM,
+        note,
+        dedupeKey: 'same-report-key',
+      });
+      await projectService.addProjectUpdate(db, {
+        projectId: uuid(2),
+        userId: ROBIN,
+        note,
+        dedupeKey: 'same-report-key',
+      });
+      raw.prepare(
+        'INSERT INTO TaskRelations (id, source_task_id, target_task_id, relation_type, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run('merge-relation', uuid(2), uuid(3), 'blocks', 'Needs the first fix', TIM);
+
+      await projectService.mergeProjects(db, TIM, uuid(1), uuid(2));
+
+      const notes = raw
+        .prepare('SELECT task_id, author_id, note, dedupe_key FROM TaskUpdates WHERE note = ? ORDER BY author_id')
+        .all(note);
+      expect(notes).toHaveLength(2);
+      expect(notes.map((row: any) => row.author_id)).toEqual([ROBIN, TIM].sort());
+      expect(new Set(notes.map((row: any) => row.dedupe_key)).size).toBe(2);
+      expect(notes.every((row: any) => row.task_id === uuid(1))).toBe(true);
+      expect(
+        raw.prepare('SELECT source_task_id, target_task_id, relation_type, reason FROM TaskRelations').all()
+      ).toEqual([
+        {
+          source_task_id: uuid(1),
+          target_task_id: uuid(3),
+          relation_type: 'blocks',
+          reason: 'Needs the first fix',
+        },
+      ]);
+      expect((await projectService.getTaskView(db, TIM, uuid(1)))?.goalId).toBe('g-tim');
+    });
+
+    it('rolls back task, ref, note, relation, goal and delete changes after a mid-merge SQL failure', async () => {
+      await newTask(TIM, 1, 'Acme Solar', {
+        project: 'Target task',
+        refs: [{ ref: 'forum.post:target', role: 'source' }],
+      });
+      await newTask(TIM, 2, 'Acme Solar', {
+        project: 'Source task',
+        goalId: 'g-tim',
+        refs: [{ ref: 'forum.post:source', role: 'source' }],
+      });
+      await newTask(TIM, 3, 'Acme Solar', { project: 'Neighbour task' });
+      await projectService.addProjectUpdate(db, {
+        projectId: uuid(1),
+        userId: TIM,
+        note: 'Target history',
+        dedupeKey: 'shared-report-key',
+      });
+      await projectService.addProjectUpdate(db, {
+        projectId: uuid(2),
+        userId: ROBIN,
+        note: 'Source history',
+        dedupeKey: 'shared-report-key',
+      });
+      raw.prepare(
+        'INSERT INTO TaskRelations (id, source_task_id, target_task_id, relation_type, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run('atomic-relation', uuid(2), uuid(3), 'relates_to', 'Keep this relation', TIM);
+
+      const snapshot = () => ({
+        tasks: raw.prepare('SELECT * FROM Tasks WHERE id IN (?, ?) ORDER BY id').all(uuid(1), uuid(2)),
+        refs: raw.prepare('SELECT * FROM TaskRefs WHERE task_id IN (?, ?) ORDER BY id').all(uuid(1), uuid(2)),
+        updates: raw
+          .prepare('SELECT * FROM TaskUpdates WHERE task_id IN (?, ?) ORDER BY id')
+          .all(uuid(1), uuid(2)),
+        relations: raw.prepare('SELECT * FROM TaskRelations ORDER BY id').all(),
+        goals: raw
+          .prepare('SELECT * FROM TaskUserGoals WHERE task_id IN (?, ?) ORDER BY task_id')
+          .all(uuid(1), uuid(2)),
+      });
+      const before = snapshot();
+      const batch = db.batch.bind(db);
+      db.batch = (statements: any[]) =>
+        batch([
+          ...statements,
+          db.insert(schema.taskUpdates).values({
+            id: 'forced-merge-failure',
+            taskId: 'missing-task',
+            authorId: TIM,
+            note: 'Force the batch to fail',
+          }),
+        ]);
+
+      try {
+        await expect(projectService.mergeProjects(db, TIM, uuid(1), uuid(2))).rejects.toThrow();
+      } finally {
+        db.batch = batch;
+      }
+
+      expect(snapshot()).toEqual(before);
+    });
+
     it("keeps the target's own fields when the source has less", async () => {
-      await newTask(TIM, 1, 'Solfit', {
+      await newTask(TIM, 1, 'Acme Solar', {
         priority: 8,
         size: '*****',
         reason: 'Keep me',
         goalId: 'g-tim',
       });
-      await newTask(TIM, 2, 'Solfit', { priority: 2, size: '*', goalId: 'g-tim-2' });
+      await newTask(TIM, 2, 'Acme Solar', { priority: 2, size: '*', goalId: 'g-tim-2' });
       const merged = await projectService.mergeProjects(db, TIM, uuid(1), uuid(2));
       expect(merged).toMatchObject({
         priority: 8,
@@ -524,9 +628,9 @@ describe('projectService', () => {
 
   describe('processAwaitingReturns', () => {
     it('only brings back awaiting tasks whose date has passed', async () => {
-      await newTask(TIM, 1, 'Solfit', { status: 'awaiting', awaitUntil: '2020-01-01' });
-      await newTask(TIM, 2, 'Solfit', { status: 'awaiting', awaitUntil: '2999-01-01' });
-      await newTask(TIM, 3, 'Solfit', { status: 'awaiting', awaitUntil: '2020-01-01' });
+      await newTask(TIM, 1, 'Acme Solar', { status: 'awaiting', awaitUntil: '2020-01-01' });
+      await newTask(TIM, 2, 'Acme Solar', { status: 'awaiting', awaitUntil: '2999-01-01' });
+      await newTask(TIM, 3, 'Acme Solar', { status: 'awaiting', awaitUntil: '2020-01-01' });
       await projectService.deleteProject(db, TIM, uuid(3));
 
       expect(await projectService.processAwaitingReturns(db)).toEqual({ flipped: 1, total: 1 });

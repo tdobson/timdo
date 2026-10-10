@@ -1,13 +1,11 @@
-# TimDo System Primer & Architectural Overview
+# TimDo system primer
 
-## 1. Executive Summary & Purpose
-**TimDo** is a high-velocity, personal productivity and cognitive operating system built for solo high-impact decision makers. Rooted in the philosophy of **"one-at-a-time extreme focus"**, it bridges strategic life direction (aims, core values, recurring rhythms) down to operational task execution across **Web (Next.js 15), Voice (Groq Whisper), CLI (`bin/timdo`), and Gmail MCP integration**.
+TimDo is a task manager with web, voice, CLI and MCP interfaces. Workspaces contain projects,
+epics and tasks. Each person can link tasks to private life goals and print active or completed
+task posters.
 
-The system treats productivity as a multi-timescale feedback loop:
-- **Strategic Horizon (Years/Quarters):** Core Values, Long-term Aims, and Active Focuses.
-- **Project Horizon (Weeks/Months):** Epics and Category Workstreams (e.g. *Solfit*, *Migrating Dragons*, *Caving Crew*, *Personal*).
-- **Execution Horizon (Days/Hours):** Active Projects (`do`, `awaiting`, `delay`, `delegate`, `done`) with effort sizes (`*` to `*****`), dated updates, and Gmail thread bindings.
-- **Physical Feedback Horizon (Real World):** Printable high-contrast monochrome vector posters (~A0/A1/A2 and multi-sheet 6× A4 tiled packages) providing tactile, screen-free situational awareness on home/office walls.
+See [collaboration](collaboration.md) for permissions and the API contract, and
+[integrations](integrations.md) for duplicate-safe task creation from outside systems.
 
 ---
 
@@ -22,7 +20,7 @@ The system treats productivity as a multi-timescale feedback loop:
                         │  └────────┬────────┘ └───────┬───────┘ └──────┬───────┘ │
                         └───────────┼──────────────────┼────────────────┼─────────┘
                                     │                  │                │
-                                    │ Auth0 JWT        │ Groq Audio     │ X-Internal-Secret
+                                    │ Auth0 JWT        │ Auth0 JWT      │ Personal token
                                     ▼                  ▼                ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                           Cloudflare Edge Infrastructure                        │
@@ -43,57 +41,58 @@ The system treats productivity as a multi-timescale feedback loop:
 ### Technical Stack:
 - **Frontend:** Next.js 15 (App Router), React 19, Mantine UI 7, `@tanstack/react-query`, Tabler Icons.
 - **Edge Deployment:** `@cloudflare/next-on-pages` running on Cloudflare Pages (`timdo.tdobson.net`).
-- **Backend API:** Cloudflare Workers running Hono v4, Drizzle ORM, Zod validation schemas (`timdo-v2-api.hello4807.workers.dev`).
+- **Backend API:** Cloudflare Workers running Hono v4, Drizzle ORM and Zod validation (`https://timdo-v2-api.tdobson.net/api/v2`).
 - **Database:** Cloudflare D1 SQLite database (`timdo-v2-db`).
 - **Authentication:**
   - Web UI: Auth0 JWT via NextAuth.js.
-  - CLI & MCP Tooling: Secure machine-to-machine `X-Internal-Secret` header resolving directly to user context without browser redirects.
+  - CLI and standalone MCP: each person signs in with `bin/timdo login` and uses their own personal token.
+  - `X-Internal-Secret` is the instance owner's administrative credential. Never share it with collaborators or bots.
 - **Integrations:**
-  - **Groq Whisper:** Low-latency voice transcription.
-  - **Gmail MCP Server:** Local stdio MCP (`gmail-local`) allowing direct inbox triage, thread reading, draft composition, and task linking.
+  - Groq Whisper transcribes voice commands; users review proposed changes before applying them.
+  - The standalone MCP exposes TimDo operations. A separate Gmail MCP can provide inbox access, but is not required to use TimDo.
 
 ---
 
-## 3. Data Model & Hierarchy
-
-The database model forms a continuous chain from high-level philosophy to granular execution:
+## 3. Data model and hierarchy
 
 ```
-[Goals: Aims / Values / Housekeeping]
-                  │
-                  ▼
-          [Categories]
-                  │
-                  ▼
-              [Epics] (Milestones & strategic initiatives)
-                  │
-                  ▼
-             [Projects / Tasks]
-                  │
-         ┌────────┴────────┐
-         ▼                 ▼
-[ProjectUpdates]     [Gmail Threads]
-(Dated progress)    (Source context)
+Workspace (Organisation)
+  Project
+    Epic (optional)
+      Task
+        Dated notes
+        External refs
 ```
 
-### 3.1 Project / Task Fields (`Projects` table)
-- `id`: UUID v4 (CLI displays 6–8 char prefixes).
-- `project`: Primary title/action name. Redundant category prefixes (`Solfit:`, `Crew:`) are automatically cleaned.
-- `reason`: Why this task matters (crucial for clarity and prioritizing).
-- `status`:
-  - `do` — Active, immediate focus items.
-  - `awaiting` — Parked waiting on external events/people; requires `awaitUntil` return date.
-  - `delay` — Parked backlogged tasks.
-  - `delegate` — Assigned out to team members.
-  - `done` — Completed milestone.
-- `priority`: Numeric priority scale (1 to 10).
-- `size`: Sizing/effort indicator (`*` to `*****`), rendered as challenge meters.
-- `category`: Primary workstream (`Solfit`, `Crew`, `Personal`, `Migrating Dragons`, `Mavala`, `Xebit`).
-- `epicId`: Optional foreign key binding to an active or completed Epic.
-- `goalId`: Optional foreign key binding to a Strategic Goal/Aim.
-- `notes`: Markdown/text notes and next immediate steps.
-- `awaitUntil`: Date string (YYYY-MM-DD). The Cloudflare Worker cron (`*/5 * * * *`) automatically checks awaiting items and transitions them back to `do` when the return date arrives.
-- `gmailThreadId`: Unique Gmail thread identifier for bidirectional navigation.
+Workspace members can see its projects, epics, tasks, notes and activity. Roles control who can
+edit or administer them. Life goals are private to each person; `TaskUserGoals` links a person's
+goals to tasks without sharing those goals with the workspace.
+
+`Tasks` stores tasks and `TaskUpdates` stores their dated notes. `Projects` contains the project
+containers. `Projects_Legacy` and `ProjectUpdates` are frozen archives, not live write targets.
+For compatibility, the older `/projects` API and a task's `project` field still mean tasks and
+task titles. The task's `category` is its containing project's name.
+
+### Task fields and status
+
+- `id`: UUID; the CLI also accepts unambiguous prefixes.
+- `project`: task title in the legacy API response. Poster rendering can omit a redundant prefix
+  that matches the task's category; this does not rewrite the stored title.
+- `reason`: why the task matters.
+- `status`: `do`, `awaiting`, `delay`, `delegate` or `done`.
+- `priority`: 1 to 10.
+- `size`: `*` to `*****`.
+- `projectId` and `category`: the project container's id and name.
+- `epicId`: optional epic.
+- `goalId`: the caller's private goal link.
+- `notes`: task details; dated updates are separate records.
+- `awaitUntil`: return date for an awaiting task, in `YYYY-MM-DD` format. An hourly Worker cron
+  returns due tasks to `do`.
+- `gmailThreadId`: compatibility field mirrored from Gmail refs.
+
+Refs have the roles `link`, `source`, `reported_by` and `about`. A canonical source identifies
+one task in a workspace. A create request can return or report against that task instead of
+creating a duplicate. Similar-title suggestions are advisory, not permission to merge tasks.
 
 ---
 
@@ -106,19 +105,20 @@ TimDo features an integrated **Poster Studio** designed for physical awareness v
 - **Structure:**
   - Chronological flow: Oldest items at the top, latest achievements and momentum at the bottom.
   - **3 Horizontal Tiers** aligning with the physical 2×3 A4 paper grid.
-  - **4 Thematic Columns:** Columns 1–3 contain Personal items; Column 4 contains Work/Club projects (`Solfit`, `Crew`, `Migrating Dragons`, etc.).
-  - **Synchronized Refresher Breaks:** Horizontal headers align across all 4 columns simultaneously at sheet boundaries (`PERSONAL (CONT.) | SOLFIT (CONT.)`).
-- **Laser Optimization:** Solid `#000000` text, lines, and micro-bar challenge meters with 0.4px rounded corners. No gray dithering or halftone patterns.
+  - **4 columns:** columns 1 to 3 contain tasks from the caller's personal workspace; column 4 contains tasks from their other workspaces. The headings are "Personal workspace" and "Other workspaces". A non-personal workspace can still have only one member.
+  - **Continuation headers:** a category is named only when the last visible task in the previous tier and the first visible task in the current tier have that category. Other headers use the workspace-group name.
+- **Capacity:** the six-sheet layout has a fixed size. A full column shows how many tasks did not fit and points to the Done view for the full list. The JSON response keeps all selected tasks and its total count; the poster is not a full data export.
+- **Printing:** monochrome text, rules and micro-bar size markers, with no colour dependency.
 - **Tiled Multi-Sheet Engine:** Produces 6 individual A4 SVGs (`viewBox="0 0 793.7 1122.5"`) with corner crosshairs (`+ P1` to `+ P6`), crop guidelines, and overlap margins for easy wall assembly.
 
 ### 4.2 Active Tasks Readout / Worksheet (A2)
 - **Dimensions:** 420mm × 594mm portrait (`viewBox="0 0 420 594"`).
-- **Behavior:**
-  - Pure active momentum: excludes `done` tasks to preserve paper space.
-  - Grouped by Category (`SOLFIT`, `CREW`, etc.) with task counts.
-  - **Auto-Balanced 2-Column Layout:** Dynamically distributes category cards across two columns for full-portfolio views.
-  - **Expanded Single-Column View:** When filtered to 1–2 categories, expands into a spacious single-column view with full reasons and notes.
-  - Visual status bullets: `● Do`, `⏳ Awt (return date)`, `⏸ Dly`.
+- **Behaviour:**
+  - Includes `do`, `awaiting` and `delay` tasks in separate status sections.
+  - Category filters use actual project names and appear in the heading.
+  - Do rows show the title, reason, size and notes. Awaiting rows show return dates; Delay rows show reasons.
+  - Long text wraps within the print layout and can be shortened to fit. This is a worksheet, not a full data export.
+  - The default heading is `ACTIVE TASKS`; callers can supply a display name.
 
 ### 4.3 Life Goals & Routines (A2)
 - **Dimensions:** 420mm × 594mm portrait (`viewBox="0 0 420 594"`).
@@ -130,20 +130,21 @@ TimDo features an integrated **Poster Studio** designed for physical awareness v
 
 ### 4.4 Multi-Category Filtering
 Poster Studio features a reactive filter toolbar:
-- Filter chips: `All Categories`, `Solfit`, `Crew`, `Personal`, `Migrating Dragons`, `Mavala`, `Xebit`.
+- Filter chips come from the caller's project categories, alongside `All Categories`.
+- Category names are matched after trimming whitespace and ignoring case; no customer aliases are built in.
 - Scopes both **Active Tasks Readout** and **Wall of Done** in real time.
-- Dynamic download filenames (e.g. `timdo-active-tasks-Solfit-2026-09-15.svg`).
+- Dynamic download filenames (e.g. `timdo-active-tasks-Acme-Solar-2026-09-15.svg`).
 
 ---
 
 ## 5. CLI & Automation Tooling (`bin/timdo`)
 
-The TimDo CLI provides sub-second manipulation of the task ledger for terminals and AI agents:
+The CLI manages tasks, notes, epics, goals and workspace membership:
 
 ```bash
 # Task operations
-bin/timdo list [all|do|delay|done|awaiting] [-p <category>]
-bin/timdo add "Title" -r "Reason" --status do --priority 8 --size "***" -p Solfit
+bin/timdo list [all|do|delay|delegate|done|awaiting] [-p <category>]
+bin/timdo add "Title" -r "Reason" --status do --priority 8 --size "***" -p "Acme Solar"
 bin/timdo update <id> --done
 bin/timdo update <id> --awaiting --await-until 2026-09-30
 bin/timdo add-note <id> "Sent revised calculation sheet"
@@ -151,12 +152,12 @@ bin/timdo merge <source_id> <target_id> --yes
 
 # Epics & Goals
 bin/timdo epic list [-p <category>]
-bin/timdo epic add "Acme Solar Rollout" -p Solfit
+bin/timdo epic add "Acme Solar Rollout" -p "Acme Solar"
 bin/timdo goal list
 
 # Vector Poster Generation & Export
-bin/timdo poster --type done --category Solfit --output ~/solfit_done.svg
-bin/timdo poster --type active --category "Solfit,Migrating Dragons" --output ~/active.svg
+bin/timdo poster --type done --category "Acme Solar" --output ~/acme_solar_done.svg
+bin/timdo poster --type active --category "Acme Solar,Northstar Workshop" --output ~/active.svg
 bin/timdo poster --type goals --output ~/life_goals.svg
 ```
 

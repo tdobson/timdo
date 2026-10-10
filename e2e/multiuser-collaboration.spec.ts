@@ -1,22 +1,22 @@
 import { expect, test } from '@playwright/test';
 
 test.describe('Multi-User Collaboration E2E Flow', () => {
-  test('User A creates task in XEBIT and assigns to User B; User B views in Mine, posts note and completes; User A verifies Done and note attribution', async ({
+  test('User A creates a task in Acme Solar and assigns it to User B; User B views in Mine, posts a note and completes it; User A verifies Done and note attribution', async ({
     page,
   }) => {
     // Shared mock state
     const taskState = {
-      id: 'task-xeb-20',
-      project: '[XEB-20] Build staging webhook',
-      projectKey: 'XEB-20',
+      id: 'task-acme-20',
+      project: '[ACS-20] Build staging webhook',
+      projectKey: 'ACS-20',
       reason: 'Support automated deploy previews',
       status: 'do' as const,
       priority: 9,
       size: '***' as const,
-      category: 'Xebit',
-      assigneeId: 'user-sarah-id',
-      assigneeName: 'Sarah Connor',
-      userId: 'user-tim-id',
+      category: 'Acme Solar',
+      assigneeId: 'user-jordan-id',
+      assigneeName: 'Jordan Example',
+      userId: 'user-casey-id',
       orderIndex: 0,
     };
 
@@ -35,8 +35,8 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify([
-          { id: 'org-tim', name: 'Tim Dobson', slug: 'tim-dobson' },
-          { id: 'org-xebit', name: 'XEBIT', slug: 'xebit' },
+          { id: 'org-casey', name: 'Casey Example', slug: 'casey-example' },
+          { id: 'org-northstar-workshop', name: 'Northstar Workshop', slug: 'northstar-workshop' },
         ]),
       });
     });
@@ -49,16 +49,16 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
         body: JSON.stringify([
           {
             id: 'mem-1',
-            userId: 'user-tim-id',
-            userName: 'Tim Dobson',
-            userEmail: 'tim@xebit.com',
+            userId: 'user-casey-id',
+            userName: 'Casey Example',
+            userEmail: 'casey@example.test',
             role: 'owner',
           },
           {
             id: 'mem-2',
-            userId: 'user-sarah-id',
-            userName: 'Sarah Connor',
-            userEmail: 'sarah@xebit.com',
+            userId: 'user-jordan-id',
+            userName: 'Jordan Example',
+            userEmail: 'jordan@example.test',
             role: 'member',
           },
         ]),
@@ -108,8 +108,8 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
           id: `update-${updatesState.length + 1}`,
           projectId: taskState.id,
           note: body.note,
-          authorId: 'user-sarah-id',
-          authorName: 'Sarah Connor',
+          authorId: 'user-jordan-id',
+          authorName: 'Jordan Example',
           createdAt: new Date().toISOString(),
         };
         updatesState.push(newUpdate);
@@ -138,34 +138,34 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
     });
 
     // ----------------------------------------------------
-    // Step 1: User A (Tim) logs in, views XEBIT org and assigns task to Sarah
+    // Step 1: User A (Casey) logs in, views Northstar Workshop org and assigns task to Jordan
     // ----------------------------------------------------
     await page.goto('/board');
 
-    // Select XEBIT organisation
+    // Select Northstar Workshop organisation
     const orgSelect = page.locator(
       'input[placeholder="Select an option"], input[value="All Organisations"]'
     );
     if (await orgSelect.isVisible()) {
       await orgSelect.click();
-      const xebitOption = page.getByRole('option', { name: 'XEBIT' });
-      if (await xebitOption.isVisible()) {
-        await xebitOption.click();
+      const northstarWorkshopOption = page.getByRole('option', { name: 'Northstar Workshop' });
+      if (await northstarWorkshopOption.isVisible()) {
+        await northstarWorkshopOption.click();
       }
     }
 
     // Verify task is displayed with key badge and assignee name
-    await expect(page.locator('text=[XEB-20] Build staging webhook')).toBeVisible();
-    await expect(page.locator('text=Sarah Connor')).toBeVisible();
+    await expect(page.locator('text=[ACS-20] Build staging webhook')).toBeVisible();
+    await expect(page.locator('text=Jordan Example')).toBeVisible();
 
     // ----------------------------------------------------
-    // Step 2: User B (Sarah) logs in, navigates to task detail, posts note and moves to Done
+    // Step 2: User B (Jordan) logs in, navigates to task detail, posts note and moves to Done
     // ----------------------------------------------------
     await page.goto(`/tasks/${taskState.id}`);
 
     // Verify task name in task detail
     await expect(page.locator('input[placeholder="Task name"]')).toHaveValue(
-      '[XEB-20] Build staging webhook'
+      '[ACS-20] Build staging webhook'
     );
 
     // Click "Add Update / Note" button if visible
@@ -174,32 +174,32 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
       await addNoteBtn.click();
     }
 
-    // Sarah posts an update note: "Reviewing PR now"
+    // Jordan posts an update note: "Reviewing PR now"
     await page.fill('textarea[placeholder*="Write an update or note"]', 'Reviewing PR now');
     await page.click('button:has-text("Save Note"), button:has-text("Save Update")');
 
-    // Verify Sarah's note and attribution appear in timeline
+    // Verify Jordan's note and attribution appear in timeline
     await expect(page.locator('text=Reviewing PR now')).toBeVisible();
-    await expect(page.locator('text=Sarah Connor')).toBeVisible();
+    await expect(page.locator('text=Jordan Example')).toBeVisible();
 
-    // Sarah completes task (changes Status to Done)
+    // Jordan completes task (changes Status to Done)
     const statusSelect = page.locator('input[value="Do"], input[placeholder="Select Status"]');
     await statusSelect.click();
     const doneOption = page.getByRole('option', { name: 'Done' });
     await doneOption.click();
 
     // ----------------------------------------------------
-    // Step 3: User A (Tim) verifies completed task in Done section
+    // Step 3: User A (Casey) verifies completed task in Done section
     // ----------------------------------------------------
     await page.goto('/board');
     const doneSection = page.getByTestId('section-done');
     await expect(doneSection).toBeVisible();
-    await expect(doneSection.locator('text=[XEB-20] Build staging webhook')).toBeVisible();
+    await expect(doneSection.locator('text=[ACS-20] Build staging webhook')).toBeVisible();
 
     // Navigate back to task detail to verify author-attributed note persists
     await page.goto(`/tasks/${taskState.id}`);
     await expect(page.locator('text=Reviewing PR now')).toBeVisible();
-    await expect(page.locator('text=Sarah Connor')).toBeVisible();
+    await expect(page.locator('text=Jordan Example')).toBeVisible();
   });
 
   test('Unassigned task 1-click claim interaction updates card with assignee', async ({ page }) => {
@@ -207,17 +207,17 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
     let claimedAssigneeName: string | null = null;
 
     const unassignedTask = {
-      id: 'task-xeb-21',
-      project: '[XEB-21] Provision redis cache cluster',
-      projectKey: 'XEB-21',
+      id: 'task-acme-21',
+      project: '[ACS-21] Provision redis cache cluster',
+      projectKey: 'ACS-21',
       reason: 'Required for high throughput',
       status: 'do' as const,
       priority: 8,
       size: '**' as const,
-      category: 'Xebit',
+      category: 'Acme Solar',
       assigneeId: null,
       assigneeName: null,
-      userId: 'user-tim-id',
+      userId: 'user-casey-id',
       orderIndex: 0,
     };
 
@@ -225,7 +225,7 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify([{ id: 'org-xebit', name: 'XEBIT', slug: 'xebit' }]),
+        body: JSON.stringify([{ id: 'org-northstar-workshop', name: 'Northstar Workshop', slug: 'northstar-workshop' }]),
       });
     });
 
@@ -245,15 +245,15 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
 
     // Intercept claim endpoint
     await page.route(`**/api/v2/tasks/${unassignedTask.id}/claim*`, async (route) => {
-      claimedAssignee = 'user-tim-id';
-      claimedAssigneeName = 'Tim Dobson';
+      claimedAssignee = 'user-casey-id';
+      claimedAssigneeName = 'Casey Example';
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           ...unassignedTask,
-          assigneeId: 'user-tim-id',
-          assigneeName: 'Tim Dobson',
+          assigneeId: 'user-casey-id',
+          assigneeName: 'Casey Example',
         }),
       });
     });
@@ -287,6 +287,6 @@ test.describe('Multi-User Collaboration E2E Flow', () => {
 
     // Assert card updates to show assignee name and removes the claim button
     await expect(claimButton).not.toBeVisible();
-    await expect(page.locator('text=You, text=Tim Dobson')).toBeVisible();
+    await expect(page.locator('text=You, text=Casey Example')).toBeVisible();
   });
 });

@@ -66,15 +66,15 @@ describe('voice commands in shared workspaces', () => {
     mockTranscript = 'mock transcription';
     mockInvokeResult = { summary: 'Nothing', changes: [] };
     lastInvokeArgs = null;
-    // A workspace Tim can only view, a second Solfit elsewhere is added per test
+    // A workspace Casey can only view, a second Acme Solar elsewhere is added per test
     raw.exec(`
       INSERT INTO Organisations (id, name, slug, created_by, is_personal) VALUES
-        ('org-club', 'Caving Club', 'caving-club', '${STRANGER}', 0);
+        ('org-club', 'Example Club', 'example-club', '${STRANGER}', 0);
       INSERT INTO OrganisationMembers (id, org_id, user_id, role) VALUES
         ('m5', 'org-club', '${STRANGER}', 'owner'),
         ('m6', 'org-club', '${TIM}', 'viewer');
       INSERT INTO Projects (id, org_id, key, name) VALUES
-        ('proj-xebit', 'org-md', 'XEB', 'Xebit Ltd'),
+        ('proj-northstar-labs', 'org-md', 'NSL', 'Northstar Labs'),
         ('proj-club', 'org-club', 'CLB', 'Club Kit');
       INSERT INTO Goals (id, user_id, type, title) VALUES ('goal-health', '${TIM}', 'aim', 'Be healthy');
     `);
@@ -84,7 +84,7 @@ describe('voice commands in shared workspaces', () => {
       status: 'do',
       priority: 7,
       size: '**',
-      projectId: 'proj-solfit',
+      projectId: 'proj-acme-solar',
       assigneeId: null,
     });
     await projectService.createProject(db, ROBIN, {
@@ -93,7 +93,7 @@ describe('voice commands in shared workspaces', () => {
       status: 'do',
       priority: 6,
       size: '*',
-      projectId: 'proj-solfit',
+      projectId: 'proj-acme-solar',
     });
     await projectService.createProject(db, TIM, {
       id: uuid(3),
@@ -114,7 +114,7 @@ describe('voice commands in shared workspaces', () => {
     await epicService.createEpic(db, TIM, {
       id: 'epic-br',
       title: 'Acme Solar',
-      projectId: 'proj-solfit',
+      projectId: 'proj-acme-solar',
       status: 'active',
     });
   });
@@ -124,18 +124,18 @@ describe('voice commands in shared workspaces', () => {
   describe('loadVoiceContext', () => {
     it('loads workspaces with roles, people, projects, tasks, epics and goals', async () => {
       const c = await ctx();
-      expect(c.me).toEqual({ id: TIM, name: 'Tim Dobson', email: 'tim@example.com' });
+      expect(c.me).toEqual({ id: TIM, name: 'Casey Example', email: 'casey@example.test' });
       expect(c.workspaces.map((w) => [w.name, w.role, w.isPersonal])).toEqual([
-        ['Tim Dobson', 'owner', true],
-        ['Caving Club', 'viewer', false],
-        ['Migrating Dragons', 'owner', false],
+        ['Casey Example', 'owner', true],
+        ['Example Club', 'viewer', false],
+        ['Northstar Workshop', 'owner', false],
       ]);
       const md = c.workspaces.find((w) => w.id === 'org-md')!;
-      expect(md.members.map((m) => m.name).sort()).toEqual(['Robin Fairweather', 'Tim Dobson']);
+      expect(md.members.map((m) => m.name).sort()).toEqual(['Casey Example', 'Jordan Example']);
       expect(md.projects.map((p) => p.name).sort()).toEqual([
-        'Migrating Dragons',
-        'Solfit',
-        'Xebit Ltd',
+        'Acme Solar',
+        'Northstar Labs',
+        'Northstar Workshop',
       ]);
       expect(c.tasks.map((t) => t.project).sort()).toEqual([
         'Acme Solar onboarding',
@@ -149,7 +149,7 @@ describe('voice commands in shared workspaces', () => {
 
     it("never shows another person's private workspace", async () => {
       const c = await loadVoiceContext(db, ROBIN);
-      expect(c.workspaces.map((w) => w.name).sort()).toEqual(['Migrating Dragons']);
+      expect(c.workspaces.map((w) => w.name).sort()).toEqual(['Northstar Workshop']);
       expect(c.tasks.map((t) => t.project).sort()).toEqual([
         'Acme Solar onboarding',
         'Check inverter datasheet',
@@ -164,7 +164,7 @@ describe('voice commands in shared workspaces', () => {
           status: 'do',
           priority: 5,
           size: '*',
-          projectId: 'proj-solfit',
+          projectId: 'proj-acme-solar',
         },
       ];
       expect((await loadVoiceContext(db, TIM, fromClient)).tasks.map((t) => t.project)).toEqual([
@@ -181,21 +181,21 @@ describe('voice commands in shared workspaces', () => {
   describe('prompt', () => {
     it('gives the model the user, workspaces with roles, people and compact tasks', async () => {
       await processVoiceCommand({ audioFile: audio(), groqApiKey: 'k', context: await ctx() });
-      expect(lastInvokeArgs.me).toBe('Tim Dobson <tim@example.com>');
+      expect(lastInvokeArgs.me).toBe('Casey Example <casey@example.test>');
       expect(lastInvokeArgs.workspaces).toContain(
-        'Workspace "Migrating Dragons" (shared, your role: owner)'
+        'Workspace "Northstar Workshop" (shared, your role: owner)'
       );
-      expect(lastInvokeArgs.workspaces).toContain('Robin Fairweather <robin@example.com> member');
+      expect(lastInvokeArgs.workspaces).toContain('Jordan Example <jordan@example.test> member');
       expect(lastInvokeArgs.workspaces).toContain(
-        'Workspace "Caving Club" (shared, your role: viewer, VIEW ONLY)'
+        'Workspace "Example Club" (shared, your role: viewer, VIEW ONLY)'
       );
-      expect(lastInvokeArgs.workspaces).toContain('Solfit [SOL]');
-      expect(lastInvokeArgs.epics).toContain('"Acme Solar" in Solfit');
+      expect(lastInvokeArgs.workspaces).toContain('Acme Solar [ACS]');
+      expect(lastInvokeArgs.epics).toContain('"Acme Solar" in Acme Solar');
       const tasks = JSON.parse(lastInvokeArgs.projects);
       expect(tasks.find((t: any) => t.project === 'Check inverter datasheet')).toMatchObject({
-        category: 'Solfit',
-        workspace: 'Migrating Dragons',
-        assignee: 'Robin Fairweather',
+        category: 'Acme Solar',
+        workspace: 'Northstar Workshop',
+        assignee: 'Jordan Example',
       });
       expect(tasks.find((t: any) => t.project === 'Acme Solar onboarding').assignee).toBe(
         'unassigned'
@@ -218,14 +218,14 @@ describe('voice commands in shared workspaces', () => {
   });
 
   describe('assignees', () => {
-    it('"for Robin" in Solfit resolves to Robin, with labels for the review screen', async () => {
+    it('"for Jordan" in Acme Solar resolves to Jordan, with labels for the review screen', async () => {
       mockInvokeResult = {
-        summary: 'Added a task for Robin',
+        summary: 'Added a task for Jordan',
         changes: [
           create({
             project: 'Check the inverter datasheet',
-            category: 'Solfit',
-            assignee: 'Robin',
+            category: 'Acme Solar',
+            assignee: 'Jordan',
           }),
         ],
       };
@@ -237,59 +237,59 @@ describe('voice commands in shared workspaces', () => {
       expect(result.warnings).toEqual([]);
       expect(result.proposedChanges[0]).toMatchObject({
         type: 'create',
-        projectId: 'proj-solfit',
-        projectName: 'Solfit',
-        orgName: 'Migrating Dragons',
+        projectId: 'proj-acme-solar',
+        projectName: 'Acme Solar',
+        orgName: 'Northstar Workshop',
         assigneeId: ROBIN,
-        assigneeName: 'Robin Fairweather',
+        assigneeName: 'Jordan Example',
         isNewProject: false,
       });
       expect(result.proposedChanges[0].after).toMatchObject({
         assigneeId: ROBIN,
-        assigneeName: 'Robin Fairweather',
-        projectId: 'proj-solfit',
-        orgName: 'Migrating Dragons',
+        assigneeName: 'Jordan Example',
+        projectId: 'proj-acme-solar',
+        orgName: 'Northstar Workshop',
       });
     });
 
     it.each([
-      ['Robin Fairweather'],
-      ['robin fairweather'],
-      ['robin@example.com'],
-      ['Rob'],
-      ['Fairweather'],
-      ['Robbin'],
-    ])('matches %s to Robin', async (spoken) => {
+      ['Jordan Example'],
+      ['jordan example'],
+      ['jordan@example.test'],
+      ['Jor'],
+      ['Jordan E'],
+      ['Jordn'],
+    ])('matches %s to Jordan', async (spoken) => {
       const c = await ctx();
       const { proposals } = resolveProposals(
-        [create({ project: 'X', category: 'Solfit', assignee: spoken })],
+        [create({ project: 'X', category: 'Acme Solar', assignee: spoken })],
         c
       );
       expect(proposals[0].assigneeId).toBe(ROBIN);
     });
 
-    it.each([['me'], ['myself'], ['mine'], ['Tim'], ['tim@example.com']])(
+    it.each([['me'], ['myself'], ['mine'], ['Casey'], ['casey@example.test']])(
       '"%s" is the signed-in user',
       async (spoken) => {
         const { proposals } = resolveProposals(
-          [create({ project: 'X', category: 'Solfit', assignee: spoken })],
+          [create({ project: 'X', category: 'Acme Solar', assignee: spoken })],
           await ctx()
         );
-        expect(proposals[0]).toMatchObject({ assigneeId: TIM, assigneeName: 'Tim Dobson' });
+        expect(proposals[0]).toMatchObject({ assigneeId: TIM, assigneeName: 'Casey Example' });
       }
     );
 
     it('new tasks with no assignee mentioned go to the creator', async () => {
       const { proposals } = resolveProposals(
-        [create({ project: 'X', category: 'Solfit' })],
+        [create({ project: 'X', category: 'Acme Solar' })],
         await ctx()
       );
-      expect(proposals[0]).toMatchObject({ assigneeId: TIM, assigneeName: 'Tim Dobson' });
+      expect(proposals[0]).toMatchObject({ assigneeId: TIM, assigneeName: 'Casey Example' });
     });
 
     it('"unassigned" leaves a new task unassigned', async () => {
       const { proposals, warnings } = resolveProposals(
-        [create({ project: 'X', category: 'Solfit', assignee: 'unassigned' })],
+        [create({ project: 'X', category: 'Acme Solar', assignee: 'unassigned' })],
         await ctx()
       );
       expect(proposals[0]).toMatchObject({ assigneeId: null, assigneeName: null });
@@ -298,28 +298,28 @@ describe('voice commands in shared workspaces', () => {
 
     it("someone outside the task's workspace is left unassigned, with a warning", async () => {
       const { proposals, warnings } = resolveProposals(
-        [create({ project: 'Buy milk', category: 'Personal', assignee: 'Robin' })],
+        [create({ project: 'Buy milk', category: 'Personal', assignee: 'Jordan' })],
         await ctx()
       );
       expect(proposals[0]).toMatchObject({
         assigneeId: null,
         projectName: 'Personal',
-        orgName: 'Tim Dobson',
+        orgName: 'Casey Example',
       });
       expect(warnings).toEqual([
-        "Robin Fairweather isn't in the Tim Dobson workspace, so I left it unassigned.",
+        "Jordan Example isn't in the Casey Example workspace, so I left it unassigned.",
       ]);
       expect(proposals[0].warnings).toEqual(warnings);
     });
 
     it('a name nobody has is left unassigned, with a warning', async () => {
       const { proposals, warnings } = resolveProposals(
-        [create({ project: 'X', category: 'Solfit', assignee: 'Sarah' })],
+        [create({ project: 'X', category: 'Acme Solar', assignee: 'Sarah' })],
         await ctx()
       );
       expect(proposals[0].assigneeId).toBeNull();
       expect(warnings[0]).toBe(
-        `I couldn't find anyone called "Sarah" in the Migrating Dragons workspace, so I left it unassigned.`
+        `I couldn't find anyone called "Sarah" in the Northstar Workshop workspace, so I left it unassigned.`
       );
     });
 
@@ -329,7 +329,7 @@ describe('voice commands in shared workspaces', () => {
         INSERT INTO OrganisationMembers (id, org_id, user_id, role) VALUES ('m7', 'org-md', 'u-s1', 'member'), ('m8', 'org-md', 'u-s2', 'member');
       `);
       const { proposals, warnings } = resolveProposals(
-        [create({ project: 'X', category: 'Solfit', assignee: 'Sam' })],
+        [create({ project: 'X', category: 'Acme Solar', assignee: 'Sam' })],
         await ctx()
       );
       expect(proposals[0].assigneeId).toBeNull();
@@ -348,7 +348,7 @@ describe('voice commands in shared workspaces', () => {
               status: 'do',
               priority: 6,
               size: '*',
-              category: 'Solfit',
+              category: 'Acme Solar',
               assignee: 'me',
             },
           },
@@ -357,12 +357,12 @@ describe('voice commands in shared workspaces', () => {
       );
       expect(proposals[0]).toMatchObject({
         taskId: uuid(2),
-        projectId: 'proj-solfit',
+        projectId: 'proj-acme-solar',
         assigneeId: TIM,
-        assigneeName: 'Tim Dobson',
+        assigneeName: 'Casey Example',
         assigneeChanged: true,
       });
-      expect(proposals[0].before?.assigneeName).toBe('Robin Fairweather');
+      expect(proposals[0].before?.assigneeName).toBe('Jordan Example');
     });
 
     it('an update that echoes the current assignee does not reassign', async () => {
@@ -377,8 +377,8 @@ describe('voice commands in shared workspaces', () => {
               status: 'done',
               priority: 6,
               size: '*',
-              category: 'Solfit',
-              assignee: 'Robin Fairweather',
+              category: 'Acme Solar',
+              assignee: 'Jordan Example',
             },
           },
           {
@@ -390,7 +390,7 @@ describe('voice commands in shared workspaces', () => {
               status: 'done',
               priority: 7,
               size: '**',
-              category: 'Solfit',
+              category: 'Acme Solar',
               assignee: 'unassigned',
             },
           },
@@ -400,7 +400,7 @@ describe('voice commands in shared workspaces', () => {
       expect(warnings).toEqual([]);
       expect(proposals[0].assigneeId).toBeUndefined();
       expect(proposals[0].assigneeChanged).toBe(false);
-      expect(proposals[0].assigneeName).toBe('Robin Fairweather');
+      expect(proposals[0].assigneeName).toBe('Jordan Example');
       expect(proposals[1].assigneeId).toBeUndefined();
       expect('assigneeId' in proposals[1].after!).toBe(false);
     });
@@ -417,7 +417,7 @@ describe('voice commands in shared workspaces', () => {
               status: 'do',
               priority: 6,
               size: '*',
-              category: 'Solfit',
+              category: 'Acme Solar',
               assignee: 'Stranger',
             },
           },
@@ -426,7 +426,7 @@ describe('voice commands in shared workspaces', () => {
       );
       expect(proposals[0].assigneeId).toBeUndefined();
       expect(warnings[0]).toBe(
-        "Stranger isn't in the Migrating Dragons workspace, so I didn't change who it's assigned to."
+        "Stranger isn't in the Northstar Workshop workspace, so I didn't change who it's assigned to."
       );
     });
   });
@@ -441,9 +441,9 @@ describe('voice commands in shared workspaces', () => {
         type: 'claim',
         taskId: uuid(1),
         assigneeId: TIM,
-        assigneeName: 'Tim Dobson',
-        projectName: 'Solfit',
-        orgName: 'Migrating Dragons',
+        assigneeName: 'Casey Example',
+        projectName: 'Acme Solar',
+        orgName: 'Northstar Workshop',
       });
       expect(proposals[0].after?.project).toBe('Acme Solar onboarding');
     });
@@ -458,7 +458,7 @@ describe('voice commands in shared workspaces', () => {
       );
       expect(proposals).toHaveLength(1);
       expect(warnings).toEqual([
-        '"Check inverter datasheet" is assigned to Robin Fairweather at the moment.',
+        '"Check inverter datasheet" is assigned to Jordan Example at the moment.',
         '"Renew passport" is already yours.',
       ]);
     });
@@ -467,13 +467,13 @@ describe('voice commands in shared workspaces', () => {
   describe('projects and view-only access', () => {
     it('matches misheard project names to an existing project', async () => {
       const c = await ctx();
-      for (const spoken of ['solfit', 'Sol fit', 'Solfitt', 'SOL', 'xebit ltd']) {
+      for (const spoken of ['acme solar', 'Acme-Solar', 'Acme Solarr', 'ACS', 'northstar labs']) {
         const { proposals, warnings } = resolveProposals(
           [create({ project: 'X', category: spoken })],
           c
         );
         expect(warnings).toEqual([]);
-        expect(['proj-solfit', 'proj-xebit']).toContain(proposals[0].projectId);
+        expect(['proj-acme-solar', 'proj-northstar-labs']).toContain(proposals[0].projectId);
       }
     });
 
@@ -485,7 +485,7 @@ describe('voice commands in shared workspaces', () => {
       expect(proposals[0]).toMatchObject({
         projectId: null,
         projectName: 'Allotment',
-        orgName: 'Tim Dobson',
+        orgName: 'Casey Example',
         isNewProject: true,
       });
       expect(warnings[0]).toBe(
@@ -520,17 +520,17 @@ describe('voice commands in shared workspaces', () => {
           {
             type: 'createProject',
             projectId: 'p1',
-            after: { project: 'Hydrogen', workspace: 'migrating dragons' },
+            after: { project: 'Hydrogen', workspace: 'Northstar Workshop' },
           },
           {
             type: 'createProject',
             projectId: 'p2',
-            after: { project: 'solfit', workspace: 'Migrating Dragons' },
+            after: { project: 'Acme Solar', workspace: 'Northstar Workshop' },
           },
           {
             type: 'createProject',
             projectId: 'p3',
-            after: { project: 'Rope log', workspace: 'Caving Club' },
+            after: { project: 'Rope log', workspace: 'Example Club' },
           },
         ],
         await ctx()
@@ -538,12 +538,12 @@ describe('voice commands in shared workspaces', () => {
       expect(proposals).toHaveLength(1);
       expect(proposals[0]).toMatchObject({
         orgId: 'org-md',
-        orgName: 'Migrating Dragons',
+        orgName: 'Northstar Workshop',
         projectName: 'Hydrogen',
       });
       expect(warnings).toEqual([
-        `There's already a "Solfit" project in Migrating Dragons, so I didn't add another.`,
-        `You have view-only access to the Caving Club workspace, so I didn't add the "Rope log" project.`,
+        `There's already a "Acme Solar" project in Northstar Workshop, so I didn't add another.`,
+        `You have view-only access to the Example Club workspace, so I didn't add the "Rope log" project.`,
       ]);
     });
 
@@ -594,17 +594,17 @@ describe('voice commands in shared workspaces', () => {
 
     it('prefers the workspace the assignee is in when a project name exists twice', async () => {
       raw.exec(
-        `INSERT INTO Projects (id, org_id, key, name) VALUES ('proj-solfit-personal', 'org-tim', 'SOP', 'Solfit');`
+        `INSERT INTO Projects (id, org_id, key, name) VALUES ('proj-acme-solar-personal', 'org-tim', 'SOP', 'Acme Solar');`
       );
       const c = await ctx();
       const forRobin = resolveProposals(
-        [create({ project: 'X', category: 'Solfit', assignee: 'Robin' })],
+        [create({ project: 'X', category: 'Acme Solar', assignee: 'Jordan' })],
         c
       );
-      expect(forRobin.proposals[0].projectId).toBe('proj-solfit');
+      expect(forRobin.proposals[0].projectId).toBe('proj-acme-solar');
       expect(forRobin.warnings).toEqual([]);
-      const forNobody = resolveProposals([create({ project: 'X', category: 'Solfit' })], c);
-      expect(forNobody.warnings[0]).toContain(`There's a "Solfit" project in`);
+      const forNobody = resolveProposals([create({ project: 'X', category: 'Acme Solar' })], c);
+      expect(forNobody.warnings[0]).toContain(`There's a "Acme Solar" project in`);
     });
 
     it('moving a task to another workspace drops an assignee who is not a member there', async () => {
@@ -628,10 +628,10 @@ describe('voice commands in shared workspaces', () => {
       expect(proposals[0]).toMatchObject({
         projectId: 'proj-personal',
         assigneeId: null,
-        orgName: 'Tim Dobson',
+        orgName: 'Casey Example',
       });
       expect(warnings[0]).toBe(
-        "Robin Fairweather isn't in the Tim Dobson workspace, so moving it there leaves it unassigned."
+        "Jordan Example isn't in the Casey Example workspace, so moving it there leaves it unassigned."
       );
     });
 
@@ -653,8 +653,8 @@ describe('voice commands in shared workspaces', () => {
         await ctx()
       );
       expect(proposals[0]).toMatchObject({
-        projectId: 'proj-solfit',
-        projectName: 'Solfit',
+        projectId: 'proj-acme-solar',
+        projectName: 'Acme Solar',
         isNewProject: false,
       });
     });
@@ -695,7 +695,7 @@ describe('voice commands in shared workspaces', () => {
   describe('epics and goals', () => {
     it('links a new task to an epic in its project', async () => {
       const { proposals, warnings } = resolveProposals(
-        [create({ project: 'Draft mockups', category: 'Solfit', epicTitle: 'acme solar' })],
+        [create({ project: 'Draft mockups', category: 'Acme Solar', epicTitle: 'acme solar' })],
         await ctx()
       );
       expect(warnings).toEqual([]);
@@ -719,17 +719,17 @@ describe('voice commands in shared workspaces', () => {
           {
             type: 'createEpic',
             projectId: 'new-epic-placeholder-1',
-            after: { project: 'Hydrogen pilot', category: 'Solfit' },
+            after: { project: 'Hydrogen pilot', category: 'Acme Solar' },
           },
-          create({ project: 'Call supplier', category: 'Solfit', epicTitle: 'Hydrogen pilot' }, 2),
+          create({ project: 'Call supplier', category: 'Acme Solar', epicTitle: 'Hydrogen pilot' }, 2),
         ],
         await ctx()
       );
       expect(warnings).toEqual([]);
       expect(proposals[0]).toMatchObject({
         type: 'createEpic',
-        projectId: 'proj-solfit',
-        orgName: 'Migrating Dragons',
+        projectId: 'proj-acme-solar',
+        orgName: 'Northstar Workshop',
       });
       expect(proposals[1]).toMatchObject({ epicId: null, epicTitle: 'Hydrogen pilot' });
     });
@@ -747,7 +747,7 @@ describe('voice commands in shared workspaces', () => {
     it('returns the answer to a question, and merges model and resolver warnings', async () => {
       mockInvokeResult = {
         summary: 'Answered a question',
-        answer: 'Robin is working on Check inverter datasheet.',
+        answer: 'Jordan is working on Check inverter datasheet.',
         warnings: ['Club Kit is view-only.'],
         changes: [create({ project: 'Buy rope', category: 'Club Kit' })],
       };
@@ -756,7 +756,7 @@ describe('voice commands in shared workspaces', () => {
         groqApiKey: 'k',
         context: await ctx(),
       });
-      expect(result.answer).toBe('Robin is working on Check inverter datasheet.');
+      expect(result.answer).toBe('Jordan is working on Check inverter datasheet.');
       expect(result.proposedChanges).toEqual([]);
       expect(result.warnings).toEqual([
         'Club Kit is view-only.',
@@ -766,12 +766,12 @@ describe('voice commands in shared workspaces', () => {
 
     it('a resolved proposal can be applied as-is through the projects API service', async () => {
       mockInvokeResult = {
-        summary: 'Added a task for Robin',
+        summary: 'Added a task for Jordan',
         changes: [
           create({
             project: 'Check the inverter datasheet',
-            category: 'Solfit',
-            assignee: 'Robin',
+            category: 'Acme Solar',
+            assignee: 'Jordan',
             epicTitle: 'Acme Solar',
           }),
         ],
@@ -793,8 +793,8 @@ describe('voice commands in shared workspaces', () => {
         epicId: p.epicId,
       });
       expect(created).toMatchObject({
-        assigneeName: 'Robin Fairweather',
-        orgName: 'Migrating Dragons',
+        assigneeName: 'Jordan Example',
+        orgName: 'Northstar Workshop',
         epicId: 'epic-br',
       });
     });
@@ -816,12 +816,12 @@ describe('voice commands in shared workspaces', () => {
 
   describe('matchPerson', () => {
     const people = [
-      { userId: 'a', name: 'Robin Fairweather', email: 'robin@example.com', role: 'member' as const },
-      { userId: 'b', name: 'Tim Dobson', email: 'tim@example.com', role: 'owner' as const },
+      { userId: 'a', name: 'Jordan Example', email: 'jordan@example.test', role: 'member' as const },
+      { userId: 'b', name: 'Casey Example', email: 'casey@example.test', role: 'owner' as const },
     ];
     it('handles me words, nobody words and unknowns', () => {
       expect(matchPerson('me', people, 'b').kind).toBe('me');
-      expect(matchPerson('Tim Dobson', people, 'b').kind).toBe('me');
+      expect(matchPerson('Casey Example', people, 'b').kind).toBe('me');
       expect(matchPerson('nobody', people, 'b').kind).toBe('nobody');
       expect(matchPerson('no-one', people, 'b').kind).toBe('nobody');
       expect(matchPerson('Zed', people, 'b').kind).toBe('none');

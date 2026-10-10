@@ -1,17 +1,31 @@
 /**
  * Apply one reviewed voice change through the API, using the ids the server resolved
  * (projectId, assigneeId, epicId). Failures throw VoiceApplyError with the API's own
- * message, e.g. `You have view-only access to "Solfit"`.
+ * message, e.g. `You have view-only access to "Acme Solar"`.
+ *
+ * Proposed links (refs) are added with a new task in the create request. For updates and notes,
+ * link changes still go through the refs endpoints once the task change has succeeded.
+ *
+ * A new task the server found `similar` open tasks for can instead be added as a note on one of
+ * them (applyAsNote), with its links going to that task.
  */
-import type { VoiceProposal } from '../../../components/VoiceCommand/voiceTypes';
+import type {
+  VoiceProposal,
+  VoiceRefAdd,
+  VoiceRefRemove,
+  VoiceSimilarTask,
+} from '../../../components/VoiceCommand/voiceTypes';
 import { apiFetch } from '../../lib/apiClient';
 import { getWorkerApiBaseUrl } from '../../lib/apiConfig';
 
 export class VoiceApplyError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  existingTask: VoiceSimilarTask | null;
+
+  constructor(message: string, status: number, existingTask: VoiceSimilarTask | null = null) {
     super(message);
     this.status = status;
+    this.existingTask = existingTask;
   }
 }
 
@@ -26,6 +40,49 @@ export const newApplySession = (): ApplySession => ({ epicIdsByTitle: {}, projec
 export interface ApplyOutcome {
   /** Short line for the success notification */
   message: string;
+  /** Links that couldn't be added or removed, one sentence each */
+  problems: string[];
+}
+
+export type { VoiceRefAdd, VoiceRefRemove, VoiceSimilarTask };
+
+/** Kept for callers written before VoiceProposal carried refs; the same type now. */
+export type VoiceProposalWithRefs = VoiceProposal;
+
+/** A proposal with the likely duplicates the server found (create only). */
+export type VoiceProposalWithSimilar = VoiceProposal;
+
+/** The open tasks a new task looks like, best first; empty for every other change. */
+export function similarOf(change: VoiceProposalWithSimilar): VoiceSimilarTask[] {
+  const { similar } = change;
+  if (change.type !== 'create' || !Array.isArray(similar)) {
+    return [];
+  }
+  return similar.filter((s) => s && typeof s.id === 'string' && typeof s.title === 'string');
+}
+
+/** What a new task becomes as a note: its title, then its reason and notes, a line each. */
+export function noteTextFor(change: VoiceProposal): string {
+  const after = change.after;
+  return [after?.project, after?.reason, after?.notes]
+    .map((text) => (typeof text === 'string' ? text.trim() : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** The links a change adds and removes (none for other change types). */
+export function refChangesOf(change: VoiceProposal): {
+  add: VoiceRefAdd[];
+  remove: VoiceRefRemove[];
+} {
+  const { refs, removeRefs } = change;
+  if (change.type !== 'create' && change.type !== 'update') {
+    return { add: [], remove: [] };
+  }
+  return {
+    add: Array.isArray(refs) ? refs : [],
+    remove: change.type === 'update' && Array.isArray(removeRefs) ? removeRefs : [],
+  };
 }
 
 const key = (s: string) => s.trim().toLowerCase();
@@ -41,17 +98,49 @@ function clean<T extends Record<string, unknown>>(obj: T): Partial<T> {
   return out as Partial<T>;
 }
 
+// A canonical ref already contains its kind; preserve metadata without sending kind twice.
+function refPayload({ ref, role, url, label }: VoiceRefAdd) {
+  return clean({ ref, role, url, label });
+}
+
 function inThirtyDays() {
   const d = new Date();
   d.setDate(d.getDate() + 30);
   return d.toISOString().slice(0, 10);
 }
 
+function existingTaskFrom(payload: unknown, taskId?: unknown): VoiceSimilarTask | null {
+  const task = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+  const id = typeof task.id === 'string' ? task.id : typeof taskId === 'string' ? taskId : null;
+  if (!id) {
+    return null;
+  }
+  const title =
+    typeof task.project === 'string'
+      ? task.project
+      : typeof task.title === 'string'
+        ? task.title
+        : 'Existing task';
+  return {
+    id,
+    shortId: typeof task.shortId === 'string' ? task.shortId : id.slice(0, 8),
+    title,
+    ...(typeof task.projectName === 'string' || task.projectName === null
+      ? { projectName: task.projectName }
+      : {}),
+    ...(typeof task.orgName === 'string' || task.orgName === null ? { orgName: task.orgName } : {}),
+    ...(typeof task.canEdit === 'boolean' ? { canEdit: task.canEdit } : {}),
+  };
+}
+
 async function readError(response: Response, fallback: string): Promise<VoiceApplyError> {
   const body = (await response.json().catch(() => null)) as {
     error?: unknown;
     message?: unknown;
+    taskId?: unknown;
+    task?: unknown;
   } | null;
+  const existingTask = existingTaskFrom(body?.task, body?.taskId);
   const text =
     typeof body?.error === 'string'
       ? body.error
@@ -59,7 +148,7 @@ async function readError(response: Response, fallback: string): Promise<VoiceApp
         ? body.message
         : null;
   if (text) {
-    return new VoiceApplyError(text, response.status);
+    return new VoiceApplyError(text, response.status, existingTask);
   }
   if (response.status === 400) {
     return new VoiceApplyError(`${fallback}: some of the details weren't valid.`, 400);
@@ -70,7 +159,7 @@ async function readError(response: Response, fallback: string): Promise<VoiceApp
   if (response.status === 404) {
     return new VoiceApplyError("That task isn't there any more, or you can't see it.", 404);
   }
-  return new VoiceApplyError(fallback, response.status);
+  return new VoiceApplyError(fallback, response.status, existingTask);
 }
 
 async function send(
@@ -92,6 +181,103 @@ async function send(
     throw await readError(response, fallback);
   }
   return response.json().catch(() => ({}));
+}
+
+const links = (n: number) => `${n} ${n === 1 ? 'link' : 'links'}`;
+
+/** " (2 links added, 1 removed)" for the success line */
+function linkNote(added: number, removed: number) {
+  if (added && removed) {
+    return ` (${links(added)} added, ${removed} removed)`;
+  }
+  if (added) {
+    return ` (${links(added)} added)`;
+  }
+  return removed ? ` (${links(removed)} removed)` : '';
+}
+
+/** Removals first (so a replaced source is free again), then additions, one call each. */
+async function applyRefs(
+  token: string,
+  taskId: string,
+  add: VoiceRefAdd[],
+  remove: VoiceRefRemove[]
+) {
+  let added = 0;
+  let removed = 0;
+  const problems: string[] = [];
+  const explain = (ref: string, error: unknown, what: string) => {
+    const message = error instanceof Error ? error.message : 'something went wrong';
+    problems.push(message.includes(ref) ? message : `${what} ${ref}: ${message}`);
+  };
+  for (const r of remove) {
+    const query = new URLSearchParams({ ref: r.ref, ...(r.role ? { role: r.role } : {}) });
+    try {
+      await send(
+        token,
+        'DELETE',
+        `/tasks/${taskId}/refs?${query.toString()}`,
+        undefined,
+        `Couldn't remove ${r.ref}`
+      );
+      removed += 1;
+    } catch (error) {
+      // Already gone is what was asked for
+      if (!(error instanceof VoiceApplyError && error.status === 404)) {
+        explain(r.ref, error, "Couldn't remove");
+      }
+    }
+  }
+  for (const r of add) {
+    try {
+      await send(token, 'POST', `/tasks/${taskId}/refs`, refPayload(r), `Couldn't link ${r.ref}`);
+      added += 1;
+    } catch (error) {
+      explain(r.ref, error, "Couldn't link");
+    }
+  }
+  return { note: linkNote(added, removed), problems };
+}
+
+/**
+ * Add a proposed new task to an existing one as a note instead of creating it. Its ticked links
+ * go to that task too. Nothing is created: no task, project or epic.
+ */
+export async function applyAsNote(
+  change: VoiceProposal,
+  target: VoiceSimilarTask,
+  token: string
+): Promise<ApplyOutcome> {
+  const note = noteTextFor(change);
+  if (!note) {
+    throw new VoiceApplyError('There is nothing to add as a note.', 400);
+  }
+  try {
+    await send(
+      token,
+      'POST',
+      `/projects/${target.id}/updates`,
+      { note },
+      `Couldn't add a note to "${target.title}"`
+    );
+  } catch (error) {
+    // The notes endpoint answers 404 for a task that's gone and for one you can only view
+    if (error instanceof VoiceApplyError && error.status === 404) {
+      throw new VoiceApplyError(
+        `"${target.title}" isn't there any more, or you can't add notes to it.`,
+        404
+      );
+    }
+    throw error;
+  }
+  const { add } = refChangesOf(change);
+  const linked = add.length
+    ? await applyRefs(token, target.id, add, [])
+    : { note: '', problems: [] as string[] };
+  return {
+    message: `Added a note to "${target.title}"${linked.note}`,
+    problems: linked.problems,
+  };
 }
 
 /** Where a change lands: an id when known, else the project name (the API then creates it). */
@@ -145,7 +331,10 @@ export async function applyVoiceChange(
       if (created?.id) {
         session.projectIdsByName[key(name)] = created.id;
       }
-      return { message: `Added the ${name} project to ${change.orgName ?? 'your workspace'}` };
+      return {
+        message: `Added the ${name} project to ${change.orgName ?? 'your workspace'}`,
+        problems: [],
+      };
     }
 
     case 'createEpic': {
@@ -165,7 +354,7 @@ export async function applyVoiceChange(
       if (created?.id) {
         session.epicIdsByTitle[key(title)] = created.id;
       }
-      return { message: `Added the "${title}" epic${where(change)}` };
+      return { message: `Added the "${title}" epic${where(change)}`, problems: [] };
     }
 
     case 'create': {
@@ -173,6 +362,7 @@ export async function applyVoiceChange(
         throw new VoiceApplyError('This change has no task details.', 400);
       }
       const status = after.status ?? 'do';
+      const { add } = refChangesOf(change);
       const body = clean({
         project: after.project,
         reason: after.reason,
@@ -185,17 +375,39 @@ export async function applyVoiceChange(
         tags: after.tags,
         epicId: epicFor(change, session),
         goalId: change.goalId,
+        refs: add.length ? add.map(refPayload) : undefined,
         ...placement(change, session),
       });
       // null is meaningful here (unassigned), so add it after cleaning
       const payload =
         change.assigneeId !== undefined ? { ...body, assigneeId: change.assigneeId } : body;
-      await send(token, 'POST', '/projects', payload, `Couldn't add "${after.project}"`);
+      const created = (await send(
+        token,
+        'POST',
+        '/projects',
+        payload,
+        `Couldn't add "${after.project}"`
+      )) as { id?: string; created?: boolean } & Record<string, unknown>;
+      if (created?.created === false) {
+        const existingTask = existingTaskFrom(created);
+        const source = add.find((ref) => ref.role === 'source');
+        const message = existingTask
+          ? source
+            ? `${source.ref} is already the source of ${existingTask.shortId} "${existingTask.title}". No new task was created.`
+            : `The request returned the existing task "${existingTask.title}". No new task was created.`
+          : source
+            ? `${source.ref} is already the source of an existing task. No new task was created.`
+            : 'The request returned an existing task. No new task was created.';
+        throw new VoiceApplyError(message, 409, existingTask);
+      }
       const forWhom =
         change.assigneeId && change.assigneeId !== meId && change.assigneeName
           ? ` for ${change.assigneeName}`
           : '';
-      return { message: `Added "${after.project}"${where(change)}${forWhom}` };
+      return {
+        message: `Added "${after.project}"${where(change)}${forWhom}${linkNote(add.length, 0)}`,
+        problems: [],
+      };
     }
 
     case 'update': {
@@ -248,11 +460,19 @@ export async function applyVoiceChange(
         body.goalId = change.goalId;
       }
       const title = after.project || before?.project || 'the task';
-      if (Object.keys(body).length === 0) {
-        return { message: `"${title}" was already up to date` };
+      const { add, remove } = refChangesOf(change);
+      const hasFields = Object.keys(body).length > 0;
+      if (!hasFields && add.length === 0 && remove.length === 0) {
+        return { message: `"${title}" was already up to date`, problems: [] };
       }
-      await send(token, 'PUT', `/projects/${taskId}`, body, `Couldn't update "${title}"`);
-      return { message: `Updated "${title}"` };
+      if (hasFields) {
+        await send(token, 'PUT', `/projects/${taskId}`, body, `Couldn't update "${title}"`);
+      }
+      const linked = await applyRefs(token, taskId, add, remove);
+      return {
+        message: `${hasFields ? 'Updated' : 'Updated the links on'} "${title}"${linked.note}`,
+        problems: linked.problems,
+      };
     }
 
     case 'claim': {
@@ -265,7 +485,7 @@ export async function applyVoiceChange(
       }
       const title = change.before?.project ?? after?.project ?? 'the task';
       await send(token, 'PUT', `/projects/${taskId}`, { assigneeId }, `Couldn't claim "${title}"`);
-      return { message: `"${title}" is yours now` };
+      return { message: `"${title}" is yours now`, problems: [] };
     }
 
     case 'delete': {
@@ -274,7 +494,7 @@ export async function applyVoiceChange(
       }
       const title = change.before?.project ?? 'the task';
       await send(token, 'DELETE', `/projects/${taskId}`, undefined, `Couldn't delete "${title}"`);
-      return { message: `Deleted "${title}"` };
+      return { message: `Deleted "${title}"`, problems: [] };
     }
 
     default:

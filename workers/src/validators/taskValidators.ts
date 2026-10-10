@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { onDuplicateSchema } from './projectValidators';
+import { refInputListSchema, refsNotOnUpdate } from './refValidators';
 
 const statusEnum = z.enum(['do', 'delay', 'done', 'delegate', 'awaiting']);
 const sizeEnum = z.enum(['*', '**', '***', '****', '*****']);
@@ -18,6 +20,10 @@ export const taskCreateSchema = z
     gmailThreadId: z.string().nullable().optional(),
     customer: z.string().nullable().optional(),
     tags: z.string().nullable().optional(),
+    /** Links to add with the task, in the same batch. One source at most. */
+    refs: refInputListSchema.optional(),
+    /** When the source ref already has a task: error (409, default), return or report. */
+    onDuplicate: onDuplicateSchema,
   })
   .refine(
     (data) => {
@@ -52,6 +58,8 @@ export const taskUpdateSchema = z
     isDeleted: z.boolean().optional(),
     statusLastChangedOn: z.string().datetime().optional(),
     updatedAt: z.string().datetime().optional(),
+    refs: refsNotOnUpdate,
+    removeRefs: refsNotOnUpdate,
   })
   .refine(
     (data) => {

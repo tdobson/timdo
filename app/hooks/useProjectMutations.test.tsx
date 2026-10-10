@@ -92,7 +92,7 @@ describe('useUpdateProject', () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: false,
       status: 403,
-      text: async () => JSON.stringify({ error: 'You have view-only access to "Solfit"' }),
+      text: async () => JSON.stringify({ error: 'You have view-only access to "Acme Solar"' }),
     }) as unknown as typeof fetch;
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -105,12 +105,12 @@ describe('useUpdateProject', () => {
 
     await expect(
       result.current.mutateAsync({ projectId: 'task-1', data: { status: 'done' } })
-    ).rejects.toThrow('You have view-only access to "Solfit"');
+    ).rejects.toThrow('You have view-only access to "Acme Solar"');
 
     await waitFor(() =>
       expect(notifications.show).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: 'You have view-only access to "Solfit"',
+          message: 'You have view-only access to "Acme Solar"',
           color: 'red',
         })
       )

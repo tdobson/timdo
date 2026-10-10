@@ -54,7 +54,7 @@ The web front end needs an Auth0 application to sign in, so most API and CLI wor
 - **Life goals are private** to each person and never go in the shared activity log.
 - **No real people, clients or personal data** in tests, defaults, examples or docs. Use made-up names like Robin Fairweather and Acme Solar.
 - **Copy** is UK English, short and plain, with no em-dashes.
-- **The docs to keep in step:** `docs/collaboration.md` (the model and API), `bin/timdo help`, and `mcp/README.md`.
+- **The docs to keep in step:** `docs/collaboration.md` (the model and API), `docs/integrations.md` (creating tasks from other systems), `bin/timdo help`, and `mcp/README.md`.
 
 ## Reporting a security problem
 

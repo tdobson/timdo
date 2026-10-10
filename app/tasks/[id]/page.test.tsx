@@ -141,7 +141,7 @@ describe('TaskDetailPage', () => {
         return Promise.resolve({
           ok: false,
           status: 403,
-          text: async () => JSON.stringify({ error: 'You have view-only access to "Solfit"' }),
+          text: async () => JSON.stringify({ error: 'You have view-only access to "Acme Solar"' }),
         });
       }
       return Promise.resolve({ ok: true, json: async () => [] });
@@ -150,6 +150,6 @@ describe('TaskDetailPage', () => {
     mockParams = { id: 'task-locked' };
     render(<TaskDetailPage />);
 
-    expect(await screen.findByText('You have view-only access to "Solfit"')).toBeInTheDocument();
+    expect(await screen.findByText('You have view-only access to "Acme Solar"')).toBeInTheDocument();
   });
 });

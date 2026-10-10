@@ -26,7 +26,9 @@ export function getTimdoBinaryPath(env = process.env) {
  * Leave it out to act as whoever the CLI is signed in as.
  */
 export async function runTimdoCli(subcommandArgs, binPath = getTimdoBinaryPath(), options = {}) {
-  const fullArgs = ['--json', ...subcommandArgs];
+  // "--" ends bin/timdo's global flags, so a value that looks like one (a ref or title of
+  // "--as=someone@example.com") reaches the subcommand as data and cannot switch the user
+  const fullArgs = ['--json', '--', ...subcommandArgs];
   const env = { ...process.env };
   if (options.asUser) env.TIMDO_AS = String(options.asUser);
   try {
@@ -47,10 +49,125 @@ export async function runTimdoCli(subcommandArgs, binPath = getTimdoBinaryPath()
 }
 
 /**
+ * Refs: links from a task to things outside TimDo, given as a URL or kind:id.
+ * Roles are link (default), source, reported_by and about; "reported-by" and "Reported by" are
+ * accepted too, as the API does.
+ */
+export const REF_ROLES = ['link', 'source', 'reported_by', 'about'];
+const ROLE_FLAGS = { link: '--ref', source: '--source', reported_by: '--reported-by', about: '--about' };
+const ROLE_ERROR = 'Role must be link, source, reported_by or about.';
+const REF_NEEDED = 'Each ref needs "ref": a URL or kind:id, e.g. github.issue:acme/widgets#12 or forum.post:4411.';
+
+const NO_DASH = 'Refs never start with "-": give a URL, kind:id or ref id.';
+
+/** A ref, removal or ref id must not look like a CLI flag (they come from outside text). */
+function notAFlag(value, message = NO_DASH) {
+  if (String(value).trim().startsWith('-')) throw new Error(message);
+  return value;
+}
+
+export function normaliseRefRole(role) {
+  if (role === undefined || role === null || String(role).trim() === '') return 'link';
+  const r = String(role).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!REF_ROLES.includes(r)) throw new Error(ROLE_ERROR);
+  return r;
+}
+
+/**
+ * Accept refs the way an agent is likely to send them: an array of { ref, role?, label?, kind?, url? },
+ * an array of plain strings, one string, or a JSON string of either.
+ */
+export function normaliseRefs(refs) {
+  if (refs === undefined || refs === null || refs === '') return [];
+  let list = refs;
+  if (typeof list === 'string') {
+    try {
+      const parsed = JSON.parse(list);
+      list = parsed !== null && typeof parsed === 'object' ? parsed : list;
+    } catch {
+      // Not JSON: a single URL or kind:id
+    }
+  }
+  if (!Array.isArray(list)) list = [list];
+  return list.map((item) => {
+    const r = typeof item === 'string' ? { ref: item } : item;
+    if (!r || typeof r !== 'object' || typeof r.ref !== 'string' || !r.ref.trim()) throw new Error(REF_NEEDED);
+    notAFlag(r.ref);
+    return r;
+  });
+}
+
+/**
+ * CLI flags for refs on add/update. Plain refs use --ref/--source/--reported-by/--about;
+ * refs with a label, kind or url go together as one --refs-json array.
+ */
+export function buildRefFlags(refs) {
+  const args = [];
+  const rich = [];
+  for (const r of normaliseRefs(refs)) {
+    const role = normaliseRefRole(r.role);
+    if (r.label || r.kind || r.url) {
+      rich.push({
+        ref: r.ref,
+        role,
+        ...(r.label ? { label: String(r.label) } : {}),
+        ...(r.kind ? { kind: String(r.kind) } : {}),
+        ...(r.url ? { url: String(r.url) } : {}),
+      });
+    } else {
+      args.push(ROLE_FLAGS[role], r.ref);
+    }
+  }
+  if (rich.length) args.push('--refs-json', JSON.stringify(rich));
+  return args;
+}
+
+/** --unref flags for refs to remove (URL, kind:id or ref id). */
+export function buildUnrefFlags(removeRefs) {
+  if (removeRefs === undefined || removeRefs === null || removeRefs === '') return [];
+  const list = Array.isArray(removeRefs) ? removeRefs : [removeRefs];
+  return list.flatMap((x) => {
+    if (typeof x !== 'string' || !x.trim()) throw new Error('Each entry in removeRefs is a URL, kind:id or ref id.');
+    return ['--unref', notAFlag(x)];
+  });
+}
+
+export function buildAddRefArgs({ id, ref, role, label, kind, url } = {}) {
+  if (!id) throw new Error('Task id is required.');
+  if (!ref) throw new Error(REF_NEEDED);
+  notAFlag(id, 'Task ids never start with "-".');
+  notAFlag(ref);
+  const args = ['ref', 'add', id, ref];
+  if (role !== undefined && role !== null && role !== '') args.push('--role', normaliseRefRole(role));
+  if (label) args.push('--label', notAFlag(label, 'Labels cannot start with "-".'));
+  if (kind) args.push('--kind', notAFlag(kind, 'Kinds are lowercase letters, digits and dots, e.g. acme.member.'));
+  if (url) args.push('--url', notAFlag(url, 'The url must start with http:// or https://.'));
+  return args;
+}
+
+export function buildRemoveRefArgs({ id, ref, role } = {}) {
+  if (!id) throw new Error('Task id is required.');
+  if (!ref) throw new Error('Say which ref to remove: its URL, kind:id or id.');
+  notAFlag(id, 'Task ids never start with "-".');
+  notAFlag(ref);
+  const args = ['ref', 'rm', id, ref];
+  if (role !== undefined && role !== null && role !== '') args.push('--role', normaliseRefRole(role));
+  return args;
+}
+
+export function buildFindByRefArgs({ ref, role } = {}) {
+  if (!ref) throw new Error(REF_NEEDED);
+  const args = ['find', notAFlag(ref)];
+  if (role !== undefined && role !== null && role !== '') args.push('--role', normaliseRefRole(role));
+  return args;
+}
+
+/**
  * Build CLI arguments for task listing.
+ * With ref and no status, every status is listed, so a done task carrying the ref still shows.
  */
 export function buildListTasksArgs({
-  status = 'do',
+  status,
   category,
   epic,
   goal,
@@ -67,8 +184,9 @@ export function buildListTasksArgs({
   mine,
   unassigned,
   shared,
+  ref,
 } = {}) {
-  const args = ['list', status];
+  const args = ['list', status || (ref ? 'all' : 'do')];
   if (category) args.push('-p', category);
   if (epic) args.push('-e', epic);
   if (goal) args.push('-g', goal);
@@ -85,6 +203,7 @@ export function buildListTasksArgs({
   else if (mine) args.push('--mine');
   else if (unassigned) args.push('--unassigned');
   if (shared) args.push('--shared');
+  if (ref) args.push('--ref', notAFlag(ref));
   return args;
 }
 
@@ -116,9 +235,11 @@ export function buildAddTaskArgs({
   notes,
   projectId,
   assignTo,
+  refs,
+  onDuplicate,
 } = {}) {
   if (!project) throw new Error('Task title (project) is required.');
-  const args = ['add', project];
+  const args = ['add', '--title', project];
   if (reason) args.push('-r', reason);
   if (status) args.push('-s', status);
   if (priority !== undefined) args.push('--priority', String(priority));
@@ -133,6 +254,42 @@ export function buildAddTaskArgs({
   if (notes) args.push('-n', notes);
   if (projectId) args.push('--project-id', projectId);
   if (assignTo) args.push('--assign', assignTo);
+  args.push(...buildRefFlags(refs));
+  if (onDuplicate !== undefined && onDuplicate !== null && onDuplicate !== '') {
+    args.push('--on-duplicate', normaliseOnDuplicate(onDuplicate));
+  }
+  return args;
+}
+
+/**
+ * What a create does when its source ref is already the source of a task in that workspace:
+ * error (the default: fail and name it), return (hand back that task) or report (add this
+ * report to that task). Same values as the API's onDuplicate.
+ */
+export const ON_DUPLICATE = ['error', 'return', 'report'];
+
+export function normaliseOnDuplicate(mode) {
+  const m = String(mode).trim().toLowerCase();
+  if (!ON_DUPLICATE.includes(m)) throw new Error('onDuplicate must be error, return or report.');
+  return m;
+}
+
+/**
+ * Similar open tasks for a title, before creating one. The title goes after --title so one
+ * starting with a dash is still a title.
+ */
+export function buildFindSimilarArgs({ title, project, projectId, workspace, limit, excludeId } = {}) {
+  if (!title || !String(title).trim()) throw new Error('Say what the task is called: title is required.');
+  const args = ['similar', '--title', String(title)];
+  if (project) args.push('-p', project);
+  if (projectId) args.push('--project-id', projectId);
+  if (workspace) args.push('--workspace', workspace);
+  if (limit !== undefined && limit !== null && limit !== '') {
+    const n = Number(limit);
+    if (!Number.isInteger(n) || n < 1) throw new Error('limit must be a whole number from 1 to 10.');
+    args.push('--limit', String(Math.min(n, 10)));
+  }
+  if (excludeId) args.push('--exclude', notAFlag(excludeId, 'Task ids never start with "-".'));
   return args;
 }
 
@@ -160,6 +317,8 @@ export function buildUpdateTaskArgs({
   assignTo,
   claim,
   unassign,
+  refs,
+  removeRefs,
 } = {}) {
   if (!id) throw new Error('Task ID is required for update.');
   const args = ['update', id];
@@ -186,6 +345,7 @@ export function buildUpdateTaskArgs({
   if (assignTo) args.push('--assign', assignTo);
   else if (claim) args.push('--claim');
   else if (unassign) args.push('--unassign');
+  args.push(...buildRefFlags(refs), ...buildUnrefFlags(removeRefs));
   return args;
 }
 

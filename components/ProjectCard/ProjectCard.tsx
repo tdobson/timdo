@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type MouseEvent } from 'react';
+import { useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import Link from 'next/link';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -50,6 +50,7 @@ import {
   ViewOnlyTooltip,
   workspaceLabel,
 } from '../Team';
+import { CardRefs } from './CardRefs';
 import classes from './ProjectCard.module.css';
 
 interface ProjectEditFormValues {
@@ -90,6 +91,12 @@ export function ProjectCard({
   disableCollapse = false,
 }: ProjectCardProps) {
   const [isEditing, setIsEditing] = useState(false);
+  // The Gmail thread when editing began: only an edit of that field sends it, so a form opened
+  // before a link changed the thread never puts the old one back
+  const threadAtEditStart = useRef<string | null>(null);
+  const gmailThreadInRefs = (project.refs || []).some(
+    (r) => r.kind === 'gmail.thread' && r.ref === project.gmailThreadId
+  );
   const { data: epics } = useEpics();
   const { data: goals } = useGoals();
   const { userId, isMe } = useCurrentUser();
@@ -163,6 +170,7 @@ export function ProjectCard({
       awaitUntil: project.awaitUntil || '',
       gmailThreadId: project.gmailThreadId || '',
     });
+    threadAtEditStart.current = project.gmailThreadId || null;
     setIsEditing(true);
   };
 
@@ -174,14 +182,15 @@ export function ProjectCard({
 
   const handleSaveClick = (e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
-    form.onSubmit(({ projectId, ...values }) => {
+    form.onSubmit(({ projectId, gmailThreadId, ...values }) => {
       // Empty form fields mean "none"
       const orNull = (v: string | null | undefined) => (v && v.trim() ? v : null);
+      const thread = orNull(gmailThreadId);
       const updates: ProjectUpdateInput = {
         ...values,
         epicId: orNull(values.epicId),
         goalId: orNull(values.goalId),
-        gmailThreadId: orNull(values.gmailThreadId),
+        ...(thread !== threadAtEditStart.current ? { gmailThreadId: thread } : {}),
         customer: orNull(values.customer),
         tags: orNull(values.tags),
         // Only send the project when it changed: moving is checked against both workspaces
@@ -449,6 +458,8 @@ export function ProjectCard({
           {/* NON-INTERACTIVE stars in the header */}
           <ProjectStars size={isEditing ? form.values.size : project.size} />
         </Group>
+        {/* Links to outside things: a second line only when there are some */}
+        {!isEditing && <CardRefs refs={project.refs} />}
       </Accordion.Control>
       <Accordion.Panel className={classes.panel}>
         {isEditing ? (
@@ -470,7 +481,7 @@ export function ProjectCard({
               <Grid.Col span={{ base: 12, sm: 6 }}>
                 <TextInput
                   label="Customer / Client"
-                  placeholder="e.g. Eco2Solar, Acme Solar"
+                  placeholder="e.g. Northstar Workshop, Acme Solar"
                   {...form.getInputProps('customer')}
                 />
               </Grid.Col>
@@ -596,9 +607,10 @@ export function ProjectCard({
                 <MarkdownViewer content={project.notes} />
               </div>
             )}
+            {/* The links line above already shows the task's thread, so show it here only when not */}
             <ProjectUpdatesTimeline
               projectId={project.id}
-              projectGmailThreadId={project.gmailThreadId}
+              projectGmailThreadId={gmailThreadInRefs ? null : project.gmailThreadId}
               canEdit={canEdit}
             />
           </Stack>

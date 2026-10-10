@@ -46,8 +46,8 @@ export function VoiceCommandGuide({
               Speak naturally. You can add, change, assign or delete tasks, or ask about them.
             </Text>
             <Text size="sm" c="dimmed" ta="center">
-              Try &ldquo;Add a Solfit task for Robin to check the inverter datasheet&rdquo; or
-              &ldquo;Assign the Acme Solar onboarding task to me&rdquo;.
+              Try &ldquo;Add a Northstar Workshop task for Casey Example to check the inverter
+              datasheet&rdquo; or &ldquo;Assign the Acme Solar onboarding task to me&rdquo;.
             </Text>
             <Button
               fullWidth

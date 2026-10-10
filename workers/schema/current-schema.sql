@@ -1,4 +1,5 @@
--- TimDo D1 schema snapshot, taken from production on 2026-10-08 after migrations 0000-0007.
+-- TimDo D1 schema snapshot, taken from production on 2026-10-08 after migrations 0000-0007,
+-- with 0008 (TaskRefs) and 0009 (report-note dedupe) folded in by hand.
 -- Use this to create a fresh database (the early migrations don't replay cleanly from empty).
 
 CREATE TABLE ActivityLog (
@@ -132,12 +133,26 @@ CREATE TABLE TaskRelations (
   UNIQUE(source_task_id, target_task_id, relation_type)
 );
 
+CREATE TABLE TaskRefs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES Tasks(id) ON DELETE CASCADE,
+  org_id TEXT NOT NULL REFERENCES Organisations(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'link' CHECK (role IN ('link','source','reported_by','about')),
+  kind TEXT NOT NULL, -- 'github.issue', 'gmail.thread', 'url', 'acme.member', ...
+  ref TEXT NOT NULL, -- the id inside that kind; canonical form is kind:ref
+  url TEXT,
+  label TEXT, -- display text only, never written to the activity log
+  created_by TEXT REFERENCES Users(id) ON DELETE SET NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE TaskUpdates (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES Tasks(id) ON DELETE CASCADE,
   author_id TEXT NOT NULL REFERENCES Users(id) ON DELETE CASCADE,
   note TEXT NOT NULL,
   gmail_thread_id TEXT,
+  dedupe_key TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -249,9 +264,21 @@ CREATE INDEX idx_task_relations_source ON TaskRelations(source_task_id);
 
 CREATE INDEX idx_task_relations_target ON TaskRelations(target_task_id);
 
+CREATE INDEX idx_task_refs_lookup ON TaskRefs(org_id, kind, ref);
+
+CREATE UNIQUE INDEX idx_task_refs_org_source ON TaskRefs(org_id, kind, ref) WHERE role = 'source';
+
+CREATE INDEX idx_task_refs_task ON TaskRefs(task_id);
+
+CREATE UNIQUE INDEX idx_task_refs_task_role_ref ON TaskRefs(task_id, role, kind, ref);
+
 CREATE INDEX idx_task_updates_author_id ON TaskUpdates(author_id);
 
 CREATE INDEX idx_task_updates_task_id ON TaskUpdates(task_id);
+
+CREATE UNIQUE INDEX idx_task_updates_dedupe_key
+  ON TaskUpdates(task_id, dedupe_key)
+  WHERE dedupe_key IS NOT NULL;
 
 CREATE INDEX idx_task_user_goals_goal ON TaskUserGoals(goal_id);
 

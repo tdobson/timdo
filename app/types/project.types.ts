@@ -40,6 +40,45 @@ export interface CurrentUser {
 export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'viewer';
 
 /**
+ * What a task ref is to its task: a plain link, where the task came from, an outside person
+ * or account that reported it, or the person or thing it concerns.
+ */
+export type RefRole = 'link' | 'source' | 'reported_by' | 'about';
+
+/**
+ * A pointer from a task to something outside TimDo (`RefView` in docs/collaboration.md).
+ * `canonical` is `kind:ref`, e.g. `github.issue:acme/widgets#12` or `acme.member:123456`.
+ */
+export interface RefView {
+  id: string;
+  taskId: string;
+  role: RefRole;
+  kind: string;
+  ref: string;
+  canonical: string;
+  url: string | null;
+  /** Label someone typed; may be null. Use `displayLabel` for display. */
+  label: string | null;
+  displayLabel: string;
+  createdById: string | null;
+  createdByName: string | null;
+  createdAt: string | null;
+  /** True when you can edit the task. */
+  canDelete: boolean;
+}
+
+/**
+ * A ref as sent to the API: a URL or `kind:ref` in `ref` (or a bare id plus `kind`).
+ */
+export interface RefInput {
+  ref: string;
+  kind?: string;
+  role?: RefRole;
+  label?: string;
+  url?: string;
+}
+
+/**
  * A task as the API returns it (`TaskView` in docs/collaboration.md). The historical name
  * "Project" is kept across the frontend; `category` is the name of the task's project.
  */
@@ -91,6 +130,8 @@ export interface Project {
     reason?: string | null;
     direction?: 'outgoing' | 'incoming';
   }>;
+  /** Links to things outside TimDo, Source first. Missing on older API responses. */
+  refs?: RefView[];
   isDeleted: boolean;
   createdAt: string;
   updatedAt: string;
@@ -131,6 +172,8 @@ export type ProjectCreateInput = Pick<
   tags?: string[] | string | null;
   epicId?: string | null;
   goalId?: string | null;
+  /** Links to add with the task (at most 20). A source clash fails the create with a 409. */
+  refs?: RefInput[];
 };
 
 /**

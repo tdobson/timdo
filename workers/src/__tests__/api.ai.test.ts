@@ -68,13 +68,13 @@ describe('AI routes', () => {
       status: 'do',
       priority: 6,
       size: '*',
-      projectId: 'proj-solfit',
+      projectId: 'proj-acme-solar',
     });
   });
 
   it('works without a client task list and loads tasks and people from the database', async () => {
     mockInvokeResult = {
-      summary: 'Added a task for Robin',
+      summary: 'Added a task for Jordan',
       changes: [
         {
           type: 'create',
@@ -85,8 +85,8 @@ describe('AI routes', () => {
             status: 'do',
             priority: 5,
             size: '***',
-            category: 'Solfit',
-            assignee: 'Robin',
+            category: 'Acme Solar',
+            assignee: 'Jordan',
           },
         },
       ],
@@ -100,15 +100,15 @@ describe('AI routes', () => {
     const body: any = await res.json();
     expect(body.warnings).toEqual([]);
     expect(body.proposedChanges[0]).toMatchObject({
-      projectId: 'proj-solfit',
-      orgName: 'Migrating Dragons',
+      projectId: 'proj-acme-solar',
+      orgName: 'Northstar Workshop',
       assigneeId: ROBIN,
-      assigneeName: 'Robin Fairweather',
+      assigneeName: 'Jordan Example',
     });
     expect(JSON.parse(lastInvokeArgs.projects).map((t: any) => t.project)).toEqual([
       'Check inverter datasheet',
     ]);
-    expect(lastInvokeArgs.workspaces).toContain('Robin Fairweather');
+    expect(lastInvokeArgs.workspaces).toContain('Jordan Example');
   });
 
   it('scopes the context to the signed-in user', async () => {
@@ -119,8 +119,8 @@ describe('AI routes', () => {
       env
     );
     expect(res.status).toBe(200);
-    expect(lastInvokeArgs.me).toBe('Robin Fairweather <robin@example.com>');
-    expect(lastInvokeArgs.workspaces).not.toContain('Tim Dobson" (personal');
+    expect(lastInvokeArgs.me).toBe('Jordan Example <jordan@example.test>');
+    expect(lastInvokeArgs.workspaces).not.toContain('Casey Example" (personal');
   });
 
   it('ignores a client list for projects the user cannot see', async () => {

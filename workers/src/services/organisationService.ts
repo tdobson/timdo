@@ -9,6 +9,7 @@
  * A workspace always keeps at least one owner. Anyone can leave a workspace they don't own alone.
  */
 import { and, asc, eq, isNull, like, or, sql } from 'drizzle-orm';
+import type { BatchItem } from 'drizzle-orm/batch';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
@@ -22,6 +23,7 @@ import {
 } from './accessService';
 import { logActivity } from './activityService';
 import { generateSlug } from './migrationService';
+import { assertSourcesFreeIn, updateRefOrgs } from './refService';
 
 type DB = DrizzleD1Database<typeof schema>;
 
@@ -700,6 +702,7 @@ export async function updateProjectContainer(
   }
 
   let destinationName: string | null = null;
+  let sourceReleases: Awaited<ReturnType<typeof assertSourcesFreeIn>> = [];
   if (data.orgId && data.orgId !== orgId) {
     const destRole = await getOrgRole(db, userId, data.orgId);
     if (!canEdit(destRole)) {
@@ -720,11 +723,26 @@ export async function updateProjectContainer(
         `The destination workspace already has a project called "${patch.name ?? project.name}"`
       );
     }
+    // A ref can be the source of only one task per workspace
+    sourceReleases = await assertSourcesFreeIn(db, data.orgId, { projectId });
     patch.orgId = data.orgId;
     destinationName = await orgName(db, data.orgId);
   }
 
-  await db.update(schema.projects).set(patch).where(eq(schema.projects.id, projectId));
+  const projectUpdate = db
+    .update(schema.projects)
+    .set(patch)
+    .where(eq(schema.projects.id, projectId));
+  if (patch.orgId) {
+    // Refs carry their task's workspace, so they move in the same batch as the project
+    await db.batch([
+      ...sourceReleases,
+      projectUpdate,
+      updateRefOrgs(db, patch.orgId, { projectId }),
+    ] as unknown as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+  } else {
+    await projectUpdate;
+  }
 
   // Keep the epics' denormalised category name in step with a rename
   if (patch.name) {

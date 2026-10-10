@@ -181,13 +181,17 @@ async function rawTask(db: DB, taskId: string) {
   return db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
 }
 
+/**
+ * Create through the shared /projects path, answered in the /tasks shape: the Tasks row plus
+ * `refs`, `created`, and `similar` (new task) or `reported` (onDuplicate: report).
+ */
 export async function createTask(
   db: DB,
   userId: string,
   data: TaskCreatePayload & { id?: string }
 ) {
   const id = data.id ?? uuidv4();
-  await projectService.createProject(db, userId, {
+  const view = await projectService.createProject(db, userId, {
     id,
     projectId: data.projectId,
     project: data.title,
@@ -202,8 +206,18 @@ export async function createTask(
     gmailThreadId: data.gmailThreadId,
     customer: data.customer,
     tags: data.tags,
+    refs: data.refs,
+    onDuplicate: data.onDuplicate,
   });
-  return rawTask(db, id);
+  // On a tracked source the answer is the existing task, so read back whichever task it is
+  const { created, reported, similar } = view;
+  return {
+    ...(await rawTask(db, view.id)),
+    refs: view.refs,
+    created,
+    ...(reported ? { reported } : {}),
+    ...(similar ? { similar } : {}),
+  };
 }
 
 export async function updateTask(db: DB, userId: string, taskId: string, data: TaskUpdatePayload) {

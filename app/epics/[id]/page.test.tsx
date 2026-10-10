@@ -41,7 +41,7 @@ const mockEpic = {
   userId: 'user-1',
   title: 'Build Autonomous Rover',
   description: 'Construct chassis, calibrate lidar, and deploy guidance software',
-  category: 'Solfit',
+  category: 'Acme Solar',
   goalId: 'goal-1',
   status: 'active',
   totalTasks: 2,
@@ -60,7 +60,7 @@ const mockTasks = [
     status: 'done',
     priority: 8,
     size: '**',
-    category: 'Solfit',
+    category: 'Acme Solar',
     epicId: 'epic-123',
     goalId: 'goal-1',
     isDeleted: false,
@@ -75,7 +75,7 @@ const mockTasks = [
     status: 'do',
     priority: 9,
     size: '***',
-    category: 'Solfit',
+    category: 'Acme Solar',
     epicId: 'epic-123',
     goalId: 'goal-1',
     isDeleted: false,
@@ -115,7 +115,7 @@ describe('EpicDetailPage (/epics/[id])', () => {
       if (url.includes('/goals')) {
         return Promise.resolve({
           ok: true,
-          json: async () => [{ id: 'goal-1', title: 'Expand Planetary Robotics', type: 'aim' }],
+          json: async () => [{ id: 'goal-1', title: 'Plan a community garden', type: 'aim' }],
         });
       }
       return Promise.resolve({ ok: true, json: async () => [] });
@@ -136,7 +136,7 @@ describe('EpicDetailPage (/epics/[id])', () => {
     expect(screen.getByText('50% (1/2 tasks completed)')).toBeInTheDocument();
 
     // Linked goal badge
-    expect(screen.getByText(/Expand Planetary Robotics/i)).toBeInTheDocument();
+    expect(screen.getByText(/Plan a community garden/i)).toBeInTheDocument();
 
     // Task items
     expect(screen.getByText('Solder motor driver board')).toBeInTheDocument();
@@ -161,7 +161,7 @@ describe('EpicDetailPage (/epics/[id])', () => {
         status: 'awaiting',
         priority: 7,
         size: '*',
-        category: 'Solfit',
+        category: 'Acme Solar',
         epicId: 'epic-123',
         goalId: 'goal-1',
         awaitUntil: '2026-09-15',
@@ -190,7 +190,7 @@ describe('EpicDetailPage (/epics/[id])', () => {
       if (url.includes('/goals')) {
         return Promise.resolve({
           ok: true,
-          json: async () => [{ id: 'goal-1', title: 'Expand Planetary Robotics', type: 'aim' }],
+          json: async () => [{ id: 'goal-1', title: 'Plan a community garden', type: 'aim' }],
         });
       }
       return Promise.resolve({ ok: true, json: async () => [] });
@@ -206,19 +206,19 @@ describe('EpicDetailPage (/epics/[id])', () => {
     const sharedEpic = {
       ...mockEpic,
       isShared: true,
-      orgName: 'Migrating Dragons',
+      orgName: 'Northstar Workshop',
       canEdit: true,
-      createdById: 'user-tim',
-      createdByName: 'Tim Dobson',
-      // Robin isn't the creator, so the API never sends him the goal
+      createdById: 'user-1',
+      createdByName: 'Casey Example',
+      // Jordan Example isn't the creator, so the API never sends him the goal
       goalId: null,
     };
     const sharedTasks = mockTasks.map((t) => ({
       ...t,
       isShared: true,
       canEdit: true,
-      assigneeId: 'user-tim',
-      assigneeName: 'Tim Dobson',
+      assigneeId: 'user-1',
+      assigneeName: 'Casey Example',
     }));
     fetchMock.mockImplementation((url: string) => {
       if (url.endsWith('/epics/epic-123')) {
@@ -227,7 +227,7 @@ describe('EpicDetailPage (/epics/[id])', () => {
       if (url.endsWith('/users/me')) {
         return Promise.resolve({
           ok: true,
-          json: async () => ({ id: 'user-ed', email: 'ed@example.com', name: 'Robin Fairweather' }),
+          json: async () => ({ id: 'user-2', email: 'jordan@example.com', name: 'Jordan Example' }),
         });
       }
       if (url.includes('/projects') && !url.includes('/updates')) {
@@ -236,7 +236,7 @@ describe('EpicDetailPage (/epics/[id])', () => {
       if (url.includes('/goals')) {
         return Promise.resolve({
           ok: true,
-          json: async () => [{ id: 'goal-1', title: 'Expand Planetary Robotics', type: 'aim' }],
+          json: async () => [{ id: 'goal-1', title: 'Plan a community garden', type: 'aim' }],
         });
       }
       return Promise.resolve({ ok: true, json: async () => [] });
@@ -245,10 +245,10 @@ describe('EpicDetailPage (/epics/[id])', () => {
     render(<EpicDetailPage />);
 
     expect(await screen.findByText('Build Autonomous Rover')).toBeInTheDocument();
-    expect(screen.getByText('Migrating Dragons')).toBeInTheDocument();
-    expect(screen.getByTestId('epic-attribution')).toHaveTextContent('Created by Tim Dobson');
-    expect(screen.getAllByRole('img', { name: 'Assigned to Tim Dobson' })).toHaveLength(2);
-    expect(screen.queryByText(/Expand Planetary Robotics/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Northstar Workshop')).toBeInTheDocument();
+    expect(screen.getByTestId('epic-attribution')).toHaveTextContent('Created by Casey Example');
+    expect(screen.getAllByRole('img', { name: 'Assigned to Casey Example' })).toHaveLength(2);
+    expect(screen.queryByText(/Plan a community garden/i)).not.toBeInTheDocument();
     expect(screen.getByTestId('activity-feed')).toHaveTextContent('activity for epic-123');
   });
 

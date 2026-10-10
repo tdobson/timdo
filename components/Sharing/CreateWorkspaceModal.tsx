@@ -36,7 +36,7 @@ export function CreateWorkspaceModal({
           </Text>
           <TextInput
             label="Name"
-            placeholder="e.g. Migrating Dragons"
+            placeholder="e.g. Northstar Workshop"
             value={name}
             onChange={(e) => setName(e.currentTarget.value)}
             maxLength={80}

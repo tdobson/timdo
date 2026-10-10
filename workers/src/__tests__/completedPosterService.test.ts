@@ -2,26 +2,28 @@ import { describe, expect, it } from 'vitest';
 import {
   formatOrdinalDate,
   formatOrdinalSuperscript,
+  getCompletedPosterData,
   mapAndCleanTaskCategoryAndTitle,
+  normalizeCategory,
   partitionCompletedTasks,
   sizeToNumeric,
 } from '../services/completedPosterService';
+import * as organisationService from '../services/organisationService';
+import * as projectService from '../services/projectService';
+import { createTestDb, seedCollaboration, TIM } from './helpers/testDb';
 
 describe('completedPosterService', () => {
   describe('formatOrdinalDate and formatOrdinalSuperscript', () => {
     it('formats ordinal dates correctly with 11th, 12th, 13th edge cases handled', () => {
-      // 11th, 12th, 13th
       expect(formatOrdinalDate(new Date('2025-11-11T12:00:00Z'))).toBe("11th Nov '25");
       expect(formatOrdinalDate(new Date('2025-11-12T12:00:00Z'))).toBe("12th Nov '25");
       expect(formatOrdinalDate(new Date('2025-11-13T12:00:00Z'))).toBe("13th Nov '25");
 
-      // 1st, 2nd, 3rd, 4th
       expect(formatOrdinalDate(new Date('2026-09-01T12:00:00Z'))).toBe("1st Sep '26");
       expect(formatOrdinalDate(new Date('2026-09-02T12:00:00Z'))).toBe("2nd Sep '26");
       expect(formatOrdinalDate(new Date('2026-09-03T12:00:00Z'))).toBe("3rd Sep '26");
       expect(formatOrdinalDate(new Date('2026-09-04T12:00:00Z'))).toBe("4th Sep '26");
 
-      // 21st, 22nd, 23rd, 31st
       expect(formatOrdinalDate(new Date('2026-01-21T12:00:00Z'))).toBe("21st Jan '26");
       expect(formatOrdinalDate(new Date('2026-01-22T12:00:00Z'))).toBe("22nd Jan '26");
       expect(formatOrdinalDate(new Date('2026-01-23T12:00:00Z'))).toBe("23rd Jan '26");
@@ -50,55 +52,32 @@ describe('completedPosterService', () => {
   });
 
   describe('mapAndCleanTaskCategoryAndTitle', () => {
-    it('strips legacy prefixes and normalizes categories', () => {
+    it('matches actual project categories by trimmed case and strips only matching prefixes', () => {
       expect(
-        mapAndCleanTaskCategoryAndTitle({ project: 'Solfit: Update tracker', category: null })
-      ).toEqual({
-        title: 'Update tracker',
-        category: 'Solfit',
-      });
-
-      expect(
-        mapAndCleanTaskCategoryAndTitle({ project: 'Crew: Tackle inspection', category: null })
-      ).toEqual({
-        title: 'Tackle inspection',
-        category: 'Caving Crew',
-      });
-
-      expect(
-        mapAndCleanTaskCategoryAndTitle({ project: 'MD: Fix DNS routing', category: null })
-      ).toEqual({
-        title: 'Fix DNS routing',
-        category: 'Migrating Dragons',
-      });
-
-      expect(
-        mapAndCleanTaskCategoryAndTitle({ project: 'Personal: Dentist booking', category: null })
-      ).toEqual({
-        title: 'Dentist booking',
-        category: 'Personal',
-      });
+        mapAndCleanTaskCategoryAndTitle({
+          project: '  atlas workshop : Review the plan',
+          category: ' Atlas Workshop ',
+        })
+      ).toEqual({ title: 'Review the plan', category: 'Atlas Workshop' });
 
       expect(
         mapAndCleanTaskCategoryAndTitle({
-          project: 'Already Cleaned Task',
-          category: 'Caving Crew',
+          project: 'Another project: Keep this title',
+          category: 'Atlas Workshop',
         })
-      ).toEqual({
-        title: 'Already Cleaned Task',
-        category: 'Caving Crew',
-      });
+      ).toEqual({ title: 'Another project: Keep this title', category: 'Atlas Workshop' });
+    });
 
-      // Normalizes "Crew" to "Caving Crew"
+    it('preserves arbitrary colon titles and does not infer an unknown category', () => {
       expect(
         mapAndCleanTaskCategoryAndTitle({
-          project: 'Check lights',
-          category: 'Crew',
+          project: 'Workshop: Plan the visit',
+          category: null,
         })
-      ).toEqual({
-        title: 'Check lights',
-        category: 'Caving Crew',
-      });
+      ).toEqual({ title: 'Workshop: Plan the visit', category: 'Personal' });
+
+      expect(normalizeCategory('  Field Team  ')).toBe('Field Team');
+      expect(normalizeCategory('Field')).toBe('Field');
     });
   });
 
@@ -115,12 +94,13 @@ describe('completedPosterService', () => {
   });
 
   describe('partitionCompletedTasks', () => {
-    it('partitions tasks into 3 tiers with 4 lanes each, ascending chronological order', () => {
+    it('partitions tasks into 3 tiers with 4 lanes each, in chronological order', () => {
       const mockTasks = Array.from({ length: 120 }, (_, i) => ({
         id: `task-${i}`,
         project: `Task ${i}`,
         reason: i % 2 === 0 ? `Reason ${i}` : null,
-        category: i % 4 === 3 ? 'Caving Crew' : 'Personal',
+        category: i % 4 === 3 ? 'Northstar Workshop' : 'Home',
+        orgId: i % 4 === 3 ? 'org-other' : 'org-personal',
         status: 'done' as const,
         size: '***' as const,
         statusLastChangedOn: new Date(2025, 0, i + 1).toISOString(),
@@ -129,139 +109,251 @@ describe('completedPosterService', () => {
       }));
 
       const mockEpics = {
-        'epic-1': { id: 'epic-1', title: 'GET ACME SOLAR LIVE' },
+        'epic-1': { id: 'epic-1', title: 'BUILD A BETTER WORKSHOP' },
       };
       const mockGoals = {
-        'goal-1': { id: 'goal-1', title: 'Build something big and lucrative', icon: '🚀' },
+        'goal-1': { id: 'goal-1', title: 'Build something useful', icon: '★' },
       };
+      const organisations = [
+        { id: 'org-personal', isPersonal: true },
+        { id: 'org-other', isPersonal: false },
+      ];
 
       const partitioned = partitionCompletedTasks(
         mockTasks as any,
         mockEpics as any,
-        mockGoals as any
+        mockGoals as any,
+        undefined,
+        'all',
+        organisations
       );
 
       expect(partitioned.totalCount).toBe(120);
       expect(partitioned.tiers).toHaveLength(3);
-
       for (const tier of partitioned.tiers) {
         expect(tier.columns).toHaveLength(4);
       }
 
-      // Column 4 should only have Work/Ventures/Caving Crew items
-      for (const tier of partitioned.tiers) {
-        for (const item of tier.columns[3]) {
-          expect(['Solfit', 'Migrating Dragons', 'Xebit', 'Mavala', 'Caving Crew']).toContain(
-            item.category
-          );
+      const idsByColumn = partitioned.tiers.map((tier) =>
+        tier.columns.map((column) => column.map((item) => Number(item.id.slice(5))))
+      );
+      for (const tier of idsByColumn) {
+        for (const i of tier[3]) {
+          expect(i % 4).toBe(3);
         }
-      }
-
-      // Columns 0, 1, 2 should only have Personal tasks
-      for (const tier of partitioned.tiers) {
         for (let colIdx = 0; colIdx < 3; colIdx++) {
-          for (const item of tier.columns[colIdx]) {
-            expect(item.category).toBe('Personal');
+          for (const i of tier[colIdx]) {
+            expect(i % 4).not.toBe(3);
           }
         }
       }
 
-      // Linked epics and goals should be resolved
       const itemWithEpic = partitioned.tiers[0].columns[0].find((it) => it.id === 'task-0');
-      expect(itemWithEpic?.epicTitle).toBe('GET ACME SOLAR LIVE');
-      expect(itemWithEpic?.goalTitle).toBe('Build something big and lucrative');
-      expect(itemWithEpic?.goalIcon).toBe('🚀');
+      expect(itemWithEpic?.epicTitle).toBe('BUILD A BETTER WORKSHOP');
+      expect(itemWithEpic?.goalTitle).toBe('Build something useful');
+      expect(itemWithEpic?.goalIcon).toBe('★');
     });
 
-    it('orders Column 4 work tasks by specified category priority', () => {
-      const mockTasks = [
+    it('groups by personal metadata even when a non-personal workspace has one member', () => {
+      const tasks = [
         {
-          id: 'task-caving',
-          project: 'Rig cave',
-          category: 'Caving Crew',
-          status: 'done' as const,
-          size: '**' as const,
+          id: 'personal-custom-category',
+          project: 'Plan a trip',
+          category: 'Home Planning',
+          orgId: 'org-personal',
+          size: '*',
           statusLastChangedOn: '2025-01-01T00:00:00Z',
         },
         {
-          id: 'task-solfit',
-          project: 'Solfit onboarding',
-          category: 'Solfit',
-          status: 'done' as const,
-          size: '***' as const,
+          id: 'personal-project-called-personal',
+          project: 'Review the plan',
+          category: 'Personal',
+          orgId: 'org-personal',
+          size: '*',
           statusLastChangedOn: '2025-01-02T00:00:00Z',
         },
         {
-          id: 'task-md',
-          project: 'Migrating dragons cloud',
-          category: 'Migrating Dragons',
-          status: 'done' as const,
-          size: '*' as const,
+          id: 'shared-workspace-task',
+          project: 'Prepare a launch',
+          category: 'Acme Solar',
+          orgId: 'org-shared',
+          size: '*',
           statusLastChangedOn: '2025-01-03T00:00:00Z',
         },
+        {
+          id: 'single-member-other-workspace-task',
+          project: 'Review records',
+          category: 'Personal',
+          orgId: 'org-single-member',
+          size: '*',
+          statusLastChangedOn: '2025-01-04T00:00:00Z',
+        },
+      ];
+      const organisations = [
+        { id: 'org-personal', isPersonal: true, memberCount: 1 },
+        { id: 'org-shared', isPersonal: false, memberCount: 2 },
+        { id: 'org-single-member', isPersonal: false, memberCount: 1 },
       ];
 
-      const partitioned = partitionCompletedTasks(mockTasks as any, {}, {});
-      // In Col 4 across tiers, overall order should be Solfit, Migrating Dragons, Caving Crew
-      const col4ItemsAllTiers = partitioned.tiers.flatMap((t) => t.columns[3]);
-      expect(col4ItemsAllTiers.map((it) => it.id)).toEqual([
-        'task-solfit',
-        'task-md',
-        'task-caving',
+      const partitioned = partitionCompletedTasks(
+        tasks as any,
+        {},
+        {},
+        undefined,
+        'all',
+        organisations
+      );
+      const personalColumnIds = partitioned.tiers.flatMap((tier) =>
+        tier.columns.slice(0, 3).flatMap((column) => column.map((item) => item.id))
+      );
+      const otherWorkspaceIds = partitioned.tiers.flatMap((tier) =>
+        tier.columns[3].map((item) => item.id)
+      );
+
+      expect(personalColumnIds.sort()).toEqual([
+        'personal-custom-category',
+        'personal-project-called-personal',
+      ]);
+      expect(otherWorkspaceIds.sort()).toEqual([
+        'shared-workspace-task',
+        'single-member-other-workspace-task',
       ]);
     });
 
-    it('filters completed tasks by selected categories', () => {
-      const mockTasks = [
+    it('orders other workspace tasks by actual category, then completion date', () => {
+      const tasks = [
         {
-          id: 'task-solfit',
-          project: 'Solfit onboarding',
-          category: 'Solfit',
-          status: 'done' as const,
-          size: '***' as const,
+          id: 'northstar',
+          project: 'Workshop maintenance',
+          category: 'Northstar Workshop',
+          orgId: 'org-other',
+          size: '**',
           statusLastChangedOn: '2025-01-01T00:00:00Z',
         },
         {
-          id: 'task-personal',
-          project: 'Dentist appointment',
-          category: 'Personal',
-          status: 'done' as const,
-          size: '*' as const,
+          id: 'acme',
+          project: 'Solar review',
+          category: 'Acme Solar',
+          orgId: 'org-other',
+          size: '***',
+          statusLastChangedOn: '2025-01-03T00:00:00Z',
+        },
+        {
+          id: 'atlas',
+          project: 'Map update',
+          category: 'Atlas Mapping',
+          orgId: 'org-other',
+          size: '*',
+          statusLastChangedOn: '2025-01-02T00:00:00Z',
+        },
+      ];
+      const partitioned = partitionCompletedTasks(
+        tasks as any,
+        {},
+        {},
+        undefined,
+        'all',
+        [{ id: 'org-other', isPersonal: false }]
+      );
+
+      expect(partitioned.tiers.flatMap((tier) => tier.columns[3].map((item) => item.id))).toEqual([
+        'acme',
+        'atlas',
+        'northstar',
+      ]);
+    });
+
+    it('filters completed tasks by actual category names, ignoring surrounding case and spaces', () => {
+      const tasks = [
+        {
+          id: 'acme',
+          project: 'Prepare launch',
+          category: 'Acme Solar',
+          size: '***',
+          statusLastChangedOn: '2025-01-01T00:00:00Z',
+        },
+        {
+          id: 'personal',
+          project: 'Book an appointment',
+          category: 'Home',
+          size: '*',
           statusLastChangedOn: '2025-01-02T00:00:00Z',
         },
         {
-          id: 'task-md',
-          project: 'Cloud migration',
-          category: 'Migrating Dragons',
-          status: 'done' as const,
-          size: '**' as const,
+          id: 'northstar',
+          project: 'Review workshop',
+          category: 'Northstar Workshop',
+          size: '**',
           statusLastChangedOn: '2025-01-03T00:00:00Z',
         },
       ];
+      const partitioned = partitionCompletedTasks(tasks as any, {}, {}, ['  aCMe solar  '], 'all');
+      const allItems = partitioned.tiers.flatMap((tier) => tier.columns.flat());
 
-      const partitioned = partitionCompletedTasks(mockTasks as any, {}, {}, ['Solfit']);
       expect(partitioned.totalCount).toBe(1);
-      const allItems = partitioned.tiers.flatMap((t) => t.columns.flat());
-      expect(allItems).toHaveLength(1);
-      expect(allItems[0].id).toBe('task-solfit');
-      expect(allItems[0].category).toBe('Solfit');
+      expect(allItems.map((item) => item.id)).toEqual(['acme']);
+      expect(allItems[0].category).toBe('Acme Solar');
+    });
 
-      // Filtering with "Crew" should match "Caving Crew" tasks
-      const cavingTasks = [
-        {
-          id: 'task-caving-1',
-          project: 'Rig cave',
-          category: 'Crew',
-          status: 'done' as const,
-          size: '**' as const,
-          statusLastChangedOn: '2025-01-01T00:00:00Z',
-        },
+    it('uses a neutral personal grouping when pure helper inputs have no workspace metadata', () => {
+      const partitioned = partitionCompletedTasks(
+        [
+          {
+            id: 'metadata-missing',
+            project: 'Colon: stays in title',
+            category: 'Custom Project',
+            size: '*',
+            statusLastChangedOn: '2025-01-01T00:00:00Z',
+          },
+        ] as any,
+        {},
+        {},
+        undefined,
+        'all'
+      );
+
+      expect(partitioned.tiers.flatMap((tier) => tier.columns[3])).toEqual([]);
+    });
+  });
+
+  describe('getCompletedPosterData', () => {
+    it('passes scoped workspace metadata into poster grouping at runtime', async () => {
+      const { db, raw } = createTestDb();
+      seedCollaboration(raw);
+      const oneMemberOrganisation = await organisationService.createOrganisation(
+        db,
+        TIM,
+        'One Member Workshop'
+      );
+      await organisationService.addProject(db, TIM, oneMemberOrganisation.id, 'Custom Project');
+
+      const tasks = [
+        { id: '00000000-0000-4000-8000-000000000101', project: 'Personal task', category: 'Personal' },
+        { id: '00000000-0000-4000-8000-000000000102', project: 'Shared task', category: 'Acme Solar' },
+        { id: '00000000-0000-4000-8000-000000000103', project: 'One member task', category: 'Custom Project' },
       ];
-      const crewPartitioned = partitionCompletedTasks(cavingTasks as any, {}, {}, ['Crew']);
-      expect(crewPartitioned.totalCount).toBe(1);
-      const crewItems = crewPartitioned.tiers.flatMap((t) => t.columns.flat());
-      expect(crewItems).toHaveLength(1);
-      expect(crewItems[0].category).toBe('Caving Crew');
+      for (const task of tasks) {
+        await projectService.createProject(db, TIM, {
+          ...task,
+          status: 'done',
+          priority: 5,
+          size: '***',
+        });
+      }
+
+      const poster = await getCompletedPosterData(db, TIM, undefined, 'all');
+      const personalIds = poster.tiers.flatMap((tier) =>
+        tier.columns.slice(0, 3).flatMap((column) => column.map((item) => item.id))
+      );
+      const otherWorkspaceIds = poster.tiers.flatMap((tier) =>
+        tier.columns[3].map((item) => item.id)
+      );
+
+      expect(personalIds).toEqual(['00000000-0000-4000-8000-000000000101']);
+      expect(otherWorkspaceIds.sort()).toEqual([
+        '00000000-0000-4000-8000-000000000102',
+        '00000000-0000-4000-8000-000000000103',
+      ]);
     });
   });
 });

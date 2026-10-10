@@ -22,4 +22,11 @@ if [[ ! -d "$PERSIST" || "${RESET:-}" == "1" ]]; then
   echo "Built a fresh local database with demo data in $PERSIST"
 fi
 
+LOCAL_DB=$(find "$PERSIST" -name '*.sqlite' -print -quit)
+if [[ -z "$LOCAL_DB" ]]; then
+  echo "Could not find the local D1 database under $PERSIST" >&2
+  exit 1
+fi
+node --experimental-sqlite scripts/upgrade-local-dedupe.mjs "$LOCAL_DB"
+
 exec npx wrangler dev --local --persist-to "$PERSIST" --port "$PORT"

@@ -8,18 +8,18 @@ import { continueSentence, initials, parseTimestamp, relativeTime } from './acti
 configure({ asyncUtilTimeout: 10000 });
 
 const API = 'https://worker.example.com/api/v2';
-const ME = { id: 'user-tim', email: 'tim@example.com', name: 'Tim Dobson' };
+const ME = { id: 'user-1', email: 'casey@example.com', name: 'Casey Example' };
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
 function entry(partial: Partial<ActivityEntry>): ActivityEntry {
   return {
     id: Math.random().toString(36).slice(2),
-    actorId: 'user-ed',
-    actorName: 'Robin Fairweather',
-    orgId: 'org-md',
-    projectId: 'proj-md',
-    projectName: 'Migrating Dragons',
+    actorId: 'user-2',
+    actorName: 'Jordan Example',
+    orgId: 'org-1',
+    projectId: 'proj-1',
+    projectName: 'Acme Solar',
     entityType: 'task',
     entityId: 'task-1',
     taskId: 'task-1',
@@ -55,7 +55,7 @@ beforeEach(() => {
         : respond(activity);
     }
     if (url.startsWith(`${API}/organisations`)) {
-      return respond([{ id: 'org-md', name: 'Migrating Dragons', isPersonal: false }]);
+      return respond([{ id: 'org-1', name: 'Northstar Workshop', isPersonal: false }]);
     }
     return respond([]);
   });
@@ -69,7 +69,7 @@ describe('ActivityFeed', () => {
       entry({
         id: 'a2',
         actorId: ME.id,
-        actorName: 'Tim Dobson',
+        actorName: 'Casey Example',
         summary: 'Created "Order panels"',
       }),
     ];
@@ -77,10 +77,10 @@ describe('ActivityFeed', () => {
 
     const items = await screen.findAllByTestId('activity-item');
     expect(items).toHaveLength(2);
-    expect(within(items[0]).getByText('Robin Fairweather')).toBeInTheDocument();
-    expect(items[0]).toHaveTextContent('Robin Fairweather moved “Fix inverter” from Do to Done');
+    expect(within(items[0]).getByText('Jordan Example')).toBeInTheDocument();
+    expect(items[0]).toHaveTextContent('Jordan Example moved “Fix inverter” from Do to Done');
     await waitFor(() => expect(within(items[1]).getByText('You')).toBeInTheDocument());
-    expect(within(items[1]).queryByText('Tim Dobson')).not.toBeInTheDocument();
+    expect(within(items[1]).queryByText('Casey Example')).not.toBeInTheDocument();
     expect(items[1]).toHaveTextContent('You created “Order panels”');
   });
 
@@ -90,7 +90,7 @@ describe('ActivityFeed', () => {
 
     const link = await screen.findByRole('link', { name: /Fix inverter/ });
     expect(link).toHaveAttribute('href', '/tasks/task-42');
-    expect(screen.getByText('Migrating Dragons')).toBeInTheDocument();
+    expect(screen.getByText('Acme Solar')).toBeInTheDocument();
   });
 
   it('links epic events to the epic page', async () => {
@@ -155,17 +155,17 @@ describe('ActivityFeed', () => {
     expect(activityCall?.[1].headers.Authorization).toBe('Bearer test-token');
     // Already on this task: no self-link and no project badge
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
-    expect(screen.queryByText('Migrating Dragons')).not.toBeInTheDocument();
+    expect(screen.queryByText('Acme Solar')).not.toBeInTheDocument();
   });
 });
 
 describe('activityFormat', () => {
   it('formats initials, sentences and times', () => {
-    expect(initials('Robin Fairweather')).toBe('RF');
-    expect(initials('robin@example.com')).toBe('RO');
+    expect(initials('Jordan Example')).toBe('JE');
+    expect(initials('jordan@example.com')).toBe('JO');
     expect(initials('')).toBe('?');
     expect(continueSentence('Moved "X" to Done')).toBe('moved "X" to Done');
-    expect(continueSentence('UK Solar was renamed')).toBe('UK Solar was renamed');
+    expect(continueSentence('ACME Solar was renamed')).toBe('ACME Solar was renamed');
     const now = new Date('2026-10-08T12:00:00Z');
     expect(relativeTime(new Date('2026-10-08T11:59:50Z'), now)).toBe('just now');
     expect(relativeTime(new Date('2026-10-08T10:00:00Z'), now)).toBe('2h ago');

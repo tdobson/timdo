@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   IconAlertTriangle,
+  IconCopy,
   IconFolder,
   IconHierarchy2,
   IconMicrophone,
@@ -13,22 +14,27 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import {
   Alert,
+  Anchor,
   Avatar,
   Badge,
   Box,
   Button,
   Card,
+  Checkbox,
   Container,
   Grid,
   Group,
   List,
   Loader,
   Progress,
+  Radio,
   Stack,
+  Switch,
   Text,
   Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { RefKindIcon } from '../../../components/TaskDetail/refDisplay';
 import {
   clearVoiceReview,
   loadVoiceReview,
@@ -37,8 +43,19 @@ import {
   type VoiceDraft,
   type VoiceProposal,
 } from '../../../components/VoiceCommand/voiceTypes';
-import type { Project } from '../../types/project.types';
-import { applyVoiceChange, newApplySession, VoiceApplyError } from './applyVoiceChange';
+import { ROLE_LABELS } from '../../../workers/src/lib/refs';
+import type { Project, RefRole } from '../../types/project.types';
+import {
+  applyAsNote,
+  applyVoiceChange,
+  newApplySession,
+  noteTextFor,
+  refChangesOf,
+  similarOf,
+  VoiceApplyError,
+  type VoiceProposalWithRefs,
+  type VoiceSimilarTask,
+} from './applyVoiceChange';
 
 const ACTION: Record<VoiceChangeType, { label: string; color: string }> = {
   create: { label: 'New task', color: 'green' },
@@ -138,7 +155,36 @@ function assigneeLine(change: VoiceProposal, meId?: string | null): string | nul
   return change.assigneeName ? `Stays with ${change.assigneeName}` : 'Unassigned';
 }
 
-function ChangeContext({ change, meId }: { change: VoiceProposal; meId?: string | null }) {
+/** A visible short ID keeps duplicate candidates distinguishable even if their titles match. */
+const titleWithProject = (task: VoiceSimilarTask) =>
+  `#${task.shortId ?? task.id.slice(0, 8)} ${task.title}${task.projectName ? ` (${task.projectName})` : ''}`;
+
+function ChangeContext({
+  change,
+  meId,
+  noteOn,
+}: {
+  change: VoiceProposal;
+  meId?: string | null;
+  /** Set when this new task is being added as a note to an existing one instead */
+  noteOn?: VoiceSimilarTask | null;
+}) {
+  if (noteOn) {
+    const where = [noteOn.orgName, noteOn.projectName].filter(Boolean).join(' / ');
+    return (
+      <Group gap="sm" wrap="wrap">
+        <Badge color="cyan" variant="filled" size="lg">
+          Add a note
+        </Badge>
+        {where && (
+          <Group gap={4} wrap="nowrap">
+            <IconFolder size={16} stroke={1.5} />
+            <Text size="sm">{where}</Text>
+          </Group>
+        )}
+      </Group>
+    );
+  }
   const action = ACTION[change.type] ?? { label: change.type, color: 'gray' };
   const where =
     change.type === 'createProject'
@@ -198,7 +244,31 @@ function ChangeContext({ change, meId }: { change: VoiceProposal; meId?: string 
   );
 }
 
-function ChangeBody({ change }: { change: VoiceProposal }) {
+function ChangeBody({
+  change,
+  noteOn,
+}: {
+  change: VoiceProposal;
+  noteOn?: VoiceSimilarTask | null;
+}) {
+  if (noteOn) {
+    return (
+      <Card withBorder p="md" data-testid="voice-note-preview">
+        <Stack gap={6}>
+          <Text size="sm" fw={700}>
+            Note on &ldquo;{noteOn.title}&rdquo;
+          </Text>
+          <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+            {noteTextFor(change)}
+          </Text>
+          <Text size="xs" c="dimmed">
+            No new task is made. The note is signed with your name.
+          </Text>
+        </Stack>
+      </Card>
+    );
+  }
+
   if (change.type === 'createProject' || change.type === 'createEpic') {
     return (
       <Card withBorder p="md">
@@ -274,6 +344,265 @@ function ChangeBody({ change }: { change: VoiceProposal }) {
   );
 }
 
+/**
+ * "Looks like an existing task: Broken offer page (Acme Solar)", with a switch (off by default) to
+ * add this as a note there instead. With several matches, the switch lets you pick which one.
+ */
+function DuplicateHint({
+  change,
+  noteOn,
+  onChange,
+  disabled,
+}: {
+  change: VoiceProposal;
+  noteOn: string | null;
+  onChange: (taskId: string | null) => void;
+  disabled?: boolean;
+}) {
+  const similar = similarOf(change);
+  if (similar.length === 0) {
+    return null;
+  }
+  const [best, ...others] = similar;
+  const editableSimilar = similar.filter((task) => task.canEdit !== false);
+  const defaultNoteTask = editableSimilar[0] ?? null;
+  const open = (task: VoiceSimilarTask) => {
+    const shortId = task.shortId ?? task.id.slice(0, 8);
+    return (
+      // A new tab, so this review keeps its place
+      <Anchor
+        href={`/tasks/${task.id}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        size="sm"
+        fw={600}
+        aria-label={`Open ${titleWithProject(task)}`}
+      >
+        #{shortId} {task.title}
+      </Anchor>
+    );
+  };
+  return (
+    <Alert
+      color="blue"
+      variant="light"
+      icon={<IconCopy size={18} />}
+      p="xs"
+      data-testid="voice-duplicate-hint"
+    >
+      <Stack gap="xs">
+        <Stack gap={2}>
+          <Text size="sm">
+            Looks like an existing task: {open(best)}
+            {best.projectName ? ` (${best.projectName})` : ''}
+          </Text>
+          {best.assigneeName && (
+            <Text size="xs" c="dimmed">
+              Assigned to {best.assigneeName}
+            </Text>
+          )}
+          {others.length > 0 && (
+            <Text size="xs" c="dimmed">
+              Also similar:{' '}
+              {others.map((task, i) => (
+                <span key={task.id}>
+                  {i > 0 ? ', ' : ''}
+                  {open(task)}
+                  {task.projectName ? ` (${task.projectName})` : ''}
+                  {task.canEdit === false ? ' (view only)' : ''}
+                </span>
+              ))}
+            </Text>
+          )}
+          {best.canEdit === false && editableSimilar.length > 0 && (
+            <Text size="xs" c="dimmed">
+              The closest match is view only. You can add a note to an editable match instead.
+            </Text>
+          )}
+          {editableSimilar.length === 0 && (
+            <Text size="xs" c="dimmed">
+              You can view this task, but you cannot add a note here.
+            </Text>
+          )}
+        </Stack>
+        <Switch
+          label="Add as a note there instead"
+          checked={noteOn !== null}
+          onChange={(event) =>
+            onChange(event.currentTarget.checked ? (defaultNoteTask?.id ?? null) : null)
+          }
+          disabled={disabled || editableSimilar.length === 0}
+        />
+        {noteOn !== null &&
+          editableSimilar.length > 0 &&
+          (editableSimilar.length > 1 || best.canEdit === false) && (
+            <Radio.Group
+              label="Add the note to"
+              size="sm"
+              value={noteOn}
+              onChange={(value) => onChange(value)}
+            >
+              <Stack gap={4} mt={4}>
+                {editableSimilar.map((task) => (
+                  <Radio
+                    key={task.id}
+                    value={task.id}
+                    label={titleWithProject(task)}
+                    disabled={disabled}
+                  />
+                ))}
+              </Stack>
+            </Radio.Group>
+          )}
+      </Stack>
+    </Alert>
+  );
+}
+
+/** What a removed link was to the task, as the activity log words it */
+const REMOVED_ROLE: Record<RefRole, string> = {
+  link: 'link',
+  source: 'source',
+  reported_by: 'reporter',
+  about: 'about',
+};
+
+const refKey = (sign: '+' | '-', ref: string, role: RefRole | null) =>
+  `${sign}${role ?? ''} ${ref}`;
+
+function RefLine({
+  sign,
+  text,
+  canonical,
+  url,
+  label,
+  checked,
+  onToggle,
+  disabled,
+}: {
+  sign: '+' | '-';
+  text: string;
+  canonical: string;
+  url?: string | null;
+  label?: string;
+  checked: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
+  const kind = canonical.slice(0, Math.max(0, canonical.indexOf(':')));
+  return (
+    <Group gap="xs" wrap="nowrap" align="center">
+      <Checkbox
+        size="xs"
+        checked={checked}
+        onChange={onToggle}
+        disabled={disabled}
+        // A fixed name: the checked state already says whether the change is included
+        aria-label={`Include: ${text} ${canonical}`}
+      />
+      <Text size="sm" c={sign === '+' ? 'green' : 'red'} fw={700} w={12} ta="center">
+        {sign}
+      </Text>
+      <RefKindIcon kind={kind} />
+      <Text size="sm" td={checked ? undefined : 'line-through'} c={checked ? undefined : 'dimmed'}>
+        {text}{' '}
+        {url ? (
+          <Anchor href={url} target="_blank" rel="noopener noreferrer" size="sm">
+            {canonical}
+          </Anchor>
+        ) : (
+          canonical
+        )}
+        {label && label !== canonical && (
+          <Text span size="xs" c="dimmed">
+            {' '}
+            ({label})
+          </Text>
+        )}
+      </Text>
+    </Group>
+  );
+}
+
+/** "+ Link github.issue:acme/widgets#12", "- Remove reporter acme.member:123456" */
+function RefChanges({
+  change,
+  leftOut,
+  onToggle,
+  disabled,
+  noteOn,
+}: {
+  change: VoiceProposal;
+  leftOut: Set<string>;
+  onToggle: (key: string) => void;
+  disabled?: boolean;
+  noteOn?: VoiceSimilarTask | null;
+}) {
+  const { add, remove } = refChangesOf(change);
+  if (add.length === 0 && remove.length === 0) {
+    return null;
+  }
+  return (
+    <Stack gap={4} data-testid="voice-ref-changes">
+      <Text fw={600} size="sm" c="dimmed">
+        Links
+      </Text>
+      {remove.map((r) => {
+        const key = refKey('-', r.ref, r.role);
+        return (
+          <RefLine
+            key={key}
+            sign="-"
+            text={`Remove${r.role ? ` ${REMOVED_ROLE[r.role]}` : ''}`}
+            canonical={r.ref}
+            checked={!leftOut.has(key)}
+            onToggle={() => onToggle(key)}
+            disabled={disabled}
+          />
+        );
+      })}
+      {add.map((r) => {
+        const key = refKey('+', r.ref, r.role);
+        return (
+          <RefLine
+            key={key}
+            sign="+"
+            text={ROLE_LABELS[r.role] ?? r.role}
+            canonical={r.ref}
+            url={r.url}
+            label={r.label}
+            checked={!leftOut.has(key)}
+            onToggle={() => onToggle(key)}
+            disabled={disabled}
+          />
+        );
+      })}
+      <Text size="xs" c="dimmed">
+        Untick any link you don&apos;t want.{' '}
+        {noteOn
+          ? `Links are added to "${noteOn.title}" after the note.`
+          : change.type === 'create'
+            ? 'Selected links are saved with the new task.'
+            : 'Links are saved after the task change.'}
+      </Text>
+    </Stack>
+  );
+}
+
+/** The change without the links the user unticked. */
+function withoutLeftOut(change: VoiceProposal, leftOut: Set<string>): VoiceProposal {
+  if (leftOut.size === 0) {
+    return change;
+  }
+  const { add, remove } = refChangesOf(change);
+  const trimmed: VoiceProposalWithRefs = {
+    ...change,
+    refs: add.filter((r) => !leftOut.has(refKey('+', r.ref, r.role))),
+    removeRefs: remove.filter((r) => !leftOut.has(refKey('-', r.ref, r.role))),
+  };
+  return trimmed;
+}
+
 /** Older links carried the changes in the URL; keep reading them. */
 function readFromUrl(param: string | null): VoiceCommandResult | null {
   if (!param) {
@@ -296,6 +625,11 @@ function ReviewChangesContent() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [lastErrorTask, setLastErrorTask] = useState<VoiceSimilarTask | null>(null);
+  // Links the user unticked on the current change
+  const [leftOut, setLeftOut] = useState<Set<string>>(() => new Set());
+  // The existing task to add the current new task to as a note, when the switch is on
+  const [noteOnId, setNoteOnId] = useState<string | null>(null);
   const counts = useRef({ applied: 0, skipped: 0 });
   const applySession = useRef(newApplySession());
   const finished = useRef(false);
@@ -326,6 +660,9 @@ function ReviewChangesContent() {
   const isLastChange = currentIndex === changes.length - 1;
   const progressPercent = changes.length ? ((currentIndex + 1) / changes.length) * 100 : 0;
   const meId = result?.me?.id ?? null;
+  const noteOn = currentChange
+    ? (similarOf(currentChange).find((task) => task.id === noteOnId) ?? null)
+    : null;
 
   // Warnings that belong to no card: changes that were left out
   const generalWarnings = useMemo(() => {
@@ -351,8 +688,22 @@ function ReviewChangesContent() {
     router.push('/board');
   };
 
+  const toggleRef = (key: string) =>
+    setLeftOut((current) => {
+      const updated = new Set(current);
+      if (updated.has(key)) {
+        updated.delete(key);
+      } else {
+        updated.add(key);
+      }
+      return updated;
+    });
+
   const next = () => {
     setLastError(null);
+    setLastErrorTask(null);
+    setLeftOut(new Set());
+    setNoteOnId(null);
     if (isLastChange) {
       finish();
     } else {
@@ -374,27 +725,41 @@ function ReviewChangesContent() {
     }
     setIsProcessing(true);
     setLastError(null);
+    setLastErrorTask(null);
     try {
-      const outcome = await applyVoiceChange(
-        currentChange,
-        session.accessToken,
-        applySession.current,
-        meId
-      );
+      const change = withoutLeftOut(currentChange, leftOut);
+      const outcome = noteOn
+        ? await applyAsNote(change, noteOn, session.accessToken)
+        : await applyVoiceChange(change, session.accessToken, applySession.current, meId);
       counts.current.applied += 1;
       notifications.show({ message: outcome.message, color: 'green' });
+      if (outcome.problems.length > 0) {
+        // The task change stands; only these links need doing by hand
+        notifications.show({
+          title:
+            outcome.problems.length === 1
+              ? "One link wasn't changed"
+              : `${outcome.problems.length} links weren't changed`,
+          message: outcome.problems.join(' '),
+          color: 'yellow',
+          autoClose: false,
+        });
+      }
       next();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Couldn't apply this change.";
       const status = error instanceof VoiceApplyError ? error.status : 0;
       setLastError(message);
+      setLastErrorTask(error instanceof VoiceApplyError ? error.existingTask : null);
       notifications.show({
         title:
-          status === 403
-            ? 'Not allowed'
-            : status === 404
-              ? 'Not found'
-              : "Couldn't apply this change",
+          status === 409
+            ? 'Source already in use'
+            : status === 403
+              ? 'Not allowed'
+              : status === 404
+                ? 'Not found'
+                : "Couldn't apply this change",
         message,
         color: 'red',
       });
@@ -468,7 +833,7 @@ function ReviewChangesContent() {
 
         <Card withBorder p="lg" radius="md">
           <Stack gap="md">
-            <ChangeContext change={currentChange} meId={meId} />
+            <ChangeContext change={currentChange} meId={meId} noteOn={noteOn} />
 
             {(currentChange.warnings?.length ?? 0) > 0 && (
               <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={18} />} p="xs">
@@ -482,13 +847,51 @@ function ReviewChangesContent() {
               </Alert>
             )}
 
-            <ChangeBody change={currentChange} />
+            <DuplicateHint
+              change={currentChange}
+              noteOn={noteOn?.id ?? null}
+              onChange={setNoteOnId}
+              disabled={isProcessing}
+            />
 
-            {lastError && (
-              <Text size="sm" c="red">
-                {lastError}
-              </Text>
-            )}
+            <ChangeBody change={currentChange} noteOn={noteOn} />
+
+            <RefChanges
+              change={currentChange}
+              leftOut={leftOut}
+              onToggle={toggleRef}
+              disabled={isProcessing}
+              noteOn={noteOn}
+            />
+
+            {lastError &&
+              (lastErrorTask ? (
+                <Alert color="red" variant="light" title="No new task was created.">
+                  <Stack gap="xs">
+                    <Text size="sm">{lastError}</Text>
+                    <Text size="sm">
+                      Existing task:{' '}
+                      <Anchor
+                        href={`/tasks/${lastErrorTask.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`Open ${titleWithProject(lastErrorTask)}`}
+                      >
+                        #{lastErrorTask.shortId ?? lastErrorTask.id.slice(0, 8)}{' '}
+                        {lastErrorTask.title}
+                      </Anchor>
+                      {lastErrorTask.projectName ? ` (${lastErrorTask.projectName})` : ''}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      Untick the source link and try again, or open the existing task.
+                    </Text>
+                  </Stack>
+                </Alert>
+              ) : (
+                <Text size="sm" c="red">
+                  {lastError}
+                </Text>
+              ))}
           </Stack>
         </Card>
 

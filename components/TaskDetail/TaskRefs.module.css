@@ -1,0 +1,25 @@
+.chip {
+  /* One ref: icon, label, copy and remove, in a quiet pill */
+  display: inline-flex;
+  max-width: 100%;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-xl);
+  background-color: var(--mantine-color-default);
+}
+
+.pending {
+  opacity: 0.6;
+}
+
+.roleLabel {
+  flex-shrink: 0;
+  width: 88px;
+  padding-top: 5px;
+}
+
+.addForm {
+  padding: var(--mantine-spacing-sm);
+  border: 1px dashed var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+}

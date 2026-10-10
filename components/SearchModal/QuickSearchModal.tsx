@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { IconSearch, IconUsers } from '@tabler/icons-react';
+import { IconLink, IconSearch, IconUsers } from '@tabler/icons-react';
 import {
   Badge,
   Box,
@@ -11,13 +11,26 @@ import {
   Stack,
   Text,
   TextInput,
+  Tooltip,
   UnstyledButton,
 } from '@mantine/core';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useProjects } from '../../app/hooks/useProjectQueries';
 import { useTaskSearch } from '../../app/hooks/useSearchQueries';
 import type { Project } from '../../app/types/project.types';
+import { parseRef } from '../../workers/src/lib/refs';
+import { RefKindIcon } from '../TaskDetail/refDisplay';
 import { TaskAssigneeAvatar, workspaceLabel } from '../Team';
+
+/** What a pasted link or kind:id was read as, or null for ordinary words. */
+function readAsRef(query: string) {
+  const text = query.trim();
+  if (text.length < 2 || /\s/.test(text)) {
+    return null;
+  }
+  const parsed = parseRef(text);
+  return parsed.ok ? parsed.value : null;
+}
 
 interface QuickSearchModalProps {
   opened: boolean;
@@ -27,7 +40,10 @@ interface QuickSearchModalProps {
 export function QuickSearchModal({ opened, onClose }: QuickSearchModalProps) {
   const [query, setQuery] = useState('');
   const [includeDone, setIncludeDone] = useState(false);
-  const { data: results, isLoading, isError, error } = useTaskSearch(query, includeDone);
+  const { data, isLoading, isError, error } = useTaskSearch(query, includeDone);
+  // Results that carry the pasted link exactly come first, flagged by the API
+  const results = data;
+  const pastedRef = readAsRef(query);
   // Search results are bare; borrow project, workspace and assignee from the loaded tasks
   const { data: tasks } = useProjects();
   const { userId } = useCurrentUser();
@@ -53,17 +69,27 @@ export function QuickSearchModal({ opened, onClose }: QuickSearchModalProps) {
       <Stack gap="md">
         <TextInput
           data-autofocus
-          placeholder="Search by keywords, error codes, serial numbers, customer..."
+          aria-label="Search tasks"
+          placeholder="Search by keywords, error codes, customer, or paste a link..."
           value={query}
           onChange={(e) => setQuery(e.currentTarget.value)}
           rightSection={isLoading ? <Loader size={16} /> : null}
         />
 
         <Group justify="space-between">
-          <Text size="xs" c="dimmed">
-            Searches titles, reasons, customers and notes on every task you can see, in all your
-            workspaces.
-          </Text>
+          {pastedRef ? (
+            <Group gap={6} wrap="nowrap" style={{ minWidth: 0, flex: 1 }} data-testid="search-ref">
+              <RefKindIcon kind={pastedRef.kind} size={14} />
+              <Text size="xs" c="dimmed" truncate>
+                Tasks linked to {pastedRef.label} come first, done ones included
+              </Text>
+            </Group>
+          ) : (
+            <Text size="xs" c="dimmed" style={{ flex: 1 }}>
+              Searches titles, reasons, customers and notes on every task you can see, in all your
+              workspaces. Paste a link to find the tasks that carry it, done ones included.
+            </Text>
+          )}
           <Checkbox
             label="Include completed"
             size="xs"
@@ -102,6 +128,19 @@ export function QuickSearchModal({ opened, onClose }: QuickSearchModalProps) {
                       <Text fw={600} size="sm">
                         {item.title}
                       </Text>
+                      {item.matchedRef && (
+                        <Tooltip label="This task carries that link" withArrow openDelay={300}>
+                          <Badge
+                            size="xs"
+                            variant="light"
+                            color="indigo"
+                            leftSection={<IconLink size={10} />}
+                            data-testid="search-matched-ref"
+                          >
+                            Linked
+                          </Badge>
+                        </Tooltip>
+                      )}
                     </Group>
                     <Group gap="xs" wrap="nowrap">
                       {task && <TaskAssigneeAvatar task={task} meId={userId} size={18} />}
