@@ -4,14 +4,12 @@
  * tables. Every read is scoped to the workspaces the caller belongs to, every write is
  * permission-checked and recorded in the activity log.
  */
-import { and, asc, desc, eq, inArray, isNotNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, lte, or, sql } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
-import type { DrizzleD1Database, SQLiteD1Session } from 'drizzle-orm/d1';
-import type { SQLiteAsyncDialect } from 'drizzle-orm/sqlite-core';
+import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
 import { canonicalRef } from '../lib/refs';
-import { generateProjectKey } from './migrationService';
 import type {
   ProjectCreatePayload,
   ProjectUpdateBatchPayload,
@@ -36,32 +34,41 @@ import {
   statusLabel,
   type FieldChanges,
 } from './activityService';
+import { preparedSqlBatchItem } from './d1Batch';
+import { generateProjectKey } from './migrationService';
+import { getPeople, getUserKind, type PersonKind, type PersonProjection } from './personService';
 import {
   addResolvedRefs,
   assertSourcesFreeIn,
   fetchRefRows,
   findSourceHolder,
+  hasCurrentSourceHolder,
   insertTaskWithRefs,
-  prepareRefsForMerge,
   normaliseGmailThreadId,
   prepareRefsForCreate,
+  prepareRefsForMerge,
   RefConflictError,
   RefError,
-  SourceHolderChangedError,
-  hasCurrentSourceHolder,
-  sourceHolderCondition,
   refViewsFor,
   releaseSource,
   sourceConflict,
+  SourceHolderChangedError,
+  sourceHolderCondition,
   syncGmailThread,
   updateRefOrgs,
   type RefInput,
   type RefView,
   type SourceHolderGuard,
 } from './refService';
+import { withActorContext } from './requestActorContext';
 import { findSimilarTasks, type SimilarTask } from './similarService';
 import * as taskListService from './taskListService';
-import type { TaskListFields, TaskListFilters, TaskListResult, TaskCounts } from './taskListService';
+import type {
+  TaskCounts,
+  TaskListFields,
+  TaskListFilters,
+  TaskListResult,
+} from './taskListService';
 
 type DB = DrizzleD1Database<typeof schema>;
 type TaskRow = typeof schema.tasks.$inferSelect;
@@ -101,10 +108,13 @@ export interface TaskView {
   canEdit: boolean;
   reporterId: string;
   reporterName: string | null;
+  reporterKind: PersonKind;
   assigneeId: string | null;
   assigneeName: string | null;
+  assigneeKind: PersonKind | null;
   updatedById: string | null;
   updatedByName: string | null;
+  updatedByKind: PersonKind;
   isMine: boolean;
   /** Links to things outside TimDo, Source first. Empty when there are none. */
   refs: RefView[];
@@ -118,11 +128,14 @@ function toView(
   task: TaskRow,
   project: AccessibleProject,
   userId: string,
-  names: Map<string, string>,
+  people: Map<string, PersonProjection>,
   goalId: string | null,
   refs: RefView[],
   noteMetadata: { noteCount: number; lastNoteAt: string | null }
 ): TaskListView {
+  const reporter = people.get(task.reporterId);
+  const assignee = task.assigneeId ? people.get(task.assigneeId) : undefined;
+  const updatedBy = people.get(task.updatedBy ?? task.reporterId);
   const base = {
     id: task.id,
     userId: task.reporterId,
@@ -153,18 +166,19 @@ function toView(
     myRole: project.role,
     canEdit: canEdit(project.role),
     reporterId: task.reporterId,
-    reporterName: names.get(task.reporterId) ?? null,
+    reporterName: reporter?.name ?? null,
+    reporterKind: reporter?.kind ?? 'human',
     assigneeId: task.assigneeId,
-    assigneeName: task.assigneeId ? (names.get(task.assigneeId) ?? null) : null,
+    assigneeName: assignee?.name ?? null,
+    assigneeKind: assignee?.kind ?? null,
     // Rows synced from the legacy single-user table have no updated_by: the reporter made them
     updatedById: task.updatedBy ?? task.reporterId,
-    updatedByName: names.get(task.updatedBy ?? task.reporterId) ?? null,
+    updatedByName: updatedBy?.name ?? null,
+    updatedByKind: updatedBy?.kind ?? 'human',
     isMine: task.assigneeId === userId || (!task.assigneeId && task.reporterId === userId),
     refs,
   };
-  return Object.hasOwn(task, 'notes')
-    ? ({ ...base, notes: task.notes } as TaskView)
-    : base;
+  return Object.hasOwn(task, 'notes') ? ({ ...base, notes: task.notes } as TaskView) : base;
 }
 
 async function personalGoalMap(db: DB, userId: string, taskIds: string[]) {
@@ -176,10 +190,7 @@ async function personalGoalMap(db: DB, userId: string, taskIds: string[]) {
       .select({ taskId: schema.taskUserGoals.taskId, goalId: schema.taskUserGoals.goalId })
       .from(schema.taskUserGoals)
       .where(
-        and(
-          eq(schema.taskUserGoals.userId, userId),
-          inArray(schema.taskUserGoals.taskId, chunk)
-        )
+        and(eq(schema.taskUserGoals.userId, userId), inArray(schema.taskUserGoals.taskId, chunk))
       );
     for (const link of links) {
       if (!map.has(link.taskId)) {
@@ -202,8 +213,8 @@ async function buildViews(db: DB, userId: string, rows: TaskRow[], projects: Acc
     visible.map((task) => byId.get(task.projectId)!.orgId),
     new Set(taskIds)
   );
-  const [names, goals, noteMetadata] = await Promise.all([
-    getUserNames(db, [
+  const [people, goals, noteMetadata] = await Promise.all([
+    getPeople(db, [
       ...visible.flatMap((task) => [task.reporterId, task.assigneeId, task.updatedBy]),
       ...Array.from(refs.values()).flatMap((list) => list.map((ref) => ref.createdBy)),
     ]),
@@ -216,9 +227,9 @@ async function buildViews(db: DB, userId: string, rows: TaskRow[], projects: Acc
       task,
       project,
       userId,
-      names,
+      people,
       goals.get(task.id) ?? null,
-      refViewsFor(refs.get(task.id), names, canEdit(project.role)),
+      refViewsFor(refs.get(task.id), people, canEdit(project.role)),
       noteMetadata.get(task.id) ?? { noteCount: 0, lastNoteAt: null }
     );
   });
@@ -317,6 +328,9 @@ async function assertAssignable(
   assigneeId: string,
   project: AccessibleProject
 ): Promise<void> {
+  if ((await getUserKind(db, assigneeId)) === 'bot') {
+    throw new AccessError("Bots can't be assigned tasks");
+  }
   const member = await db
     .select({ role: schema.organisationMembers.role })
     .from(schema.organisationMembers)
@@ -444,6 +458,24 @@ async function planProjectForCreate(
     throw new AccessError(`You have view-only access to "${matches[0].name}"`);
   }
 
+  const actor = await db
+    .select({ kind: schema.users.kind, botOrgId: schema.users.botOrgId })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .get();
+  if (actor?.kind === 'bot') {
+    const workspace = actor.botOrgId
+      ? await db
+          .select({ name: schema.organisations.name })
+          .from(schema.organisations)
+          .where(eq(schema.organisations.id, actor.botOrgId))
+          .get()
+      : null;
+    throw new AccessError(
+      `Bots can only add tasks to projects in "${workspace?.name ?? 'their workspace'}"`
+    );
+  }
+
   const personal = await db
     .select({ id: schema.organisations.id, name: schema.organisations.name })
     .from(schema.organisations)
@@ -515,6 +547,10 @@ export async function createProject(
   userId: string,
   data: ProjectCreatePayload & { id: string; refs?: RefInput[] }
 ): Promise<CreateResult> {
+  const actorKind = await getUserKind(db, userId);
+  if (actorKind === 'bot' && data.goalId !== undefined) {
+    throw new AccessError('Bots do not have life goals');
+  }
   let project: AccessibleProject;
   let needsProjectInsert = false;
   if (data.projectId) {
@@ -532,9 +568,12 @@ export async function createProject(
     needsProjectInsert = plan.createProject;
   }
 
-  const assigneeId = data.assigneeId === undefined ? userId : data.assigneeId;
+  const assigneeId =
+    data.assigneeId === undefined ? (actorKind === 'bot' ? null : userId) : data.assigneeId;
   if (assigneeId && assigneeId !== userId) {
     await assertAssignable(db, assigneeId, project);
+  } else if (assigneeId && actorKind === 'bot') {
+    throw new AccessError("Bots can't be assigned tasks");
   }
   if (data.epicId) {
     await assertEpicUsable(db, userId, data.epicId, project);
@@ -583,10 +622,19 @@ export async function createProject(
   // while a duplicate response or a conditional report write was being prepared.
   const maxSourceAttempts = 3;
   for (let attempt = 1; ; attempt++) {
-    const holder = source && project.orgId ? await findSourceHolder(db, project.orgId, source) : null;
+    const holder =
+      source && project.orgId ? await findSourceHolder(db, project.orgId, source) : null;
     if (source && holder && !holder.isDeleted) {
       try {
-        return await answerDuplicate(db, userId, holder.taskId, project.orgId, source, data, refRows);
+        return await answerDuplicate(
+          db,
+          userId,
+          holder.taskId,
+          project.orgId,
+          source,
+          data,
+          refRows
+        );
       } catch (err) {
         if (!(err instanceof SourceHolderChangedError)) {
           throw err;
@@ -668,7 +716,13 @@ async function verifiedDuplicateHolder(
   orgId: string,
   source: { kind: string; ref: string }
 ): Promise<TaskView> {
-  const guard: SourceHolderGuard = { taskId: holderId, orgId, kind: source.kind, ref: source.ref, userId };
+  const guard: SourceHolderGuard = {
+    taskId: holderId,
+    orgId,
+    kind: source.kind,
+    ref: source.ref,
+    userId,
+  };
   const holder = await getTaskView(db, userId, holderId);
   if (!holder) {
     if (!(await hasCurrentSourceHolder(db, guard))) {
@@ -676,11 +730,7 @@ async function verifiedDuplicateHolder(
     }
     throw new AccessError('Task not found or access denied', 404);
   }
-  if (
-    holder.orgId !== orgId ||
-    holder.isDeleted ||
-    !(await hasCurrentSourceHolder(db, guard))
-  ) {
+  if (holder.orgId !== orgId || holder.isDeleted || !(await hasCurrentSourceHolder(db, guard))) {
     throw new SourceHolderChangedError();
   }
   return holder;
@@ -696,7 +746,13 @@ async function answerDuplicate(
   refRows: Awaited<ReturnType<typeof prepareRefsForCreate>>
 ): Promise<CreateResult> {
   const mode = data.onDuplicate ?? 'error';
-  const guard: SourceHolderGuard = { taskId: holderId, orgId, kind: source.kind, ref: source.ref, userId };
+  const guard: SourceHolderGuard = {
+    taskId: holderId,
+    orgId,
+    kind: source.kind,
+    ref: source.ref,
+    userId,
+  };
   const holder = await verifiedDuplicateHolder(db, userId, holderId, orgId, source);
   if (mode === 'error') {
     const err = sourceConflict(source, holder.id, holder.project);
@@ -867,6 +923,9 @@ export async function updateProject(
 
   // Validate private goal links before preparing any writes, then batch their replacement with
   // the task and ref move so a failed move cannot leave a partial change behind.
+  if (data.goalId !== undefined && (await getUserKind(db, userId)) === 'bot') {
+    throw new AccessError('Bots do not have life goals');
+  }
   let goalWrites: BatchItem<'sqlite'>[] = [];
   if (data.goalId !== undefined) {
     const current = (await personalGoalMap(db, userId, [taskId])).get(taskId) ?? null;
@@ -1053,6 +1112,10 @@ export async function batchUpdateProjects(
  * Each row is updated independently: one bad row won't block the batch.
  */
 export async function processAwaitingReturns(db: DB) {
+  return withActorContext(db, { via: 'system' }, () => processAwaitingReturnsInSystemContext(db));
+}
+
+async function processAwaitingReturnsInSystemContext(db: DB) {
   const now = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
   const due = await db
@@ -1106,6 +1169,7 @@ export interface NoteView {
   projectId: string;
   userId: string;
   authorName: string | null;
+  authorKind: PersonKind;
   note: string;
   gmailThreadId: string | null;
   createdAt: string | null;
@@ -1127,7 +1191,7 @@ export async function getProjectUpdates(
     .from(schema.taskUpdates)
     .where(eq(schema.taskUpdates.taskId, taskId))
     .orderBy(asc(schema.taskUpdates.createdAt));
-  const names = await getUserNames(
+  const people = await getPeople(
     db,
     rows.map((r) => r.authorId)
   );
@@ -1135,7 +1199,8 @@ export async function getProjectUpdates(
     id: r.id,
     projectId: r.taskId,
     userId: r.authorId,
-    authorName: names.get(r.authorId) ?? null,
+    authorName: people.get(r.authorId)?.name ?? null,
+    authorKind: people.get(r.authorId)?.kind ?? 'human',
     note: r.note,
     gmailThreadId: r.gmailThreadId,
     createdAt: r.createdAt,
@@ -1147,28 +1212,6 @@ export async function getProjectUpdates(
 async function reportNoteDedupeKey(note: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(note));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-// D1 batch needs _prepare() to return a D1PreparedQuery with a bindable statement.
-function preparedSqlBatchItem(
-  db: DB,
-  query: SQL,
-  method: 'all' | 'run'
-): BatchItem<'sqlite'> {
-  const internalDb = db as DB & {
-    dialect: SQLiteAsyncDialect;
-    session: SQLiteD1Session<typeof schema, any>;
-  };
-  const prepared = internalDb.session.prepareQuery(
-    internalDb.dialect.sqlToQuery(query),
-    undefined,
-    method,
-    false
-  );
-  return {
-    _: { dialect: 'sqlite', result: undefined },
-    _prepare: () => prepared,
-  } as BatchItem<'sqlite'> & { _prepare: () => typeof prepared };
 }
 
 export async function addProjectUpdate(
@@ -1294,12 +1337,13 @@ export async function addProjectUpdate(
     action: 'note_added',
     summary: `Added a note to "${task.title}": ${preview}`,
   });
-  const names = await getUserNames(db, [params.userId]);
+  const author = (await getPeople(db, [params.userId])).get(params.userId);
   return {
     id: row.id,
     projectId: task.id,
     userId: params.userId,
-    authorName: names.get(params.userId) ?? null,
+    authorName: author?.name ?? null,
+    authorKind: author?.kind ?? 'human',
     note: row.note,
     gmailThreadId: row.gmailThreadId,
     createdAt: now,
@@ -1398,7 +1442,9 @@ async function prepareRelationsForMerge(
     statements.push(
       db
         .update(schema.taskRelations)
-        .set(row.sourceTaskId === sourceId ? { sourceTaskId: targetId } : { targetTaskId: targetId })
+        .set(
+          row.sourceTaskId === sourceId ? { sourceTaskId: targetId } : { targetTaskId: targetId }
+        )
         .where(eq(schema.taskRelations.id, row.id))
     );
   }
@@ -1486,9 +1532,10 @@ Merged from "${s.title}" (${s.id.slice(0, 8)}):
       })
       .where(eq(schema.taskUpdates.id, row.id))
   );
-  const goalStatements = !goals.get(t.id) && goals.get(s.id)
-    ? personalGoalStatements(db, userId, t.id, goals.get(s.id)!)
-    : [];
+  const goalStatements =
+    !goals.get(t.id) && goals.get(s.id)
+      ? personalGoalStatements(db, userId, t.id, goals.get(s.id)!)
+      : [];
   const sourceAuditNote = `[Merged into "${t.title}" (${t.id.slice(0, 8)}) on ${now.slice(0, 10)}]`;
 
   const statements: BatchItem<'sqlite'>[] = [

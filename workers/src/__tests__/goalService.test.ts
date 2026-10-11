@@ -11,6 +11,7 @@ describe('goalService', () => {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
           where: vi.fn((condition: any) => ({
+            get: vi.fn(async () => undefined),
             orderBy: vi.fn(() => {
               // Simulated filtering logic
               return goalsStore.filter((g) => {

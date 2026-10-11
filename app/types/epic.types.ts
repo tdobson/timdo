@@ -3,6 +3,7 @@
  * @module app/types/epic.types
  */
 
+import type { PersonKind } from './collaboration.types';
 import type { WorkspaceRole } from './project.types';
 
 export type EpicStatus = 'active' | 'completed' | 'on_hold';
@@ -29,8 +30,10 @@ export interface Epic {
   canEdit?: boolean;
   createdById?: string | null;
   createdByName?: string | null;
+  createdByKind?: PersonKind;
   updatedById?: string | null;
   updatedByName?: string | null;
+  updatedByKind?: PersonKind;
   createdAt: string;
   updatedAt: string;
 }

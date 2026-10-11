@@ -8,6 +8,9 @@ const aiApp = new Hono<{ Bindings: Env }>();
 // The auth middleware is now applied in src/index.ts, so we remove it from here.
 
 aiApp.post('/voice-command', async (c) => {
+  if (c.get('userKind') === 'bot') {
+    return c.json({ error: 'Bots cannot access AI endpoints' }, 403);
+  }
   try {
     const formData = await c.req.formData();
     const audioFile = formData.get('audio');
@@ -37,6 +40,9 @@ aiApp.post('/voice-command', async (c) => {
 });
 
 aiApp.post('/parse-onboarding', async (c) => {
+  if (c.get('userKind') === 'bot') {
+    return c.json({ error: 'Bots cannot access AI endpoints' }, 403);
+  }
   try {
     const formData = await c.req.formData();
     const audioFile = formData.get('audio');

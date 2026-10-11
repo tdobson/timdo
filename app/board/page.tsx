@@ -363,7 +363,10 @@ function BoardContent() {
     joinNames(
       (membersByOrg[orgId] || [])
         .filter((member) => member.userId !== userId)
-        .map((member) => member.userName || member.userEmail)
+        .map((member) => {
+          const name = member.userName || member.userEmail || 'Someone';
+          return member.kind === 'bot' || member.userId.startsWith('bot|') ? `${name} [bot]` : name;
+        })
     );
 
   const categoryGroups = useMemo(() => {

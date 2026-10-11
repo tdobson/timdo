@@ -44,6 +44,7 @@ function labelFor(org: Organisation) {
 export function useWorkspaceProjects() {
   const { data: session } = useSession();
   const token = session?.accessToken;
+  const accountId = session?.user?.id || session?.user?.email || null;
   const orgsQuery = useOrganisations();
   const orgs = useMemo(
     () => (Array.isArray(orgsQuery.data) ? orgsQuery.data.filter((o) => o && o.id) : []),
@@ -52,9 +53,10 @@ export function useWorkspaceProjects() {
 
   const projectQueries = useQueries({
     queries: orgs.map((org) => ({
-      queryKey: [...organisationKeys.all, 'projects', org.id] as const,
-      queryFn: () => fetchOrganisationProjects(org.id, token),
-      enabled: !!token,
+      queryKey: [...organisationKeys.account(accountId), 'projects', org.id] as const,
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        fetchOrganisationProjects(org.id, token, signal),
+      enabled: !!token && !!accountId,
       staleTime: 60 * 1000,
     })),
   });
@@ -128,13 +130,14 @@ export function useWorkspaceProjects() {
 export function useWorkspaceMembersMap(orgIds: Array<string | null | undefined>) {
   const { data: session } = useSession();
   const token = session?.accessToken;
+  const accountId = session?.user?.id || session?.user?.email || null;
   const ids = Array.from(new Set(orgIds.filter((id): id is string => !!id))).sort();
 
   const queries = useQueries({
     queries: ids.map((id) => ({
-      queryKey: organisationKeys.members(id),
-      queryFn: () => fetchOrganisationMembers(id, token),
-      enabled: !!token,
+      queryKey: organisationKeys.members(id, accountId),
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchOrganisationMembers(id, token, signal),
+      enabled: !!token && !!accountId,
       staleTime: 5 * 60 * 1000,
     })),
   });

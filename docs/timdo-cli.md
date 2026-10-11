@@ -11,8 +11,9 @@ cd bin/
 npm run install-cli  # symlinks to ~/.local/bin/timdo
 ```
 
-Make sure `~/.local/bin` is on your `PATH`. Create a personal token in the web app at
-`/settings/access`, then run:
+Make sure `~/.local/bin` is on your `PATH`. For your own account, create a personal token in
+the web app at `/settings/access`. For an integration, a human workspace owner/admin creates a
+bot in `/sharing`. Then run:
 
 ```bash
 timdo login
@@ -23,10 +24,11 @@ Paste the token at the hidden prompt. The CLI checks it and stores it in
 where they can appear in shell history. Scripts can use the saved token or provide
 `TIMDO_TOKEN` through their environment.
 
-Each person uses their own token. `TIMDO_SECRET` is the instance owner's administrative
-credential, not a collaborator login. Never share it with people or bots. Only that owner
-credential can use `--as` to preview another account; a personal token cannot impersonate
-another person.
+Each person uses their own token. A bot token acts as that bot and only reaches its home
+workspace. `TIMDO_SECRET` is the instance owner's administrative credential, not a collaborator
+login. Never share it with people or bots. Only that owner credential can use `--as` to preview
+another account; personal and bot tokens cannot impersonate another person. The CLI prefers a
+configured token and never retries a denial with the owner secret.
 
 ## Find and inspect tasks
 
@@ -46,8 +48,10 @@ a particular task. `search` searches task text; a URL or `kind:id` also finds ex
 ## Create tasks
 
 A project name is required unless you give `--project-id`. A name matching a project you can
-edit uses that project; a new name creates a project in your personal workspace. Use an
-exact id, key or `Workspace/Project` path when names are ambiguous.
+edit uses that project. For a human caller, a new name creates a project in their personal
+workspace; bots must use an existing project in their own workspace. Use an exact id, key or
+`Workspace/Project` path when names are ambiguous. Human-created tasks default to the creator
+as assignee; bot-created tasks default to unassigned. Bots cannot be assignees or own life goals.
 
 ```bash
 timdo add "Fix the roof" -p "Personal" -r "Leaking in rain" --priority 8
@@ -133,10 +137,38 @@ Workspace members see its projects, epics, tasks and activity. Roles determine w
 Life goals stay private to each person. Sharing a workspace or moving a project between
 workspaces changes who can see the work; check the destination and intended members first.
 
+## Manage workspace bots
+
+Personal and bot tokens cannot manage bots. Use the web controls in `/sharing`, or explicitly
+select the installation owner's already configured secret with `--owner-secret` on a bot command.
+This option does not accept a credential value and is not available on unrelated commands.
+
+```bash
+timdo bot --owner-secret list "Northstar Workshop"
+timdo bot --owner-secret create "Northstar Workshop" "Issue watcher" --role member
+timdo bot --owner-secret rename "Northstar Workshop" "Issue watcher" "Forum watcher"
+timdo bot --owner-secret role "Northstar Workshop" "Forum watcher" viewer
+timdo bot --owner-secret token "Northstar Workshop" "Forum watcher" --name "Watcher replacement"
+timdo bot --owner-secret revoke-token "Northstar Workshop" "Forum watcher" "<token-id-or-prefix>"
+timdo bot --owner-secret disable "Northstar Workshop" "Forum watcher"
+```
+
+Names and ID prefixes must resolve uniquely. Revocation and disablement ask for confirmation on
+a terminal and need `--yes` otherwise. Piping output does not approve either operation.
+
+Creation and token issuance show the full token once. The copy-once warning goes to stderr so
+JSON stdout stays parseable. Keep the result out of logs and ordinary task notes. If the response
+is lost, inspect the bot's redacted tokens, revoke the uncertain one, then issue a replacement.
+Do not automatically repeat credential creation. Disablement is permanent and revokes every token.
+
+See [Workspace bots and activity attribution](bots-and-attribution.md) for the complete permission,
+recovery and rotation rules. Bot authors are marked in task, note and activity output. Owner-secret
+activity is labelled; token names remain detail rather than part of the inline byline.
+
 ## Merge
 
 ```bash
-timdo merge <source_id> <target_id>
+timdo merge "<source_id>" "<target_id>"
 ```
 
 Check both tasks and the direction before confirming. The target survives; notes and history
@@ -170,7 +202,7 @@ its JSON stdout.
 |----------|---------|
 | `TIMDO_CONFIG` | Config file; defaults to `~/.config/timdo/config` |
 | `TIMDO_API` | API base URL; defaults to `https://timdo-v2-api.tdobson.net/api/v2` |
-| `TIMDO_TOKEN` | Your personal token; usually loaded from the config file |
+| `TIMDO_TOKEN` | Personal or bot token; usually loaded from the config file |
 | `TIMDO_FORMAT` | Output format |
 | `TIMDO_SECRET` | Owner-only administrative credential |
 | `TIMDO_AS` | Account preview identity; only usable for another person with the owner credential |

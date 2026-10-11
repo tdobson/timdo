@@ -56,6 +56,7 @@ import { buildEpicOptions, PRIVATE_GOAL_HINT, ProjectPicker } from '../ProjectPi
 import { ProjectStars } from '../ProjectStars/ProjectStars';
 import {
   absoluteTime,
+  BotMarker,
   canEditItem,
   personLabel,
   relativeTime,
@@ -449,13 +450,16 @@ export function ProjectCard({
               )}
               {/* Who's on it: only in shared workspaces, so personal focus stays uncluttered */}
               {isShared && project.assigneeId && (
-                <TeamAvatar
-                  name={project.assigneeName}
-                  seed={project.assigneeId}
-                  size={22}
-                  tooltip={`Assigned to ${assigneeLabel}`}
-                  style={{ flexShrink: 0 }}
-                />
+                <>
+                  <TeamAvatar
+                    name={project.assigneeName}
+                    seed={project.assigneeId}
+                    size={22}
+                    tooltip={`Assigned to ${assigneeLabel}`}
+                    style={{ flexShrink: 0 }}
+                  />
+                  <BotMarker kind={project.assigneeKind} />
+                </>
               )}
               {isShared && !project.assigneeId && canEdit && (
                 <Tooltip label="Unassigned. Take it on yourself" withArrow>
@@ -735,7 +739,8 @@ export function ProjectCard({
                     {updatedByOther && (
                       <Tooltip label={absoluteTime(project.updatedAt)} withArrow openDelay={300}>
                         <Text size="xs" c="dimmed" w="fit-content" data-testid="updated-by">
-                          Last updated by {project.updatedByName}
+                          Last updated by {project.updatedByName}{' '}
+                          <BotMarker kind={project.updatedByKind} />
                           {project.updatedAt ? ` · ${relativeTime(project.updatedAt)}` : ''}
                         </Text>
                       </Tooltip>

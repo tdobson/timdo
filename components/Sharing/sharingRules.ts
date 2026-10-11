@@ -53,6 +53,9 @@ export function assignableRoles(
   target: SharingMember
 ): WorkspaceRole[] | null {
   const myRole = ws.role;
+  if (target.kind === 'bot' || target.userId.startsWith('bot|')) {
+    return null;
+  }
   if (target.isMe) {
     if (myRole === 'owner' && !ws.isPersonal && ownerCount(ws) > 1) {
       return [...ROLE_ORDER];
@@ -73,7 +76,7 @@ export function canRemove(
   ws: Pick<SharingWorkspace, 'role' | 'members'>,
   target: SharingMember
 ): boolean {
-  if (target.isMe) {
+  if (target.isMe || target.kind === 'bot' || target.userId.startsWith('bot|')) {
     return false;
   }
   if (ws.role === 'owner') {
@@ -104,8 +107,13 @@ export function inviteRoles(myRole: WorkspaceRole): InviteRole[] {
   return myRole === 'owner' ? ['admin', 'member', 'viewer'] : ['member', 'viewer'];
 }
 
-export function personName(m: Pick<SharingMember, 'userName' | 'userEmail'>): string {
-  return m.userName || m.userEmail;
+export function personName(
+  m: Pick<SharingMember, 'userName' | 'userEmail' | 'kind' | 'userId'>
+): string {
+  return (
+    m.userName ||
+    (m.kind === 'bot' || m.userId.startsWith('bot|') ? 'Bot' : m.userEmail || 'Someone')
+  );
 }
 
 /** "A", "A and B", "A, B and C" */
@@ -116,9 +124,14 @@ export function joinNames(names: string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
+function memberLabel(member: SharingMember): string {
+  const name = personName(member);
+  return member.kind === 'bot' || member.userId.startsWith('bot|') ? `${name} [bot]` : name;
+}
+
 /** "Only you", "Shared with Robin Fairweather", "Shared with A, B and 3 others" */
 export function whoCanSee(ws: Pick<SharingWorkspace, 'members'>): string {
-  const others = ws.members.filter((m) => !m.isMe).map(personName);
+  const others = ws.members.filter((m) => !m.isMe).map(memberLabel);
   if (others.length === 0) {
     return 'Only you';
   }
@@ -137,8 +150,8 @@ export function moveImpact(
   const destIds = new Set(destination.members.map((m) => m.userId));
   const sourceIds = new Set(source.members.map((m) => m.userId));
   return {
-    losing: source.members.filter((m) => !destIds.has(m.userId)).map(personName),
-    gaining: destination.members.filter((m) => !sourceIds.has(m.userId)).map(personName),
+    losing: source.members.filter((m) => !destIds.has(m.userId)).map(memberLabel),
+    gaining: destination.members.filter((m) => !sourceIds.has(m.userId)).map(memberLabel),
   };
 }
 

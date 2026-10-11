@@ -21,6 +21,7 @@ export const PENDING_MIGRATIONS = [
   '0007_api_tokens.sql',
   '0008_task_refs.sql',
   '0009_report_note_dedupe.sql',
+  '0010_bots_and_via.sql',
 ];
 
 export const TIM = 'user-tim';
@@ -47,7 +48,12 @@ export function createTestDb({ migrations = PENDING_MIGRATIONS } = {}) {
     queries: 0,
     maxBindings: 0,
     rowsReturned: 0,
-    statements: [] as Array<{ sql: string; method: string; parameterCount: number; rowsReturned: number }>,
+    statements: [] as Array<{
+      sql: string;
+      method: string;
+      parameterCount: number;
+      rowsReturned: number;
+    }>,
     reset() {
       this.queries = 0;
       this.maxBindings = 0;
@@ -63,7 +69,9 @@ export function createTestDb({ migrations = PENDING_MIGRATIONS } = {}) {
       throw new Error(`Test database bind ceiling exceeded: ${params.length} parameters`);
     }
     const stmt = raw.prepare(query);
-    const args = (params as any[]).map((param) => (typeof param === 'boolean' ? Number(param) : param));
+    const args = (params as any[]).map((param) =>
+      typeof param === 'boolean' ? Number(param) : param
+    );
     let result: any;
     if (method === 'run') {
       stmt.run(...args);
@@ -77,7 +85,8 @@ export function createTestDb({ migrations = PENDING_MIGRATIONS } = {}) {
         result = { rows: stmt.all(...args) };
       }
     }
-    const rowsReturned = method === 'run' ? 0 : method === 'get' ? Number(!!result.rows) : result.rows.length;
+    const rowsReturned =
+      method === 'run' ? 0 : method === 'get' ? Number(!!result.rows) : result.rows.length;
     stats.rowsReturned += rowsReturned;
     stats.statements.push({ sql: query, method, parameterCount: params.length, rowsReturned });
     return result;

@@ -21,6 +21,7 @@ import type {
   WorkspaceRole,
 } from '../../app/types/collaboration.types';
 import { PersonAvatar } from '../Activity/PersonAvatar';
+import { BotMarker } from '../Team/BotMarker';
 import { ConfirmModal } from './ConfirmModal';
 import {
   assignableRoles,
@@ -111,6 +112,7 @@ export function PeopleSection({ workspace }: { workspace: SharingWorkspace }) {
         {workspace.members.map((member, i) => {
           const roles = assignableRoles(workspace, member);
           const name = personName(member);
+          const isBot = member.kind === 'bot' || member.userId.startsWith('bot|');
           return (
             <Group
               component="li"
@@ -131,21 +133,22 @@ export function PeopleSection({ workspace }: { workspace: SharingWorkspace }) {
               <Group gap="sm" wrap="nowrap" style={{ minWidth: 0, flex: '1 1 220px' }}>
                 <PersonAvatar
                   name={member.userName}
-                  email={member.userEmail}
+                  email={isBot ? null : member.userEmail}
                   seed={member.userId}
                 />
                 <Box style={{ minWidth: 0 }}>
                   <Group gap={6} wrap="nowrap">
                     <Text size="sm" fw={500} truncate>
-                      {member.userName || member.userEmail}
+                      {name}
                     </Text>
+                    <BotMarker kind={isBot ? 'bot' : member.kind} />
                     {member.isMe && (
                       <Badge size="xs" variant="outline" color="gray">
                         You
                       </Badge>
                     )}
                   </Group>
-                  {member.userName && (
+                  {!isBot && member.userName && member.userEmail && (
                     <Text size="xs" c="dimmed" truncate>
                       {member.userEmail}
                     </Text>

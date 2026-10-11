@@ -8,11 +8,12 @@
  *   member - read and edit tasks, epics and notes
  *   viewer - read only
  */
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
 import { generateProjectKey, generateSlug } from './migrationService';
+import { getPeople, getUserKind } from './personService';
 
 type DB = DrizzleD1Database<typeof schema>;
 
@@ -135,10 +136,13 @@ export async function ensurePersonalOrg(db: DB, userId: string): Promise<string>
   }
 
   const user = await db
-    .select({ name: schema.users.name, email: schema.users.email })
+    .select({ name: schema.users.name, email: schema.users.email, kind: schema.users.kind })
     .from(schema.users)
     .where(eq(schema.users.id, userId))
     .get();
+  if (user?.kind === 'bot') {
+    throw new AccessError('Bots cannot have personal workspaces');
+  }
 
   const orgId = uuidv4();
   const name = user?.name || user?.email?.split('@')[0] || 'Personal';
@@ -170,6 +174,9 @@ export async function createProjectInOrg(
   name: string,
   description?: string | null
 ) {
+  if ((await getUserKind(db, userId)) === 'bot') {
+    throw new AccessError('Bots cannot create projects');
+  }
   const role = await getOrgRole(db, userId, orgId);
   if (!canEdit(role)) {
     throw new AccessError('You cannot add projects to this workspace');
@@ -214,6 +221,23 @@ export async function resolveProjectForWrite(
   if (!createIfMissing) {
     throw new AccessError(`No project called "${name}"`, 404);
   }
+  const bot = await db
+    .select({ kind: schema.users.kind, botOrgId: schema.users.botOrgId })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .get();
+  if (bot?.kind === 'bot') {
+    const workspace = bot.botOrgId
+      ? await db
+          .select({ name: schema.organisations.name })
+          .from(schema.organisations)
+          .where(eq(schema.organisations.id, bot.botOrgId))
+          .get()
+      : null;
+    throw new AccessError(
+      `Bots can only add tasks to projects in "${workspace?.name ?? 'their workspace'}"`
+    );
+  }
   const orgId = await ensurePersonalOrg(db, userId);
   await createProjectInOrg(db, userId, orgId, name);
   const created = (await getAccessibleProjects(db, userId)).find(
@@ -227,18 +251,6 @@ export async function resolveProjectForWrite(
 
 /** Map of user id -> display name, for attribution. */
 export async function getUserNames(db: DB, ids: Array<string | null | undefined>) {
-  const unique = Array.from(new Set(ids.filter((id): id is string => !!id)));
-  const map = new Map<string, string>();
-  // D1 caps bound parameters at 100 per query
-  for (let i = 0; i < unique.length; i += 90) {
-    const chunk = unique.slice(i, i + 90);
-    const rows = await db
-      .select({ id: schema.users.id, name: schema.users.name, email: schema.users.email })
-      .from(schema.users)
-      .where(inArray(schema.users.id, chunk));
-    for (const r of rows) {
-      map.set(r.id, r.name || r.email);
-    }
-  }
-  return map;
+  const people = await getPeople(db, ids);
+  return new Map(Array.from(people, ([id, person]) => [id, person.name ?? 'Someone']));
 }

@@ -1,10 +1,20 @@
 import { sql } from 'drizzle-orm';
-import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { integer, sqliteTable, text, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('Users', {
-  id: text('id').primaryKey(), // Auth0 User ID (sub claim)
+  id: text('id').primaryKey(), // Auth0 User ID (sub claim), or bot|<uuid>
   email: text('email').notNull().unique(),
   name: text('name'),
+  kind: text('kind', { enum: ['human', 'bot'] })
+    .notNull()
+    .default('human'),
+  botOrgId: text('bot_org_id').references((): AnySQLiteColumn => organisations.id, {
+    onDelete: 'cascade',
+  }),
+  createdBy: text('created_by').references((): AnySQLiteColumn => users.id, {
+    onDelete: 'set null',
+  }),
+  disabledAt: text('disabled_at'),
   createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });
@@ -256,6 +266,8 @@ export const activityLog = sqliteTable('ActivityLog', {
   action: text('action').notNull(),
   summary: text('summary').notNull(),
   changes: text('changes'), // JSON { field: { from, to } }
+  via: text('via', { enum: ['web', 'token', 'owner_secret', 'system'] }),
+  viaDetail: text('via_detail'),
   createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
 });
 

@@ -3,6 +3,8 @@
  * @module app/types/organisation.types
  */
 
+import type { PersonKind } from './collaboration.types';
+
 export type OrganisationRole = 'owner' | 'admin' | 'member' | 'viewer';
 
 export interface Organisation {
@@ -26,7 +28,10 @@ export interface OrganisationMember {
   role: OrganisationRole;
   createdAt?: string | null;
   userName?: string | null;
-  userEmail: string;
+  /** Omitted for bots so internal email addresses never reach the UI. */
+  userEmail?: string;
+  /** Missing on old responses, which represent human members. */
+  kind?: PersonKind;
 }
 
 export interface OrganisationInvite {

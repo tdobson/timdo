@@ -5,14 +5,46 @@
  */
 
 export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'viewer';
+export type PersonKind = 'human' | 'bot';
+export type BotRole = 'member' | 'viewer';
+
+export interface BotTokenSummary {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string | null;
+  lastUsedAt: string | null;
+}
+
+export interface BotView {
+  id: string;
+  kind: 'bot';
+  name: string;
+  role: BotRole | null;
+  createdByName: string | null;
+  createdAt: string | null;
+  disabledAt: string | null;
+  tokens: BotTokenSummary[];
+}
+
+export interface CreatedBotResult {
+  bot: BotView;
+  token: string;
+}
+
+export interface CreatedBotToken extends BotTokenSummary {
+  token: string;
+}
 
 /** Roles that can be given through an invite (owners are promoted afterwards). */
 export type InviteRole = Exclude<WorkspaceRole, 'owner'>;
 
 export interface Me {
   id: string;
-  email: string;
+  email?: string;
   name: string | null;
+  kind?: PersonKind;
+  workspace?: { id: string; name: string; role: BotRole };
 }
 
 export interface SharingMember {
@@ -20,7 +52,10 @@ export interface SharingMember {
   orgId?: string;
   userId: string;
   userName: string | null;
-  userEmail: string;
+  /** Omitted for bot identities, whose internal email is never public. */
+  userEmail?: string | null;
+  /** Missing on pre-bot responses, which represent human members. */
+  kind?: PersonKind;
   role: WorkspaceRole;
   isMe: boolean;
   createdAt?: string | null;
@@ -136,6 +171,12 @@ export interface ActivityEntry {
   id: string;
   actorId: string | null;
   actorName: string;
+  /** Missing on older responses, which represent human actors. */
+  actorKind?: PersonKind | null;
+  /** Null for historical activity with no known authentication path. */
+  via?: 'web' | 'token' | 'owner_secret' | 'system' | null;
+  /** Token name only. Render it in accessible detail, never inline. */
+  viaDetail?: string | null;
   orgId: string | null;
   projectId: string | null;
   projectName: string | null;

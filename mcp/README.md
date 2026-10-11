@@ -19,8 +19,8 @@ cd mcp && npm install
 The server uses the CLI's login, so sign in once:
 
 ```bash
-bin/timdo login     # stores your personal token in ~/.config/timdo/config
-bin/timdo whoami    # check it is you
+bin/timdo login     # stores a personal or bot token in ~/.config/timdo/config
+bin/timdo whoami    # check the acting account
 ```
 
 ## Add it to Claude Code
@@ -52,7 +52,8 @@ Add an `"env": { ... }` object to set any of the variables below.
 | --- | --- |
 | `TIMDO_BIN` | Path to the `timdo` CLI. Defaults to this repo's `bin/timdo`, then `timdo` on your `PATH`. |
 | `TIMDO_API` | API base URL. Defaults to production. For a local API: `http://127.0.0.1:8788/api/v2`. |
-| `TIMDO_TOKEN` | Your personal token, if you'd rather not keep it in the config file. |
+| `TIMDO_TOKEN` | Personal or bot token. Any configured token is used before `TIMDO_SECRET`, unless a bot-management command has `--owner-secret`. |
+| `TIMDO_SECRET` | The owner's internal secret. Used when no token is set, or when a bot-management command explicitly selects it with `--owner-secret`. |
 | `TIMDO_CONFIG` | Config file to read. Defaults to `~/.config/timdo/config`. |
 
 The server passes its environment straight to the CLI, so anything the CLI reads works here too.
@@ -75,7 +76,7 @@ Tasks and notes:
 - `timdo_list_tasks`: list tasks by status, project, workspace, assignee, epic, goal, customer, tag, ref or missing links. It defaults to 50 summary rows; `limit` sets the page size and `fields` selects the body projection.
 - `timdo_counts`: count matching tasks across all five statuses.
 - `timdo_get_task`: one task with its refs, linked tasks, notes and recent activity.
-- `timdo_add_task`: create a task, optionally assigned, linked to another task, and with refs. The result says whether it was `created` and lists up to 3 `similar` open tasks.
+- `timdo_add_task`: create a task, optionally assigned, linked to another task, and with refs. People can create a personal project when the category matches no accessible writable project; bots must use an existing writable project in their home workspace, default to unassigned, cannot be assignees, and cannot use life goals. The result says whether it was `created` and lists up to 3 `similar` open tasks.
 - `timdo_find_similar`: open tasks whose title looks like one you are about to create. Use it before creating from free text.
 - `timdo_update_task`: change status, details, project, epic or assignee, and add or remove refs.
 - `timdo_delete_task`: soft-delete a task.
@@ -128,7 +129,31 @@ Workspaces and sharing:
 - `timdo_move_project`: move a project and its history to another workspace.
 - `timdo_activity`: who did what, newest first.
 
-The sharing tools (`timdo_share_workspace`, `timdo_update_member_role`, `timdo_remove_member`, `timdo_move_project`) act straight away with no confirmation step, and so do `timdo_merge_tasks` and the delete tools. Tell your assistant to check with you before it uses them.
+## Workspace bots
+
+Workspace owners and admins can create bots with member or viewer access. Each bot belongs to one workspace. Its name and bot marker appear on tasks, notes and activity. The API does not expose its synthetic email.
+
+Use these CLI commands to manage a bot:
+
+```text
+timdo bot list <workspace>
+timdo bot create <workspace> "<name>" [--role member|viewer] [--token-name name]
+timdo bot rename <workspace> <bot> "<name>"
+timdo bot role <workspace> <bot> member|viewer
+timdo bot token <workspace> <bot> [--name name]
+timdo bot revoke-token <workspace> <bot> <token-id|prefix|name> [--yes]
+timdo bot disable <workspace> <bot> [--yes]
+```
+
+The first token is named `initial` by default. Replacement tokens use `CLI token` unless you set `--name`. A token appears once in the create or issue response. If that response is lost, find the redacted token entry, revoke it and issue another. The CLI prints a copy-once warning to stderr.
+
+Use a unique workspace name, slug or ID prefix, a unique bot name or ID prefix, and a unique token name or ID prefix. Ambiguous matches stop before a change. Revoke and disable prompt in a terminal. A pipe is not approval; use `--yes` only after confirming the target.
+
+Bot-management tools are `timdo_list_bots`, `timdo_create_bot`, `timdo_rename_bot`, `timdo_set_bot_role`, `timdo_issue_bot_token`, `timdo_revoke_bot_token` and `timdo_disable_bot`. Confirm mutations with the user before calling them. Revoke and disable run with `--yes`, so they act immediately and do not prompt in a terminal. Create and issue-token return a one-time credential that cannot be recovered.
+
+The CLI uses any configured token, personal or bot, before `TIMDO_SECRET`. Add `--owner-secret` to a bot command to deliberately select `TIMDO_SECRET` instead. The MCP tools provide the same choice as `ownerSecret: true`. A token denial never causes an automatic switch to the owner secret, and no MCP tool accepts a raw secret value. This option works only for bot management. The API still checks that the acting human is a workspace owner or admin.
+
+Restart the MCP server and reconnect its client to load these new tools.
 
 ## Tests
 

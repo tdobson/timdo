@@ -6,7 +6,9 @@ import { and, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
-import { getAccessibleProjects, getUserNames } from './accessService';
+import { getAccessibleProjects } from './accessService';
+import { getPeople, type PersonKind } from './personService';
+import { getActorContext } from './requestActorContext';
 
 type DB = DrizzleD1Database<typeof schema>;
 
@@ -30,6 +32,7 @@ export interface ActivityEntry {
   id: string;
   actorId: string | null;
   actorName: string;
+  actorKind: PersonKind | null;
   orgId: string | null;
   projectId: string | null;
   projectName: string | null;
@@ -40,6 +43,8 @@ export interface ActivityEntry {
   action: string;
   summary: string;
   changes: FieldChanges | null;
+  via: 'web' | 'token' | 'owner_secret' | 'system' | null;
+  viaDetail: string | null;
   createdAt: string | null;
 }
 
@@ -57,6 +62,8 @@ export async function logActivity(db: DB, input: ActivityInput) {
       action: input.action,
       summary: input.summary,
       changes: input.changes ? JSON.stringify(input.changes) : null,
+      via: getActorContext(db)?.via ?? null,
+      viaDetail: getActorContext(db)?.viaDetail ?? null,
       createdAt: new Date().toISOString(),
     });
   } catch (err) {
@@ -192,28 +199,34 @@ export async function getActivity(
     .orderBy(desc(schema.activityLog.createdAt))
     .limit(Math.min(query.limit ?? 100, 500));
 
-  const names = await getUserNames(
+  const people = await getPeople(
     db,
     rows.map((r) => r.actorId)
   );
   const projectNames = new Map(projects.map((p) => [p.id, p.name]));
 
-  return rows.map((r) => ({
-    id: r.id,
-    actorId: r.actorId,
-    actorName: r.actorId ? (names.get(r.actorId) ?? 'Someone') : 'TimDo',
-    orgId: r.orgId,
-    projectId: r.projectId,
-    projectName: r.projectId ? (projectNames.get(r.projectId) ?? null) : null,
-    entityType: r.entityType as EntityType,
-    entityId: r.entityId,
-    taskId: r.taskId,
-    epicId: r.epicId,
-    action: r.action,
-    summary: r.summary,
-    changes: r.changes ? safeParse(r.changes) : null,
-    createdAt: r.createdAt,
-  }));
+  return rows.map((r) => {
+    const actor = r.actorId ? people.get(r.actorId) : undefined;
+    return {
+      id: r.id,
+      actorId: r.actorId,
+      actorName: actor?.name ?? (r.actorId ? 'Someone' : 'TimDo'),
+      actorKind: actor?.kind ?? null,
+      orgId: r.orgId,
+      projectId: r.projectId,
+      projectName: r.projectId ? (projectNames.get(r.projectId) ?? null) : null,
+      entityType: r.entityType as EntityType,
+      entityId: r.entityId,
+      taskId: r.taskId,
+      epicId: r.epicId,
+      action: r.action,
+      summary: r.summary,
+      changes: r.changes ? safeParse(r.changes) : null,
+      via: r.via ?? null,
+      viaDetail: r.viaDetail ?? null,
+      createdAt: r.createdAt,
+    };
+  });
 }
 
 function safeParse(s: string): FieldChanges | null {

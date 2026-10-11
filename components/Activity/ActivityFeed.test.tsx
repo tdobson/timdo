@@ -84,6 +84,38 @@ describe('ActivityFeed', () => {
     expect(items[1]).toHaveTextContent('You created “Order panels”');
   });
 
+  it('marks bot actors and distinguishes owner-secret and token provenance', async () => {
+    activity = [
+      entry({
+        id: 'bot-token',
+        actorId: 'bot|fixture',
+        actorName: 'Forum watcher',
+        actorKind: 'bot',
+        via: 'token',
+        viaDetail: 'nightly sync',
+        summary: 'Created "Bot task"',
+      }),
+      entry({
+        id: 'owner-secret',
+        actorId: 'user-2',
+        actorName: 'Jordan Example',
+        actorKind: 'human',
+        via: 'owner_secret',
+        summary: 'Renamed "Workspace"',
+      }),
+    ];
+    render(<ActivityFeed />);
+
+    const items = await screen.findAllByTestId('activity-item');
+    expect(within(items[0]).getByText('Forum watcher')).toBeInTheDocument();
+    expect(within(items[0]).getByLabelText('Bot identity')).toBeInTheDocument();
+    expect(items[0]).not.toHaveTextContent('nightly sync');
+    expect(
+      within(items[0]).getByRole('img', { name: 'Via token "nightly sync"' })
+    ).toBeInTheDocument();
+    expect(items[1]).toHaveTextContent('(via owner secret)');
+  });
+
   it('links task titles to the task page and shows the project badge', async () => {
     activity = [entry({ id: 'a1', taskId: 'task-42' })];
     render(<ActivityFeed />);

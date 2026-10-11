@@ -29,6 +29,7 @@ FORMAT_EXPLICIT=0
 APP_URL="${TIMDO_APP_URL:-https://timdo.tdobson.net}"
 ERR_HINT=""
 CLASH_HINT=""
+BOT_OWNER_SECRET_SELECTED=false
 
 # ---------------------------------------------------------------------------
 # Global flags may appear anywhere: --json, --text, --as <email>, --no-color
@@ -50,7 +51,9 @@ while [[ $# -gt 0 ]]; do
       _args+=("$1")
       if [[ $# -gt 1 ]]; then _args+=("$2"); shift; fi
       ;;
-    --) shift; _args+=("$@"); break ;;
+    --)
+      [[ "${_args[0]:-}" == bot ]] && _args+=("--")
+      shift; _args+=("$@"); break ;;
     *) _args+=("$1") ;;
   esac
   shift
@@ -219,17 +222,21 @@ def task_group_label($by):
   if $by == "project" then (where | if . == "" then "No project" else . end)
   elif $by == "epic" then (if .epicId then (.epicTitle // .epicName // ("Epic " + (.epicId[0:8]))) else "No epic" end)
   else (if .assigneeId == null then "Unassigned" else (.assigneeName // .assigneeId) end) end | tostring | gsub("[\\p{Cc}]+"; " ");
+def activity_actor: (.actorName // "Someone") as $name
+  | (if .actorKind == "bot" then $name + " [bot]" else $name end)
+  + (if .via == "owner_secret" then " (via owner secret)" else "" end);
 def activity_line($aw):
   "  " + ((.createdAt | short_dt) | pad(12) | paint("dim"))
-  + "  " + ((.actorName // "Someone") | pad($aw) | paint("bold"))
+  + "  " + (activity_actor | pad($aw) | paint("bold"))
   + "  " + (.summary // .action // "" | oneline)
   + (if .projectName then "  " + ("[\(.projectName)]" | paint("cyan")) else "" end);
-def activity_lines: (maxlen(.actorName // "Someone")) as $aw | .[] | activity_line($aw);
+def activity_lines: (maxlen(activity_actor)) as $aw | .[] | activity_line($aw);
+def note_author: (.authorName // "Someone") + (if .authorKind == "bot" then " [bot]" else "" end);
 def note_lines:
-  maxlen(.authorName // "Someone") as $aw
+  maxlen(note_author) as $aw
   | .[]
   | "  " + ((.createdAt | long_dt) | pad(17) | paint("dim"))
-    + "  " + ((.authorName // "Someone") | pad($aw) | paint("bold"))
+    + "  " + (note_author | pad($aw) | paint("bold"))
     + "  " + ((.note // "") | tostring | gsub("\n"; "\n" + (" " * (2 + 17 + 2 + $aw + 2))))
     + (if .gmailThreadId then ("  (thread: \(.gmailThreadId))" | paint("dim")) else "" end);
 # Refs: links from a task to things outside TimDo, shown as kind:ref
@@ -279,6 +286,9 @@ $prog"
 # Credentials: a personal token (from `timdo login`) acts as you; the owner's internal
 # secret (TIMDO_SECRET) is for the account owner's own tooling only.
 require_credentials() {
+  if [[ "$BOT_OWNER_SECRET_SELECTED" == true && -z "${TIMDO_SECRET:-}" ]]; then
+    die "The --owner-secret option needs TIMDO_SECRET configured in the environment or $TIMDO_CONFIG."
+  fi
   if [[ -z "$TIMDO_TOKEN" && -z "${TIMDO_SECRET:-}" ]]; then
     echo "Not logged in. Create a token at $APP_URL/settings/access, then run: timdo login" >&2
     exit 1
@@ -371,7 +381,9 @@ api() {
   # Credentials go to curl as a config on stdin (-K -), never as arguments, so they don't
   # show up in `ps` for other users on the machine.
   local auth_header
-  if [[ -n "$TIMDO_TOKEN" ]]; then
+  if [[ "$BOT_OWNER_SECRET_SELECTED" == true ]]; then
+    auth_header="X-Internal-Secret: $TIMDO_SECRET"
+  elif [[ -n "$TIMDO_TOKEN" ]]; then
     auth_header="Authorization: Bearer $TIMDO_TOKEN"
   else
     auth_header="X-Internal-Secret: $TIMDO_SECRET"
@@ -480,7 +492,7 @@ resolve_goal_id() {
   local input="$1"
   [[ -z "$input" ]] && { echo ""; return; }
   local goals_raw
-  goals_raw=$(api_cached /goals)
+  goals_raw=$(api_cached /goals) || return $?
   echo "$goals_raw" | jq -r --arg input "$input" '
     ($input | ascii_downcase) as $q
     | ([.[] | select(.id | startswith($input))][0].id)
@@ -1338,9 +1350,9 @@ cmd_get() {
     row("Project:"; (.projectName // .category // "") + (if .projectKey then " (\(.projectKey))" else "" end)),
     row("Epic:"; if .epicId then (if $epic != "" then "\($epic) (\(.epicId[0:8]))" else .epicId end) else "" end),
     row("Life goal:"; if .goalId then (if $goal != "" then "\($goal) (\(.goalId[0:8]))" else .goalId end) else "" end),
-    row("Assignee:"; if .assigneeId == null then "unassigned" else (.assigneeName // .assigneeId) + (if .isMine == true then " (you)" else "" end) end),
-    row("Created by:"; ((.reporterName // "") + "  " + (.createdAt | long_dt)) | sub("^ +"; "")),
-    row("Last updated:"; ((.updatedByName // "") + "  " + (.updatedAt | long_dt)) | sub("^ +"; "")),
+    row("Assignee:"; if .assigneeId == null then "unassigned" else ((.assigneeName // .assigneeId) + (if .assigneeKind == "bot" then " [bot]" else "" end)) + (if .isMine == true then " (you)" else "" end) end),
+    row("Created by:"; (((.reporterName // "") + (if .reporterKind == "bot" then " [bot]" else "" end)) + "  " + (.createdAt | long_dt)) | sub("^ +"; "")),
+    row("Last updated:"; (((.updatedByName // "") + (if .updatedByKind == "bot" then " [bot]" else "" end)) + "  " + (.updatedAt | long_dt)) | sub("^ +"; "")),
     row("Access:"; if .canEdit == false then "view only" else "" end),
     row("Customer:"; .customer),
     row("Tags:"; .tags),
@@ -1393,13 +1405,15 @@ usage_add() {
 Usage: timdo add "Task title" -p <project> [options]
 
   --title "..."                Give the title this way when it starts with a dash
-  -p, --project <name>         Project (category) name. Mandatory unless --project-id is given.
-                               A name already used in a shared workspace puts the task there;
-                               a brand-new name creates the project in your personal workspace.
+  -p, --project <name>         Project/category name. Mandatory unless --project-id is given.
+                               Existing writable project. Humans can use a new name to create a
+                               project in their personal workspace. Bots must use an existing
+                               writable project in their home workspace.
   --project-id <id|KEY|path>   Exact project, e.g. ASX or "Northstar Workshop/Acme Solar"
-  --assign <who>               me (default), none, or a workspace member's name or email
+  --assign <who>               Humans default to me; bots default to unassigned.
+                               Use none or a human workspace member; bots cannot be assigned.
   -e, --epic <title|id>        Epic
-  -g, --goal <title|id>        One of your life goals (private to you)
+  -g, --goal <title|id>        Human-only: one of your private life goals; bots cannot have life goals.
   -r, --reason "..."           Why it matters
   -s, --status <status>        do (default), delay, delegate, awaiting, done
   --priority <1-10>            Default 5
@@ -1457,7 +1471,7 @@ similar_query() {
 # they were adding is already there, so put what they typed on it as a note (and add any links).
 note_instead() {
   local task="$1" title="$2" reason="$3" notes="$4" thread="$5" refs="$6"
-  local full_id title_note note body result
+  local full_id title_note note body result author
   full_id=$(echo "$task" | jq -r '.id')
   title_note=$(echo "$task" | jqt '"\(.id[0:8]) \"\(.title // .project | oneline | safe)\""')
   note="$title"
@@ -1465,6 +1479,7 @@ note_instead() {
   [[ -n "$notes" ]] && note+=$'\n'"$notes"
   body=$(jq -n --arg note "$note" --arg t "$thread" '{note: $note, gmailThreadId: (if $t == "" then null else $t end)}')
   result=$(api POST "/projects/$full_id/updates" -d "$body")
+  author=$(echo "$result" | jqt 'note_author')
 
   local ref_lines="" ref_failed=0 total i added
   total=$(echo "$refs" | jq 'length')
@@ -1477,7 +1492,7 @@ note_instead() {
   done
 
   if text_out; then
-    echo "${GRN}Noted${R} on $title_note as $(echo "$result" | jq -r '.authorName // "you"'). Nothing new was created."
+    echo "${GRN}Noted${R} on $title_note as $author. Nothing new was created."
     if [[ -n "$ref_lines" ]]; then printf '%s' "$ref_lines"; fi
   else
     echo "$result" | jq --arg id "$full_id" '. + {created: false, taskId: $id}'
@@ -1641,7 +1656,7 @@ cmd_add() {
 
   local epic_id="" goal_id=""
   [[ -n "$epic" ]] && epic_id=$(resolve_epic_id "$epic")
-  [[ -n "$goal" ]] && goal_id=$(resolve_goal_id "$goal")
+  if [[ -n "$goal" ]]; then goal_id=$(resolve_goal_id "$goal"); fi
 
   local has_source
   has_source=$(echo "$refs" | jq -r 'if any(.[]; (.role // "" | ascii_downcase) == "source") then "yes" else "" end')
@@ -1695,9 +1710,9 @@ cmd_add() {
       category: (if $category == "" then null else $category end),
       customer: (if $customer == "" then null else $customer end),
       tags: (if $tags == "" then null else $tags end),
-      epicId: (if $epicId == "" then null else $epicId end),
-      goalId: (if $goalId == "" then null else $goalId end)
+      epicId: (if $epicId == "" then null else $epicId end)
     }
+    + (if $goalId == "" then {} else {goalId: $goalId} end)
     + (if $projectId != "" then {projectId: $projectId} else {} end)
     + (if $assignSet then {assigneeId: (if $assigneeId == "null" or $assigneeId == "" then null else $assigneeId end)} else {} end)
     + (if ($refs | length) > 0 then {refs: $refs} else {} end)
@@ -1740,14 +1755,15 @@ Usage: timdo update <id> [options]
   --project "..."              Rename the task (historical flag name)
   -p, --category <name>        Move to another project by name
   --project-id <id|KEY|path>   Move to an exact project, e.g. ASX or "Northstar Workshop/Acme Solar"
-  --assign <who>               me, none, or a workspace member's name or email
-  --claim                      Assign it to yourself
+  --assign <who>               me, none, or a human workspace member; bots cannot be assignees
+  --claim                      Assign it to yourself (humans only)
   --unassign                   Leave it unassigned
   --done --do --delay --awaiting --delegate, or -s/--status <status>
   --await-until YYYY-MM-DD     Return date for awaiting tasks
   --priority <1-10>  --size <*..*****>  -r/--reason  -n/--notes  --customer  --tags
   -e, --epic <title|id|none>   Epic ("none" clears it)
-  -g, --goal <title|id|none>   Your life goal ("none" clears it)
+  -g, --goal <title|id|none>   Your private life goal (humans only; bots cannot have life goals)
+                               "none" clears it
   --thread <threadId>          Gmail thread
 
 Links to things outside TimDo (each flag repeats; a URL or kind:id, see: timdo ref --help).
@@ -1972,11 +1988,12 @@ cmd_add_note() {
   task=$(resolve_task "$id")
   full_id=$(echo "$task" | jq -r '.id')
 
-  local body result
+  local body result author
   body=$(jq -n --arg note "$note" --arg t "$gmailThreadId" '{note: $note, gmailThreadId: (if $t == "" then null else $t end)}')
   result=$(api POST "/projects/$full_id/updates" -d "$body")
+  author=$(echo "$result" | jqt 'note_author')
   if text_out; then
-    echo "${GRN}Noted${R} on $(echo "$task" | jq -r '"\(.id[0:8])  \"\(.project)\""') as $(echo "$result" | jq -r '.authorName // "you"')."
+    echo "${GRN}Noted${R} on $(echo "$task" | jq -r '"\(.id[0:8])  \"\(.project)\""') as $author."
   else
     echo "$result" | jq '.'
   fi
@@ -2121,7 +2138,7 @@ cmd_epic() {
         exit 1
       fi
       local goal_id="" project_id=""
-      [[ -n "$goal" ]] && goal_id=$(resolve_goal_id "$goal")
+      if [[ -n "$goal" ]]; then goal_id=$(resolve_goal_id "$goal"); fi
       [[ -n "$project_q" ]] && project_id=$(resolve_project "$project_q" | jq -r '.id')
       local body
       body=$(jq -n --arg title "$title" --arg category "$category" --arg goalId "$goal_id" \
@@ -2129,10 +2146,10 @@ cmd_epic() {
         '{
           title: $title,
           category: (if $category == "" then null else $category end),
-          goalId: (if $goalId == "" then null else $goalId end),
           description: (if $description == "" then null else $description end),
           status: $status
-        } + (if $projectId != "" then {projectId: $projectId} else {} end)')
+        } + (if $goalId == "" then {} else {goalId: $goalId} end)
+          + (if $projectId != "" then {projectId: $projectId} else {} end)')
       local created
       created=$(api POST /epics -d "$body")
       if text_out; then
@@ -2665,15 +2682,30 @@ cmd_activity() {
 # whoami
 # ---------------------------------------------------------------------------
 cmd_whoami() {
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      -h|--help) echo "Usage: timdo whoami   Who the CLI is acting as, and your workspaces"; return ;;
+      *) usage_die "Unknown option for whoami: $1" ;;
+    esac
+  fi
   local me
   me=$(api GET /users/me)
   if ! is_text; then
-    echo "$me" | jq --arg as "$TIMDO_AS" --arg api "$TIMDO_API" '. + {actingAs: (if $as == "" then null else $as end), api: $api}'
+    echo "$me" | jq --arg as "$TIMDO_AS" --arg api "$TIMDO_API" '
+      (if .kind == "bot" then del(.email) else . end)
+      + {actingAs: (if $as == "" then null else $as end), api: $api}'
     return
   fi
-  echo "$me" | jqt '(.name // .email | paint("bold")) + " <\(.email)>" + ("  id " + .id | paint("dim"))'
+  echo "$me" | jqt '((if .kind == "bot" then
+      ((.name // "Bot") + " (bot in " + (.workspace.name // "unknown workspace") + ", " + (.workspace.role // "member") + ")")
+    else ((.name // .email // "Unknown") + (if .email then " <" + .email + ">" else "" end)) end) | paint("bold"))
+    + ("  id " + (.id // "") | paint("dim"))'
   if [[ -n "$TIMDO_TOKEN" ]]; then
-    echo "  Signed in with a personal token (${TIMDO_TOKEN:0:10}...)."
+    if [[ "$(echo "$me" | jq -r '.kind // "human"')" == "bot" ]]; then
+      echo "  Signed in with a bot token."
+    else
+      echo "  Signed in with a personal token (${TIMDO_TOKEN:0:10}...)."
+    fi
   elif [[ -n "$TIMDO_AS" ]]; then
     echo "  Acting as $TIMDO_AS (X-Timdo-User), via the internal secret."
   else
@@ -2686,7 +2718,7 @@ cmd_whoami() {
 }
 
 # ---------------------------------------------------------------------------
-# login / logout (personal access tokens)
+# login / logout (personal and bot access tokens)
 # ---------------------------------------------------------------------------
 config_set_token() {
   local token="$1" dir tmp
@@ -2708,8 +2740,9 @@ usage_login() {
 Usage: timdo login              paste the token when asked (it isn't shown on screen)
        timdo login --token-stdin  read it from stdin, for scripts: pass-tool | timdo login --token-stdin
 
-Saves a personal access token so the CLI (and the TimDo MCP server) act as you.
-Create one in the web app: $APP_URL/settings/access
+Saves a personal or bot access token so the CLI (and the TimDo MCP server) act as that account.
+Create a personal token in the web app: $APP_URL/settings/access
+Issue a bot token with: timdo bot token <workspace> <bot>
 The token is stored in $TIMDO_CONFIG, readable only by you. Avoid putting a token on a
 command line: it ends up in your shell history.
 USAGE
@@ -2741,7 +2774,7 @@ cmd_login() {
   TIMDO_AS=""
   me=$(api GET /users/me)
   config_set_token "$token"
-  echo "$me" | jqt '"Logged in as " + (.name // .email) + " <" + .email + ">."'
+  echo "$me" | jqt 'if .kind == "bot" then "Logged in as " + (.name // "Bot") + " (bot in " + (.workspace.name // "unknown workspace") + ", " + (.workspace.role // "member") + ")." else "Logged in as " + (.name // .email) + (if .email then " <" + .email + ">" else "" end) + "." end'
   echo "Saved to $TIMDO_CONFIG. Try: timdo list do --mine"
 }
 
@@ -3067,15 +3100,312 @@ cmd_workspace() {
 }
 
 # ---------------------------------------------------------------------------
+# workspace bots
+# ---------------------------------------------------------------------------
+usage_bot() {
+  cat <<'EOF'
+Usage: timdo bot <list|create|rename|role|token|revoke-token|disable> ...
+
+Manage workspace bot identities and their credentials. Only a workspace owner or
+admin can do this. New tokens are shown once and cannot be recovered.
+
+  timdo bot list <workspace>
+  timdo bot create <workspace> "<name>" [--role member|viewer] [--token-name name]
+  timdo bot rename <workspace> <bot> "<name>"
+  timdo bot role <workspace> <bot> member|viewer
+  timdo bot token <workspace> <bot> [--name name]
+  timdo bot revoke-token <workspace> <bot> <token-id|prefix|name> [--yes]
+  timdo bot disable <workspace> <bot> [--yes]
+
+<workspace> resolves by a unique name, slug, or id prefix. <bot> resolves by a
+unique name or id prefix. Token revocation accepts a unique name or id prefix.
+Duplicate matches are errors. Use -- before positional values that start with a dash.
+Revoke and disable need an interactive confirmation or --yes; a pipe is not approval.
+
+--owner-secret is available only on these bot commands. It deliberately selects
+TIMDO_SECRET even when a personal token is configured. It never retries a token denial.
+
+Examples:
+  timdo bot list "Northstar Workshop"
+  timdo bot create "Northstar Workshop" "Forum watcher" --role viewer
+  timdo bot token "Northstar Workshop" "Forum watcher" --name "Nightly check"
+  timdo bot disable "Northstar Workshop" "Forum watcher" --yes
+EOF
+}
+
+resolve_bot_workspace() {
+  local q="$1" orgs found count names
+  orgs=$(sharing_json)
+  found=$(echo "$orgs" | jq --arg q "$q" '
+    ($q | ascii_downcase) as $l
+    | [.[] | select(
+        .id == $q or ((.id // "") | ascii_downcase | startswith($l))
+        or ((.name // "") | ascii_downcase == $l)
+        or ((.name // "") | ascii_downcase | startswith($l))
+        or ((.slug // "") | ascii_downcase == $l)
+      )] | unique_by(.id)')
+  count=$(echo "$found" | jq 'length')
+  if [[ "$count" -eq 0 ]]; then
+    names=$(echo "$orgs" | jq -r '[.[].name] | unique | join(", ")')
+    die "Not found: no workspace called \"$q\". Your workspaces: $names"
+  fi
+  if [[ "$count" -gt 1 ]]; then
+    die "Ambiguous workspace \"$q\": $(echo "$found" | jq -r '[.[] | "\(.name) (\(.id[0:8]))"] | join(", ")'). Use a longer name or id prefix."
+  fi
+  echo "$found" | jq -c '.[0]'
+}
+
+resolve_bot_record() {
+  local items="$1" q="$2" found count matches
+  found=$(jq -c --arg q "$q" '
+    ($q | ascii_downcase) as $l
+    | [.[] | select(
+        ((.id // "") | ascii_downcase == $l)
+        or ((.id // "") | ascii_downcase | startswith($l))
+        or ((.name // "") | ascii_downcase == $l)
+        or ((.name // "") | ascii_downcase | startswith($l))
+      )] | unique_by(.id)' <<< "$items")
+  count=$(echo "$found" | jq 'length')
+  if [[ "$count" -eq 0 ]]; then
+    die "Not found: no bot called or identified by \"$q\"."
+  fi
+  if [[ "$count" -gt 1 ]]; then
+    matches=$(echo "$found" | jq -r '[.[] | "\(.name) (\(.id))"] | join(", ")')
+    die "Ambiguous bot \"$q\": $matches. Use a longer name or id prefix."
+  fi
+  echo "$found" | jq -c '.[0]'
+}
+
+resolve_bot_token() {
+  local tokens="$1" q="$2" found count matches
+  found=$(jq -c --arg q "$q" '
+    ($q | ascii_downcase) as $l
+    | [.[] | select(
+        ((.id // "") | ascii_downcase == $l)
+        or ((.id // "") | ascii_downcase | startswith($l))
+        or ((.name // "") | ascii_downcase == $l)
+        or ((.name // "") | ascii_downcase | startswith($l))
+      )] | unique_by(.id)' <<< "$tokens")
+  count=$(echo "$found" | jq 'length')
+  if [[ "$count" -eq 0 ]]; then
+    die "Not found: no active token called or identified by \"$q\"."
+  fi
+  if [[ "$count" -gt 1 ]]; then
+    matches=$(echo "$found" | jq -r '[.[] | "\(.name) (\(.id))"] | join(", ")')
+    die "Ambiguous token \"$q\": $matches. Use a longer name or id prefix."
+  fi
+  echo "$found" | jq -c '.[0]'
+}
+
+bot_parse_arguments() {
+  local mode="$1"
+  shift
+  BOT_POSITIONALS=()
+  BOT_ROLE_ARG=""
+  BOT_TOKEN_NAME_ARG=""
+  BOT_NAME_ARG=""
+  BOT_CREATE_NAME_ARG=""
+  BOT_ASSUME_YES=false
+  local parse_options=true
+  while [[ $# -gt 0 ]]; do
+    if [[ "$parse_options" == true && "$1" == "--" ]]; then
+      parse_options=false
+      shift
+      continue
+    fi
+    if [[ "$parse_options" == false ]]; then
+      BOT_POSITIONALS+=("$1")
+      shift
+      continue
+    fi
+    case "$1" in
+      -h|--help) usage_bot; exit 0 ;;
+      --role)
+        [[ "$mode" == create ]] || usage_die "Error: --role is only used by bot create."
+        [[ $# -ge 2 && -n "$2" ]] || usage_die "Error: --role needs member or viewer."
+        BOT_ROLE_ARG="$2"; shift 2 ;;
+      --token-name)
+        [[ "$mode" == create ]] || usage_die "Error: --token-name is only used by bot create."
+        [[ $# -ge 2 && -n "$2" ]] || usage_die "Error: --token-name needs a name."
+        BOT_TOKEN_NAME_ARG="$2"; shift 2 ;;
+      --name)
+        [[ "$mode" == create || "$mode" == token ]] || usage_die "Error: --name is only used by bot create or token."
+        [[ $# -ge 2 && -n "$2" ]] || usage_die "Error: --name needs a name."
+        if [[ "$mode" == create ]]; then BOT_CREATE_NAME_ARG="$2"; else BOT_NAME_ARG="$2"; fi
+        shift 2 ;;
+      -y|--yes)
+        [[ "$mode" == revoke-token || "$mode" == disable ]] || usage_die "Error: --yes is only used by bot revoke-token and disable."
+        BOT_ASSUME_YES=true; shift ;;
+      --owner-secret)
+        usage_die "Error: --owner-secret must appear with the bot command, before -- positional data."
+        ;;
+      -*) usage_die "Unknown option for bot $mode: $1 (see: timdo bot --help)" ;;
+      *) BOT_POSITIONALS+=("$1"); shift ;;
+    esac
+  done
+}
+
+confirm_bot_or_exit() {
+  local prompt="$1" assume_yes="$2"
+  [[ "$assume_yes" == true ]] && return 0
+  if [[ -t 0 && -t 1 ]]; then
+    local answer=""
+    read -r -p "$prompt [y/N] " answer || true
+    if [[ "$answer" =~ ^[Yy] ]]; then return 0; fi
+    if text_out; then echo "Cancelled. Nothing changed."; else echo '{"cancelled":true,"changed":false}'; fi
+    exit 0
+  fi
+  die "Nothing changed. Re-run with --yes to confirm."
+}
+
+bot_json_result() {
+  local result="$1"
+  if [[ -z "$result" ]]; then echo '{"success":true}'; else echo "$result" | jq '.'; fi
+}
+
+bot_summary() {
+  echo "$1" | jqt '(.name // "Unnamed bot") + " (" + ((.id // "")[0:8]) + ") in \"" + $workspace + "\" as " + (.role // "disabled")' --arg workspace "$2"
+}
+
+cmd_bot() {
+  local -a remaining=()
+  local owner_flag=false parse_owner=true
+  while [[ $# -gt 0 ]]; do
+    if [[ "$parse_owner" == true && "$1" == "--" ]]; then
+      parse_owner=false
+      remaining+=("$1")
+    elif [[ "$parse_owner" == true && ( "$1" == "--role" || "$1" == "--token-name" || "$1" == "--name" ) ]]; then
+      remaining+=("$1")
+      shift
+      if [[ $# -gt 0 ]]; then remaining+=("$1"); fi
+    elif [[ "$parse_owner" == true && "$1" == "--owner-secret" ]]; then
+      [[ "$owner_flag" == false ]] || usage_die "Error: use --owner-secret once."
+      owner_flag=true
+    else
+      remaining+=("$1")
+    fi
+    shift
+  done
+  BOT_OWNER_SECRET_SELECTED="$owner_flag"
+  set -- "${remaining[@]}"
+
+  local subcmd="${1:-list}"
+  shift || true
+  case "$subcmd" in
+    -h|--help|help) usage_bot; return ;;
+    list|create|rename|role|token|revoke-token|disable) ;;
+    *) usage_die "Unknown bot subcommand: $subcmd (see: timdo bot --help)" ;;
+  esac
+  bot_parse_arguments "$subcmd" "$@"
+  local count="${#BOT_POSITIONALS[@]}"
+  local expected=0
+  case "$subcmd" in
+    list) expected=1 ;;
+    create) if [[ -n "$BOT_CREATE_NAME_ARG" ]]; then expected=1; else expected=2; fi ;;
+    token|disable) expected=2 ;;
+    rename|role|revoke-token) expected=3 ;;
+  esac
+  [[ "$count" -eq "$expected" ]] || usage_die "Usage: timdo bot $subcmd ... (see: timdo bot --help)"
+
+  local org org_id org_name base bots bot bot_id bot_name result body token_name token_value create_name
+  org=$(resolve_bot_workspace "${BOT_POSITIONALS[0]}")
+  org_id=$(echo "$org" | jq -r '.id')
+  org_name=$(echo "$org" | jq -r '.name')
+  base="/organisations/$(urlencode "$org_id")/bots"
+
+  case "$subcmd" in
+    list)
+      bots=$(api GET "$base")
+      jq -e 'type == "array"' >/dev/null <<< "$bots" || die "Error: bot list response was not an array."
+      if ! text_out; then echo "$bots" | jq '.'; return; fi
+      if [[ "$(echo "$bots" | jq 'length')" -eq 0 ]]; then echo "No bots in \"$org_name\"."; return; fi
+      echo "$bots" | jqt 'maxlen(.name // "") as $nw | .[]
+        | "  " + ((.name // "Unnamed bot") | pad($nw) | paint("bold"))
+          + "  " + ((.id // "")[0:8] | paint("dim"))
+          + "  " + ((.role // "disabled") | pad(8))
+          + "  " + (if .disabledAt then "disabled" else "active" end)
+          + "  " + ((.tokens // [] | length) | tostring) + " active token(s)"'
+      ;;
+
+    create)
+      case "$BOT_ROLE_ARG" in ""|member|viewer) ;; *) die "Error: --role must be member or viewer." ;; esac
+      create_name="${BOT_CREATE_NAME_ARG:-${BOT_POSITIONALS[1]:-}}"
+      body=$(jq -n --arg name "$create_name" --arg role "$BOT_ROLE_ARG" --arg tokenName "$BOT_TOKEN_NAME_ARG" \
+        '{name: $name} + (if $role == "" then {} else {role: $role} end) + (if $tokenName == "" then {} else {tokenName: $tokenName} end)')
+      result=$(api POST "$base" -d "$body")
+      echo "This response contains a one-time token. Store it now; it cannot be recovered. If it is lost, revoke it and issue another." >&2
+      if text_out; then
+        bot=$(echo "$result" | jq -c '.bot')
+        token_value=$(echo "$result" | jq -r '.token')
+        echo "Created bot $(echo "$bot" | jqt '"\\(.name)"') in \"$org_name\" as $(echo "$bot" | jq -r '.role // "disabled"')."
+        echo "Bot ID: $(echo "$bot" | jq -r '.id')"
+        echo "One-time token: $token_value"
+      else
+        echo "$result" | jq '.'
+      fi
+      ;;
+
+    rename|role|token|revoke-token|disable)
+      bots=$(api GET "$base")
+      bot=$(resolve_bot_record "$bots" "${BOT_POSITIONALS[1]}")
+      bot_id=$(echo "$bot" | jq -r '.id')
+      bot_name=$(echo "$bot" | jq -r '.name')
+      local bot_path="$base/$(urlencode "$bot_id")"
+      case "$subcmd" in
+        rename)
+          result=$(api PUT "$bot_path" -d "$(jq -n --arg name "${BOT_POSITIONALS[2]}" '{name: $name}')")
+          if text_out; then echo "Renamed bot in \"$org_name\": $(bot_summary "$result" "$org_name")."; else echo "$result" | jq '.'; fi
+          ;;
+        role)
+          case "${BOT_POSITIONALS[2]}" in member|viewer) ;; *) die "Error: bot role must be member or viewer." ;; esac
+          result=$(api PUT "$bot_path" -d "$(jq -n --arg role "${BOT_POSITIONALS[2]}" '{role: $role}')")
+          if text_out; then echo "Updated bot role in \"$org_name\": $(bot_summary "$result" "$org_name")."; else echo "$result" | jq '.'; fi
+          ;;
+        token)
+          token_name="${BOT_NAME_ARG:-CLI token}"
+          result=$(api POST "$bot_path/tokens" -d "$(jq -n --arg name "$token_name" '{name: $name}')")
+          echo "This response contains a one-time token. Store it now; it cannot be recovered. If it is lost, revoke it and issue another." >&2
+          if text_out; then
+            token_value=$(echo "$result" | jq -r '.token')
+            echo "Issued a replacement token for bot \"$bot_name\" in \"$org_name\"."
+            echo "Token ID: $(echo "$result" | jq -r '.id')"
+            echo "One-time token: $token_value"
+          else
+            echo "$result" | jq '.'
+          fi
+          ;;
+        revoke-token)
+          local tokens token token_id token_label
+          tokens=$(echo "$bot" | jq -c '.tokens // []')
+          token=$(resolve_bot_token "$tokens" "${BOT_POSITIONALS[2]}")
+          token_id=$(echo "$token" | jq -r '.id')
+          token_label="${token_id:0:12}"
+          confirm_bot_or_exit "Revoke token $token_label from bot \"$bot_name\" in \"$org_name\"?" "$BOT_ASSUME_YES"
+          result=$(api DELETE "$bot_path/tokens/$(urlencode "$token_id")")
+          if text_out; then echo "Revoked token $token_label from bot \"$bot_name\" in \"$org_name\"."; else bot_json_result "$result"; fi
+          ;;
+        disable)
+          confirm_bot_or_exit "Disable bot \"$bot_name\" in \"$org_name\"? This revokes its tokens and removes its workspace membership." "$BOT_ASSUME_YES"
+          result=$(api DELETE "$bot_path")
+          if text_out; then echo "Disabled bot \"$bot_name\" in \"$org_name\"."; else bot_json_result "$result"; fi
+          ;;
+      esac
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
 # help
 # ---------------------------------------------------------------------------
 cmd_help() {
   cat <<'HELP'
-timdo: command line client for TimDo (tasks, epics, life goals, shared workspaces)
+timdo: command line client for TimDo (tasks, epics, life goals, workspaces and bots)
 
 Structure: workspace -> project -> epic -> task. Everyone in a workspace sees all of
 its projects, epics, tasks, notes and activity. Roles: owner, admin, member, viewer
-(read-only). Life goals are private to each person. New tasks are assigned to you.
+(read-only). Human-created tasks default to their creator; bot-created tasks default to unassigned.
+Bots must use existing projects in their home workspace and cannot be assigned or have life goals.
+Life goals are private to people.
 
 GLOBAL FLAGS (anywhere on the line):
   --json                       JSON output (raw API objects, plus extra fields noted below)
@@ -3088,14 +3418,15 @@ GLOBAL FLAGS (anywhere on the line):
   --no-color                   No colour (colour is only used on a terminal; NO_COLOR is respected)
 
 SIGNING IN:
-  login                        Save a personal token (create one at /settings/access in the web app)
+  login                        Save a personal or bot token (personal: /settings/access)
+                               Issue bot tokens with: timdo bot token <workspace> <bot>
   logout                       Remove the saved token
   whoami                       Who the CLI is acting as, and your workspaces
 
 ENVIRONMENT:
-  TIMDO_TOKEN (personal token), TIMDO_API, TIMDO_CONFIG (default ~/.config/timdo/config).
+  TIMDO_TOKEN (personal or bot token), TIMDO_API, TIMDO_CONFIG (default ~/.config/timdo/config).
   Owner only: TIMDO_SECRET, TIMDO_AS. Environment variables override the config file.
-  If both a token and the secret are set, the token wins.
+  If both a token and the secret are set, the token wins except for bot commands with --owner-secret.
 
 TASKS:
   list [status] [opts]         List tasks; --limit 1-200 and --cursor page through results
@@ -3131,6 +3462,17 @@ LINKS TO THINGS OUTSIDE TIMDO (refs):
   add ... --source <x> --on-duplicate error|return|report
                                When that source already has a task: fail (default), print that
                                task, or add this report to it. Safe to retry: one item, one task.
+
+BOTS:
+  bot list <workspace>         List safe bot identities and active token counts
+  bot create <workspace> <name> [--role member|viewer] [--token-name name]
+  bot rename <workspace> <bot> <name>  bot role <workspace> <bot> member|viewer
+  bot token <workspace> <bot> [--name name]
+  bot revoke-token <workspace> <bot> <token-id|prefix|name> [--yes]
+  bot disable <workspace> <bot> [--yes]
+                               New tokens are shown once. Revoke and disable need
+                               an interactive confirmation or --yes.
+                               --owner-secret explicitly selects TIMDO_SECRET for bot commands only.
 
 EPICS, GOALS AND OVERVIEWS:
   epic list|get|add|update|delete   Epics (see: timdo epic --help)
@@ -3172,6 +3514,7 @@ HELP
 }
 
 case "${1:-help}" in
+  bot)                 shift; cmd_bot "$@" ;;
   list|ls)             shift; cmd_list "$@" ;;
   counts)               shift; cmd_counts "$@" ;;
   add)                 shift; cmd_add "$@" ;;

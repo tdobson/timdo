@@ -1,6 +1,9 @@
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { Context, Next } from 'hono';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import * as schema from '../db/schema';
 import type { Env } from '../index';
+import { withActorContext } from '../services/requestActorContext';
 import { isPersonalToken, resolveToken } from '../services/tokenService';
 
 export async function authMiddleware(c: Context<{ Bindings: Env }>, next: Next) {
@@ -37,9 +40,21 @@ export async function authMiddleware(c: Context<{ Bindings: Env }>, next: Next) 
       return c.json({ error: 'Unauthorized', message: 'Token missing subject (sub) claim' }, 401);
     }
 
+    const storedUser = await c
+      .get('db')
+      .select({ kind: schema.users.kind })
+      .from(schema.users)
+      .where(eq(schema.users.id, payload.sub))
+      .get();
+    if (storedUser?.kind === 'bot') {
+      return c.json({ error: 'Bots cannot use web authentication' }, 401);
+    }
+
     console.log(`[Auth Middleware] Success: User ID ${payload.sub}`);
     c.set('userId', payload.sub);
-    await next();
+    c.set('userKind', 'human');
+    c.set('authMethod', 'jwt');
+    await withActorContext(c.get('db'), { via: 'web' }, () => next());
   } catch (err) {
     let errorMessage = 'Token validation failed';
     if (err instanceof Error) {
@@ -89,24 +104,26 @@ async function personalTokenAuth(c: Context<{ Bindings: Env }>, next: Next, toke
   if (!resolved) {
     return c.json({ error: 'This token is invalid or has been revoked' }, 401);
   }
+  if (resolved.disabled) {
+    return c.json({ error: 'This bot has been disabled' }, 401);
+  }
   const { userId } = resolved;
   const asEmail = c.req.header('X-Timdo-User')?.trim().toLowerCase();
   if (asEmail) {
-    const { users } = await import('../db/schema');
-    const { eq } = await import('drizzle-orm');
     const me = await db
-      .select({ email: users.email })
-      .from(users)
-      .where(eq(users.id, userId))
+      .select({ email: schema.users.email })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
       .get();
     if (me?.email.toLowerCase() !== asEmail) {
       return c.json({ error: 'A personal token can only act as its owner' }, 403);
     }
   }
   c.set('userId', userId);
+  c.set('userKind', resolved.kind);
   c.set('authMethod', 'token');
   c.set('tokenId', resolved.tokenId);
-  return next();
+  return withActorContext(db, { via: 'token', viaDetail: resolved.name }, () => next());
 }
 
 export async function combinedAuthMiddleware(c: Context<{ Bindings: Env }>, next: Next) {
@@ -130,23 +147,63 @@ export async function combinedAuthMiddleware(c: Context<{ Bindings: Env }>, next
       return c.json({ error: 'Forbidden', message: 'Invalid internal secret' }, 403);
     }
 
-    // The CLI and MCP act as the account owner (the first user to sign up) unless
-    // X-Timdo-User names another account by email.
     const db = c.get('db');
-    const { users } = await import('../db/schema');
-    const { asc, eq } = await import('drizzle-orm');
     const asEmail = c.req.header('X-Timdo-User')?.trim().toLowerCase();
     const user = asEmail
-      ? await db.select({ id: users.id }).from(users).where(eq(users.email, asEmail)).get()
-      : await db.select({ id: users.id }).from(users).orderBy(asc(users.createdAt)).limit(1).get();
+      ? await db
+          .select({
+            id: schema.users.id,
+            kind: schema.users.kind,
+            botOrgId: schema.users.botOrgId,
+            disabledAt: schema.users.disabledAt,
+          })
+          .from(schema.users)
+          .where(eq(schema.users.email, asEmail))
+          .get()
+      : await db
+          .select({
+            id: schema.users.id,
+            kind: schema.users.kind,
+            botOrgId: schema.users.botOrgId,
+            disabledAt: schema.users.disabledAt,
+          })
+          .from(schema.users)
+          .where(eq(schema.users.kind, 'human'))
+          .orderBy(asc(schema.users.createdAt), asc(schema.users.id))
+          .limit(1)
+          .get();
 
     if (!user) {
-      return c.json({ error: asEmail ? `No user with email ${asEmail}` : 'No user found' }, 404);
+      const reservedEmail = asEmail?.endsWith('@bots.timdo.invalid');
+      return c.json(
+        { error: asEmail && !reservedEmail ? `No user with email ${asEmail}` : 'No user found' },
+        404
+      );
+    }
+    if (user.kind === 'bot') {
+      if (user.disabledAt !== null) {
+        return c.json({ error: 'This bot has been disabled' }, 401);
+      }
+      const member = await db
+        .select({ role: schema.organisationMembers.role })
+        .from(schema.organisationMembers)
+        .where(
+          and(
+            eq(schema.organisationMembers.userId, user.id),
+            eq(schema.organisationMembers.orgId, user.botOrgId ?? ''),
+            inArray(schema.organisationMembers.role, ['member', 'viewer'])
+          )
+        )
+        .get();
+      if (!member) {
+        return c.json({ error: 'This bot is not active' }, 401);
+      }
     }
 
     c.set('userId', user.id);
+    c.set('userKind', user.kind === 'bot' ? 'bot' : 'human');
     c.set('authMethod', 'internal');
-    return next();
+    return withActorContext(db, { via: 'owner_secret' }, () => next());
   }
 
   return c.json(

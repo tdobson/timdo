@@ -29,9 +29,10 @@ import {
   type ParsedRef,
   type RefRole,
 } from '../lib/refs';
-import { AccessError, canEdit, getAccessibleProjects, getUserNames } from './accessService';
+import { AccessError, canEdit, getAccessibleProjects } from './accessService';
 import { logActivity } from './activityService';
-import { loadEditable, getTaskView } from './projectService';
+import { getPeople, type PersonKind, type PersonProjection } from './personService';
+import { getTaskView, loadEditable } from './projectService';
 
 type DB = DrizzleD1Database<typeof schema>;
 type RefRow = typeof schema.taskRefs.$inferSelect;
@@ -49,6 +50,7 @@ export interface RefView {
   displayLabel: string;
   createdById: string | null;
   createdByName: string | null;
+  createdByKind: PersonKind | null;
   createdAt: string | null;
   canDelete: boolean;
 }
@@ -131,7 +133,12 @@ export function resolveRefInput(input: RefInput): ResolvedRef {
   return { role, kind: parsed.kind, ref: parsed.ref, url: url ?? parsed.url, label };
 }
 
-function toRefView(row: RefRow, names: Map<string, string>, canDelete: boolean): RefView {
+function toRefView(
+  row: RefRow,
+  people: Map<string, PersonProjection>,
+  canDelete: boolean
+): RefView {
+  const creator = row.createdBy ? people.get(row.createdBy) : undefined;
   return {
     id: row.id,
     taskId: row.taskId,
@@ -143,7 +150,8 @@ function toRefView(row: RefRow, names: Map<string, string>, canDelete: boolean):
     label: row.label,
     displayLabel: row.label || defaultLabel(row.kind, row.ref, row.url),
     createdById: row.createdBy,
-    createdByName: row.createdBy ? (names.get(row.createdBy) ?? null) : null,
+    createdByName: creator?.name ?? null,
+    createdByKind: creator?.kind ?? (row.createdBy ? 'human' : null),
     createdAt: row.createdAt,
     canDelete,
   };
@@ -188,13 +196,13 @@ export async function fetchRefRows(
 /** Turn fetched rows into views; `names` must cover each row's created_by. */
 export function refViewsFor(
   rows: RefRow[] | undefined,
-  names: Map<string, string>,
+  people: Map<string, PersonProjection>,
   canDelete: boolean
 ): RefView[] {
   return (rows ?? [])
     .slice()
     .sort(byRoleThenAge)
-    .map((r) => toRefView(r, names, canDelete));
+    .map((r) => toRefView(r, people, canDelete));
 }
 
 /** Refs for many task views at once, keyed by task id. */
@@ -207,13 +215,13 @@ export async function loadRefsForViews(
 ): Promise<Map<string, RefView[]>> {
   const rows = await fetchRefRows(db, orgIds, taskIds);
   const all = Array.from(rows.values()).flat();
-  const names = await getUserNames(
+  const people = await getPeople(
     db,
     all.map((r) => r.createdBy)
   );
   const views = new Map<string, RefView[]>();
   for (const [taskId, list] of rows) {
-    views.set(taskId, refViewsFor(list, names, canEditByTask.get(taskId) ?? false));
+    views.set(taskId, refViewsFor(list, people, canEditByTask.get(taskId) ?? false));
   }
   return views;
 }
@@ -258,8 +266,8 @@ export async function listRefs(db: DB, userId: string, taskId: string): Promise<
 }
 
 async function viewOf(db: DB, row: RefRow, canDelete = true): Promise<RefView> {
-  const names = await getUserNames(db, [row.createdBy]);
-  return toRefView(row, names, canDelete);
+  const people = await getPeople(db, [row.createdBy]);
+  return toRefView(row, people, canDelete);
 }
 
 /* ---------------------------------------------------------------- source rule */
@@ -287,10 +295,7 @@ export interface SourceHolderGuard {
 export class SourceHolderChangedError extends Error {}
 
 /** SQL predicate used by duplicate-report writes to keep their source holder stable. */
-export function sourceHolderCondition(
-  expected: SourceHolderGuard,
-  requireEditor = false
-): SQL {
+export function sourceHolderCondition(expected: SourceHolderGuard, requireEditor = false): SQL {
   const editor = requireEditor
     ? sql`AND EXISTS (
         SELECT 1 FROM OrganisationMembers report_member
@@ -316,7 +321,10 @@ export function sourceHolderCondition(
 }
 
 /** Check source ownership without revealing the holder to a caller who cannot see it. */
-export async function hasCurrentSourceHolder(db: DB, expected: SourceHolderGuard): Promise<boolean> {
+export async function hasCurrentSourceHolder(
+  db: DB,
+  expected: SourceHolderGuard
+): Promise<boolean> {
   const rows = await db.all(sql`SELECT 1 WHERE ${sourceHolderCondition(expected)}`);
   return rows.length > 0;
 }
@@ -691,7 +699,14 @@ export async function addResolvedRefs(
   const loaded = await loadEditableForSourceGuard(db, userId, taskId, sourceGuard);
   let added = 0;
   for (const r of refs) {
-    const { existing } = await addResolvedRef(db, userId, loaded.task, loaded.project.orgId, r, sourceGuard);
+    const { existing } = await addResolvedRef(
+      db,
+      userId,
+      loaded.task,
+      loaded.project.orgId,
+      r,
+      sourceGuard
+    );
     added += existing ? 0 : 1;
   }
   return added;
@@ -868,7 +883,9 @@ async function addResolvedRef(
         const sourceInsert = insertSourceIfAvailable(db, row);
         if (releases.length) {
           const statements: BatchItem<'sqlite'>[] = [...releases, sourceInsert];
-          const results = await db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
+          const results = await db.batch(
+            statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]
+          );
           sourceInserted = (results[releases.length] as unknown[][]).length > 0;
         } else {
           sourceInserted = (await sourceInsert).length > 0;
@@ -891,7 +908,10 @@ async function addResolvedRef(
             throw new AccessError(NOT_FOUND, 404);
           }
           if (attempt === maxAttempts) {
-            throw new RefError('Source ownership changed while adding the link. Retry the request.', 409);
+            throw new RefError(
+              'Source ownership changed while adding the link. Retry the request.',
+              409
+            );
           }
           continue;
         }
@@ -922,7 +942,10 @@ async function addResolvedRef(
         throw conflict;
       }
       if (attempt === maxAttempts) {
-        throw new RefError('Source ownership changed while adding the link. Retry the request.', 409);
+        throw new RefError(
+          'Source ownership changed while adding the link. Retry the request.',
+          409
+        );
       }
       continue;
     }

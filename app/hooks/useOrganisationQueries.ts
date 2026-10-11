@@ -17,29 +17,41 @@ import type { InviteMemberInput, OrganisationCreateInput } from '../types/organi
 // Query keys
 export const organisationKeys = {
   all: ['organisations'] as const,
-  lists: () => [...organisationKeys.all, 'list'] as const,
-  detail: (id: string) => [...organisationKeys.all, 'detail', id] as const,
-  members: (id: string) => [...organisationKeys.all, 'members', id] as const,
-  invites: (id: string) => [...organisationKeys.all, 'invites', id] as const,
-  userSearch: (id: string, query: string) =>
-    [...organisationKeys.all, 'search', id, query] as const,
+  account: (accountId: string | null) => ['organisations', accountId] as const,
+  lists: (accountId: string | null) => [...organisationKeys.account(accountId), 'list'] as const,
+  detail: (id: string, accountId: string | null) =>
+    [...organisationKeys.account(accountId), 'detail', id] as const,
+  members: (id: string, accountId: string | null) =>
+    [...organisationKeys.account(accountId), 'members', id] as const,
+  invites: (id: string, accountId: string | null) =>
+    [...organisationKeys.account(accountId), 'invites', id] as const,
+  userSearch: (id: string, query: string, accountId: string | null) =>
+    [...organisationKeys.account(accountId), 'search', id, query] as const,
 };
+
+function useIdentity() {
+  const { data: session } = useSession();
+  return {
+    token: session?.accessToken,
+    accountId: session?.user?.id || session?.user?.email || null,
+  };
+}
 
 /**
  * Fetch all organisations for current user
  */
 export function useOrganisations() {
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useQuery({
-    queryKey: organisationKeys.lists(),
-    queryFn: () => {
-      if (!session?.accessToken) {
+    queryKey: organisationKeys.lists(accountId),
+    queryFn: ({ signal }) => {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return fetchOrganisations(session.accessToken);
+      return fetchOrganisations(token, signal);
     },
-    enabled: !!session?.accessToken,
+    enabled: !!token && !!accountId,
   });
 }
 
@@ -47,17 +59,17 @@ export function useOrganisations() {
  * Fetch single organisation details
  */
 export function useOrganisation(id: string) {
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useQuery({
-    queryKey: organisationKeys.detail(id),
-    queryFn: () => {
-      if (!session?.accessToken) {
+    queryKey: organisationKeys.detail(id, accountId),
+    queryFn: ({ signal }) => {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return fetchOrganisation(id, session.accessToken);
+      return fetchOrganisation(id, token, signal);
     },
-    enabled: !!session?.accessToken && !!id,
+    enabled: !!token && !!accountId && !!id,
   });
 }
 
@@ -65,17 +77,17 @@ export function useOrganisation(id: string) {
  * Fetch members of an organisation
  */
 export function useOrganisationMembers(orgId: string) {
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useQuery({
-    queryKey: organisationKeys.members(orgId),
-    queryFn: () => {
-      if (!session?.accessToken) {
+    queryKey: organisationKeys.members(orgId, accountId),
+    queryFn: ({ signal }) => {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return fetchOrganisationMembers(orgId, session.accessToken);
+      return fetchOrganisationMembers(orgId, token, signal);
     },
-    enabled: !!session?.accessToken && !!orgId,
+    enabled: !!token && !!accountId && !!orgId,
   });
 }
 
@@ -83,17 +95,17 @@ export function useOrganisationMembers(orgId: string) {
  * Fetch pending invites of an organisation
  */
 export function useOrganisationInvites(orgId: string) {
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useQuery({
-    queryKey: organisationKeys.invites(orgId),
-    queryFn: () => {
-      if (!session?.accessToken) {
+    queryKey: organisationKeys.invites(orgId, accountId),
+    queryFn: ({ signal }) => {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return fetchOrganisationInvites(orgId, session.accessToken);
+      return fetchOrganisationInvites(orgId, token, signal);
     },
-    enabled: !!session?.accessToken && !!orgId,
+    enabled: !!token && !!accountId && !!orgId,
   });
 }
 
@@ -101,17 +113,17 @@ export function useOrganisationInvites(orgId: string) {
  * Search users for autocomplete
  */
 export function useSearchUsers(orgId: string, query: string) {
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useQuery({
-    queryKey: organisationKeys.userSearch(orgId, query),
-    queryFn: () => {
-      if (!session?.accessToken) {
+    queryKey: organisationKeys.userSearch(orgId, query, accountId),
+    queryFn: ({ signal }) => {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return searchUsers(orgId, query, session.accessToken);
+      return searchUsers(orgId, query, token, signal);
     },
-    enabled: !!session?.accessToken && !!orgId && query.trim().length > 0,
+    enabled: !!token && !!accountId && !!orgId && query.trim().length > 0,
   });
 }
 
@@ -120,17 +132,17 @@ export function useSearchUsers(orgId: string, query: string) {
  */
 export function useCreateOrganisation() {
   const queryClient = useQueryClient();
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useMutation({
     mutationFn: (data: OrganisationCreateInput) => {
-      if (!session?.accessToken) {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return createOrganisation(data, session.accessToken);
+      return createOrganisation(data, token);
     },
     onSuccess: (newOrg) => {
-      queryClient.invalidateQueries({ queryKey: organisationKeys.all });
+      queryClient.invalidateQueries({ queryKey: organisationKeys.account(accountId) });
       notifications.show({
         title: 'Organisation Created',
         message: `Successfully created "${newOrg.name}"`,
@@ -152,17 +164,17 @@ export function useCreateOrganisation() {
  */
 export function useInviteMember(orgId: string) {
   const queryClient = useQueryClient();
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useMutation({
     mutationFn: (data: InviteMemberInput) => {
-      if (!session?.accessToken) {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return inviteUser(orgId, data, session.accessToken);
+      return inviteUser(orgId, data, token);
     },
     onSuccess: (invite) => {
-      queryClient.invalidateQueries({ queryKey: organisationKeys.invites(orgId) });
+      queryClient.invalidateQueries({ queryKey: organisationKeys.invites(orgId, accountId) });
       notifications.show({
         title: 'Invitation Sent',
         message: `Invitation sent to ${invite.email}`,
@@ -184,17 +196,17 @@ export function useInviteMember(orgId: string) {
  */
 export function useUpdateMemberRole(orgId: string) {
   const queryClient = useQueryClient();
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useMutation({
     mutationFn: ({ userId, role }: { userId: string; role: 'admin' | 'member' }) => {
-      if (!session?.accessToken) {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return updateMemberRole(orgId, userId, role, session.accessToken);
+      return updateMemberRole(orgId, userId, role, token);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: organisationKeys.members(orgId) });
+      queryClient.invalidateQueries({ queryKey: organisationKeys.members(orgId, accountId) });
       notifications.show({
         title: 'Role Updated',
         message: 'Member role updated successfully',
@@ -216,17 +228,17 @@ export function useUpdateMemberRole(orgId: string) {
  */
 export function useRemoveMember(orgId: string) {
   const queryClient = useQueryClient();
-  const { data: session } = useSession();
+  const { token, accountId } = useIdentity();
 
   return useMutation({
     mutationFn: (userId: string) => {
-      if (!session?.accessToken) {
+      if (!token) {
         throw new Error('Not authenticated');
       }
-      return removeMember(orgId, userId, session.accessToken);
+      return removeMember(orgId, userId, token);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: organisationKeys.members(orgId) });
+      queryClient.invalidateQueries({ queryKey: organisationKeys.members(orgId, accountId) });
       notifications.show({
         title: 'Member Removed',
         message: 'Member removed successfully',

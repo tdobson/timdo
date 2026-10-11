@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import { AccessError } from '../services/accessService';
+import { BotError } from '../services/botService';
 import { RefError } from '../services/refService';
 
 /**
@@ -17,6 +18,9 @@ export function onApiError(err: Error, c: Context) {
       },
       err.status
     );
+  }
+  if (err instanceof BotError) {
+    return c.json({ error: err.message }, err.status);
   }
   if (err instanceof AccessError) {
     return c.json({ error: err.message }, err.status);

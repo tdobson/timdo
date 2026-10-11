@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from '../index';
 import { generateActiveTasksPosterSvg } from '../services/activePosterService';
 import { getCompletedPosterData } from '../services/completedPosterService';
+import { assertHumanGoals } from '../services/goalService';
 import { getProjectsForUser } from '../services/projectService';
 import { generateTiledA4Svgs, generateWallOfDoneSvg } from '../services/wallOfDoneSvgService';
 
@@ -109,6 +110,7 @@ posterApp.get('/active', async (c) => {
 posterApp.get('/goals-rhythm', async (c) => {
   const userId = c.get('userId');
   const db = c.get('db');
+  await assertHumanGoals(db, userId);
   const format = c.req.query('format') || 'svg';
   const isTiled = c.req.query('tiled') === 'true';
 

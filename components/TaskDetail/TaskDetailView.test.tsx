@@ -1,6 +1,6 @@
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MantineProvider } from '@mantine/core';
 import * as orgQueries from '../../app/hooks/useOrganisationQueries';
@@ -174,6 +174,21 @@ describe('TaskDetailView', () => {
     expect(screen.getByTestId('activity-feed')).toHaveTextContent('activity for task-123');
   });
 
+  it('marks bot task authors and updaters without inferring markers for old records', () => {
+    renderComponent({
+      ...mockTask,
+      reporterName: 'Forum watcher',
+      reporterKind: 'bot',
+      updatedByName: 'Forum watcher',
+      updatedByKind: 'bot',
+    } as Project);
+
+    const attribution = screen.getByTestId('task-attribution');
+    expect(attribution).toHaveTextContent('Created by Forum watcher');
+    expect(attribution).toHaveTextContent('Last updated by Forum watcher');
+    expect(within(attribution).getAllByLabelText('Bot identity')).toHaveLength(2);
+  });
+
   it('says "you" for things I did', () => {
     renderComponent({ ...mockTask, reporterId: 'user-1', reporterName: 'Casey Example' });
 
@@ -315,7 +330,9 @@ describe('TaskDetailView', () => {
     const goalInput = screen.getByRole('textbox', { name: /linked life goal/i });
     await user.click(goalInput);
 
-    const option = await screen.findByRole('option', { name: /\[FOCUS\] Plan a community garden/i });
+    const option = await screen.findByRole('option', {
+      name: /\[FOCUS\] Plan a community garden/i,
+    });
     await user.click(option);
 
     expect(mockUpdateProjectMutate).toHaveBeenCalledWith({

@@ -58,6 +58,7 @@ import { PRIVATE_GOAL_HINT, ProjectPicker } from '../ProjectPicker/ProjectPicker
 import { ProjectStars } from '../ProjectStars/ProjectStars';
 import {
   absoluteTime,
+  BotMarker,
   canEditItem,
   personLabel,
   relativeTime,
@@ -320,7 +321,8 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
                             Created by{' '}
                             {personLabel(epic.createdByName, epic.createdById, userId, {
                               capitalise: false,
-                            })}
+                            })}{' '}
+                            <BotMarker kind={epic.createdByKind} />
                           </Text>
                         </Tooltip>
                       </Group>
@@ -331,7 +333,8 @@ export function EpicDetailView({ epic, tasks, goals }: EpicDetailViewProps) {
                           · Last updated by{' '}
                           {personLabel(epic.updatedByName, epic.updatedById, userId, {
                             capitalise: false,
-                          })}
+                          })}{' '}
+                          <BotMarker kind={epic.updatedByKind} />
                           {epic.updatedAt ? `, ${relativeTime(epic.updatedAt)}` : ''}
                         </Text>
                       </Tooltip>

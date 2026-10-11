@@ -13,7 +13,7 @@ import * as schema from '../db/schema';
 type DB = DrizzleD1Database<typeof schema>;
 
 export const TOKEN_PREFIX = 'tdo_';
-const MAX_ACTIVE_TOKENS = 20;
+export const MAX_ACTIVE_TOKENS = 20;
 // Only record "last used" this often, to keep D1 writes down
 const LAST_USED_GRANULARITY_MS = 60 * 60 * 1000;
 
@@ -42,11 +42,14 @@ function randomSecret(): string {
     .replace(/=+$/, '');
 }
 
-export async function createToken(db: DB, userId: string, name: string) {
-  const active = await listTokens(db, userId);
-  if (active.length >= MAX_ACTIVE_TOKENS) {
-    throw new Error(`You already have ${MAX_ACTIVE_TOKENS} tokens. Revoke one you no longer use.`);
-  }
+export interface PreparedToken {
+  row: typeof schema.apiTokens.$inferInsert;
+  token: string;
+  summary: TokenSummary;
+}
+
+/** Prepare a one-time credential and its hash without persisting the plaintext. */
+export async function prepareToken(userId: string, name: string): Promise<PreparedToken> {
   const token = `${TOKEN_PREFIX}${randomSecret()}`;
   const row = {
     id: uuidv4(),
@@ -56,15 +59,35 @@ export async function createToken(db: DB, userId: string, name: string) {
     prefix: token.slice(0, TOKEN_PREFIX.length + 6),
     createdAt: new Date().toISOString(),
   };
-  await db.insert(schema.apiTokens).values(row);
   return {
-    id: row.id,
-    name: row.name,
-    prefix: row.prefix,
-    createdAt: row.createdAt,
-    lastUsedAt: null,
+    row,
     token,
+    summary: {
+      id: row.id,
+      name: row.name,
+      prefix: row.prefix,
+      createdAt: row.createdAt ?? null,
+      lastUsedAt: null,
+    },
   };
+}
+
+export async function createToken(db: DB, userId: string, name: string) {
+  const user = await db
+    .select({ kind: schema.users.kind })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .get();
+  if (user?.kind === 'bot') {
+    throw new Error('Bots cannot create personal tokens');
+  }
+  const active = await listTokens(db, userId);
+  if (active.length >= MAX_ACTIVE_TOKENS) {
+    throw new Error(`You already have ${MAX_ACTIVE_TOKENS} tokens. Revoke one you no longer use.`);
+  }
+  const prepared = await prepareToken(userId, name);
+  await db.insert(schema.apiTokens).values(prepared.row);
+  return { ...prepared.summary, token: prepared.token };
 }
 
 export async function listTokens(db: DB, userId: string): Promise<TokenSummary[]> {
@@ -100,7 +123,13 @@ export async function revokeToken(db: DB, userId: string, tokenId: string) {
 export async function resolveToken(
   db: DB,
   token: string
-): Promise<{ userId: string; tokenId: string } | null> {
+): Promise<{
+  userId: string;
+  tokenId: string;
+  name: string;
+  kind: 'human' | 'bot';
+  disabled: boolean;
+} | null> {
   if (!isPersonalToken(token)) {
     return null;
   }
@@ -108,19 +137,44 @@ export async function resolveToken(
     .select({
       id: schema.apiTokens.id,
       userId: schema.apiTokens.userId,
+      name: schema.apiTokens.name,
       lastUsedAt: schema.apiTokens.lastUsedAt,
+      revokedAt: schema.apiTokens.revokedAt,
+      kind: schema.users.kind,
+      botOrgId: schema.users.botOrgId,
+      disabledAt: schema.users.disabledAt,
     })
     .from(schema.apiTokens)
-    .where(
-      and(
-        eq(schema.apiTokens.tokenHash, await hashToken(token)),
-        isNull(schema.apiTokens.revokedAt)
-      )
-    )
+    .innerJoin(schema.users, eq(schema.users.id, schema.apiTokens.userId))
+    .where(eq(schema.apiTokens.tokenHash, await hashToken(token)))
     .get();
   if (!row) {
     return null;
   }
+  const kind = row.kind === 'bot' ? 'bot' : 'human';
+  const disabled = kind === 'bot' && row.disabledAt !== null;
+  if (disabled) {
+    return { userId: row.userId, tokenId: row.id, name: row.name, kind, disabled: true };
+  }
+  if (row.revokedAt !== null) {
+    return null;
+  }
+  if (kind === 'bot') {
+    const member = await db
+      .select({ role: schema.organisationMembers.role })
+      .from(schema.organisationMembers)
+      .where(
+        and(
+          eq(schema.organisationMembers.userId, row.userId),
+          eq(schema.organisationMembers.orgId, row.botOrgId ?? '')
+        )
+      )
+      .get();
+    if (!member || (member.role !== 'member' && member.role !== 'viewer')) {
+      return null;
+    }
+  }
+
   const last = row.lastUsedAt ? new Date(row.lastUsedAt).getTime() : 0;
   if (Date.now() - last > LAST_USED_GRANULARITY_MS) {
     try {
@@ -132,5 +186,5 @@ export async function resolveToken(
       console.warn('[tokens] could not record last use', err);
     }
   }
-  return { userId: row.userId, tokenId: row.id };
+  return { userId: row.userId, tokenId: row.id, name: row.name, kind, disabled: false };
 }

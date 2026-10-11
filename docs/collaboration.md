@@ -14,17 +14,17 @@ Life goals                          personal to each user, never shared
 Activity log                        who did what, when, for tasks, notes, epics, projects, members
 ```
 
-- Everyone has one **personal workspace** (`isPersonal: true`), created on first sign-in.
+- Each human account has one **personal workspace** (`isPersonal: true`), created on first sign-in. A bot has no personal workspace and belongs to one non-personal workspace.
 - Being in a workspace means you can see **every project in it**, plus their epics, tasks, notes and activity.
-- **Roles**: `owner` does everything, including changing owner/admin roles and deleting the workspace. `admin` adds and removes members and viewers, and adds, renames, archives and moves projects. `member` works on tasks, epics and notes. `viewer` is read-only. A workspace always keeps at least one owner.
+- **Roles**: `owner` does everything, including changing owner/admin roles and deleting the workspace. `admin` adds and removes members and viewers, and adds, renames, archives and moves projects. `member` works on tasks, epics and notes. `viewer` is read-only. A workspace always keeps at least one human owner. Bots can only be members or viewers and cannot manage workspace membership.
 - A project's tasks keep their history when the project is **moved** to another workspace. Moving needs owner/admin rights on the source and edit rights on the destination.
-- A task's **category** in the API is just its project's name. Creating a task with a category nobody has yet creates that project in your personal workspace.
-- New tasks are **assigned to their creator** unless `assigneeId` says otherwise (`null` = unassigned). Assignees must be members of the task's workspace.
-- **Life goals** stay private: `goalId` on a task is the caller's own goal link, and an epic's `goalId` is only shown to the epic's creator.
+- A task's **category** in the API is just its project's name. For a human caller, creating a task with an unknown category creates that project in their personal workspace. Bots must use an existing project in their workspace; they cannot create projects.
+- Human-created tasks are **assigned to their creator** unless `assigneeId` says otherwise (`null` = unassigned). Bot-created tasks default to unassigned. An assignee must be a human member of the task's workspace.
+- **Life goals** stay private: `goalId` on a task is the caller's own goal link, and an epic's `goalId` is only shown to the epic's creator. Bots have no life goals or private goal overlays.
 
 ## API (base `https://timdo-v2-api.tdobson.net/api/v2`)
 
-Auth: `Authorization: Bearer <Auth0 JWT>` (web), or `X-Internal-Secret` (CLI/MCP), which acts as the account owner unless `X-Timdo-User: <email>` names another account.
+Auth: `Authorization: Bearer <Auth0 JWT>` for signed-in humans, `Authorization: Bearer <tdo_ token>` for personal or bot tokens, or `X-Internal-Secret` for the installation owner's tooling. The internal secret acts as the account owner unless `X-Timdo-User: <email>` names another account. A token cannot switch identity.
 
 Permission failures come back as `403 { error }` (not allowed) or `404 { error }` (not visible), with readable messages such as `You have view-only access to "Acme Solar"`.
 
@@ -34,8 +34,17 @@ Permission failures come back as `403 { error }` (not allowed) or `404 { error }
 - `GET /users/me/tokens`, `POST /users/me/tokens` `{ name }` (from a signed-in browser session only, so a token can't mint more), `DELETE /users/me/tokens/:id`.
 - The owner's internal secret (`X-Internal-Secret`) is for the account owner's own tooling only, and is the only way to act as someone else.
 
+### Workspace bots
+
+A human owner/admin manages bots through `/organisations/:orgId/bots`, using a verified JWT or the internal owner secret. Personal and bot tokens cannot call these management routes, even to list bots. Ordinary members/viewers can see active bots in the safe workspace roster, without token metadata or internal email addresses.
+
+Bots use the existing hashed `tdo_` credentials, confined to their home workspace. They cannot sign in through Auth0, create projects/workspaces, join another workspace, manage members, own goals, be assigned tasks, mint personal tokens or call the AI routes. Disablement removes membership and revokes every token atomically while retaining authorship and history.
+
+See [Workspace bots and activity attribution](bots-and-attribution.md) for the management API, CLI/MCP commands, copy-once token recovery, concurrency behaviour and rollback requirements.
+
 ### Who am I
-- `GET /users/me` returns `{ id, email, name }`.
+- `GET /users/me` returns `{ id, email, name, kind: 'human' }` for a human.
+- A bot receives `{ id, name, kind: 'bot', workspace: { id, name, role } }`, without its synthetic internal email.
 
 ### Tasks (original shape, now shared)
 - `GET /projects?category=&epicId=&goalId=&customer=&tag=&relatedTo=&assignee=&orgId=&projectId=&ref=&role=&status=&fields=&limit=&cursor=&sort=&doneSince=&doneBefore=` returns visible, non-deleted tasks. The no-option call remains unlimited and includes full bodies. `fields=summary` omits `notes` and adds note-count metadata without selecting the body.
@@ -49,7 +58,7 @@ Permission failures come back as `403 { error }` (not allowed) or `404 { error }
 - `DELETE /projects/:id` soft-deletes.
 - `POST /projects/batch-update` takes `[{ id, priority, status }]`. Rows you can't edit are skipped.
 - `POST /projects/:id/merge` takes `{ sourceId }`.
-- `GET /projects/:id/updates` returns notes: `[{ id, projectId, userId, authorName, note, gmailThreadId, createdAt, canDelete }]`.
+- `GET /projects/:id/updates` returns notes: `[{ id, projectId, userId, authorName, authorKind, note, gmailThreadId, createdAt, canDelete }]`.
 - `POST /projects/:id/updates` takes `{ note, gmailThreadId? }`.
 - `DELETE /projects/:id/updates/:updateId` works for the note's author or a workspace owner/admin.
 
@@ -60,9 +69,9 @@ projectId, projectKey, projectName, orgId, orgName,
 isShared        workspace has more than one member
 myRole          owner | admin | member | viewer
 canEdit         false for viewers
-reporterId, reporterName
-assigneeId, assigneeName
-updatedById, updatedByName
+reporterId, reporterName, reporterKind
+assigneeId, assigneeName, assigneeKind
+updatedById, updatedByName, updatedByKind
 isMine          assigned to me, or unassigned and created by me
 noteCount       number of task update notes
 lastNoteAt      latest task update timestamp, or null
@@ -81,7 +90,7 @@ Input is parsed by `workers/src/lib/refs.ts` (shared with the web app): GitHub i
 ```
 RefInput = { ref, kind?, role?, label?, url? }     role also accepts "reported-by"
 RefView  = { id, taskId, role, kind, ref, canonical, url, label, displayLabel,
-             createdById, createdByName, createdAt, canDelete }
+             createdById, createdByName, createdByKind, createdAt, canDelete }
 ```
 
 - `GET /tasks/:id/refs` returns `[RefView]` to anyone who can see the task.
@@ -132,11 +141,12 @@ The recipe for an outside system creating tasks (tokens, the request in curl, CL
 ### Epics
 - `GET /epics?category=` lists every epic you can see. `GET /epics/:id` returns one.
 - `POST /epics` takes `{ title, description?, category?, projectId?, goalId?, status? }`. `PUT /epics/:id` and `DELETE /epics/:id` work as you'd expect.
-- Each epic carries `projectId, projectKey, orgId, orgName, isShared, myRole, canEdit, createdById, createdByName, updatedById, updatedByName`, plus stats (`totalTasks, doneTasks, progressPercentage`).
+- Each epic carries `projectId, projectKey, orgId, orgName, isShared, myRole, canEdit, createdById, createdByName, createdByKind, updatedById, updatedByName, updatedByKind`, plus stats (`totalTasks, doneTasks, progressPercentage`).
 
 ### Workspaces and sharing
 - `GET /organisations` lists `[{ id, name, slug, isPersonal, role, memberCount, projectCount, createdBy }]`, personal first.
-- `GET /organisations/sharing` returns, per workspace: `{ ...org, members: [{ userId, userName, userEmail, role, isMe }], projects: [{ id, key, name, description, isArchived, openTasks, doneTasks, epicCount }], invites: [{ id, email, role, token, expiresAt }] }`.
+- `GET /organisations/sharing` returns, per workspace: `{ ...org, members: [{ userId, userName, userEmail?, kind, role, isMe }], projects: [{ id, key, name, description, isArchived, openTasks, doneTasks, epicCount }], invites: [{ id, email, role, token, expiresAt }] }`. Bot members have `kind: 'bot'` and omit `userEmail`.
+- Bot role changes and removal use bot-management routes. Generic membership routes refuse them; use disablement to remove a bot and revoke its credentials together.
 - `POST /organisations` takes `{ name }` and creates a shared workspace. `PUT /organisations/:id` takes `{ name }`. `DELETE /organisations/:id` removes an empty, non-personal workspace (owner only).
 - `GET /organisations/:id/members`, and `GET /organisations/:id/users/search?q=` (needs 2+ characters).
 - `POST /organisations/:id/invites` takes `{ email, role: admin|member|viewer }` and returns one of:
@@ -151,24 +161,26 @@ The recipe for an outside system creating tasks (tokens, the request in curl, CL
 - `PUT /organisations/:id/projects/:projectId` takes `{ name?, description?, isArchived?, orgId? }`. `orgId` moves the project to that workspace.
 
 ### Activity
-- `GET /activity?taskId=&epicId=&projectId=&orgId=&limit=` returns newest first: `[{ id, actorId, actorName, orgId, projectId, projectName, entityType, entityId, taskId, epicId, action, summary, changes, createdAt }]`.
-  - `actorName` is `TimDo` for system actions, such as an awaiting task coming back to Do.
-  - Actions: `created, updated, status_changed, completed, assigned, moved, deleted, restored, merged, note_added, note_deleted, ref_added, ref_removed, renamed, archived, unarchived, invited, member_added, member_joined, member_left, member_removed, role_changed`.
+- `GET /activity?taskId=&epicId=&projectId=&orgId=&limit=` returns newest first: `[{ id, actorId, actorName, actorKind, orgId, projectId, projectName, entityType, entityId, taskId, epicId, action, summary, changes, via, viaDetail, createdAt }]`.
+  - `actorName` is `TimDo` for system actions, such as an awaiting task coming back to Do. `actorKind` distinguishes bot and human accounts; bot authorship remains after disablement.
+  - Actions: `created, updated, status_changed, completed, assigned, moved, deleted, restored, merged, note_added, note_deleted, ref_added, ref_removed, renamed, archived, unarchived, invited, member_added, member_joined, member_left, member_removed, role_changed`, plus `bot_created, bot_renamed, bot_role_changed, bot_disabled, bot_token_created, bot_token_revoked` for bot lifecycle changes.
   - `summary` is a ready-to-show sentence without the actor, e.g. `Moved "Fix inverter" from Do to Done`. Show it as `Robin Fairweather · Moved "Fix inverter" from Do to Done · 2h ago`.
+  - `via` is `web` for verified JWT authentication, `token`, `owner_secret`, `system`, or null for historical/unbound activity. `web` describes authentication, not proof that a browser made the request. Never infer it from a null value.
+  - `viaDetail` contains a safe token name for token calls, never the token itself. Show it in accessible detail or a tooltip, not the inline byline. Make owner-secret actions explicit. See the [attribution contract](bots-and-attribution.md#read-activity).
 
 ### Posters
 The active poster and the Wall of Done are personal. They show the caller's own tasks (`assignee=me`) across all workspaces.
 
 ## CLI (`bin/timdo`) and MCP (`timdo_*`)
 
-The CLI talks to this API with `X-Internal-Secret`, so it acts as the account owner (Tim). Everything below works the same through the MCP tools, which run `bin/timdo --json`.
+The CLI prefers a configured personal or bot token. Without one, the installation owner's own tooling can use the configured internal secret. It never retries an access denial with a more privileged credential. MCP tools run the CLI with JSON output. For bot management, owner-secret selection is a separate explicit option; see [Workspace bots](bots-and-attribution.md#cli-and-mcp-management).
 
-- **Acting as someone else**: `--as <email>` (anywhere on the line) or `TIMDO_AS=<email>` sends `X-Timdo-User`. Use it to preview a collaborator's view, e.g. `timdo --as robin@example.com list do --mine`. Every MCP tool takes an optional `asUser`. Only write as someone else when Tim asks.
-- **Config**: `TIMDO_SECRET`, `TIMDO_API` and `TIMDO_AS` in the environment override `~/.config/timdo/config`, so `TIMDO_API=http://127.0.0.1:8788/api/v2 TIMDO_SECRET=local-dev-secret bin/timdo ...` hits a local API (`workers/scripts/local-api.sh 8788`).
+- **Acting as someone else**: `--as <email>` (anywhere on the line) or `TIMDO_AS=<email>` sends `X-Timdo-User`. With the owner's internal secret, use it to preview a collaborator's view, e.g. `timdo --as robin@example.com list do --mine`. Every MCP tool takes an optional `asUser`. Personal and bot tokens cannot switch identity. Only write as another person when explicitly authorised.
+- **Config**: `TIMDO_TOKEN`, `TIMDO_SECRET`, `TIMDO_API` and `TIMDO_AS` in the environment override `~/.config/timdo/config`. Use `bin/timdo login` for a token or your integration's secret store; do not put credentials in command arguments or logs. See the [CLI guide](timdo-cli.md) for configuration.
 - **Output**: list-style commands print aligned text; shared tasks show `Workspace/Project` and the assignee's first name (`me`, `unassigned`). Colour only on a terminal, never with `NO_COLOR`. `--json` gives the raw API objects. `add`, `update`, `delete`, `add-note` and `epic add/update/delete` still print JSON when piped (scripts rely on it) and a readable confirmation on a terminal or with `--text`.
 - **Errors** exit 1 with the API's message: `View only: you have view-only access to "Acme Solar"`, `Not found: ...`, `Not allowed: ...`. Short ID prefixes that match several tasks are refused, not guessed.
 - **Assignment**: `add/update --assign <me|none|name|email>` resolves the person among the members of the task's workspace and sends `assigneeId`; `update --claim` and `--unassign` too. `list --mine` / `--unassigned` / `--assignee <who>` / `-w <workspace>` / `--project-id <KEY>` filter on the server.
-- **Projects**: `-p <name>` is the category name. A name that exists in a shared workspace puts the task there (the first one you can edit); an unknown name creates a project in your personal workspace. `--project-id` takes an id, a key such as `SOL`, or `Workspace/Project`.
+- **Projects**: `-p <name>` is the category name. A name that exists in a shared workspace puts the task there (the first one you can edit). For a human caller, an unknown name creates a project in their personal workspace; a bot instead gets a denial. `--project-id` takes an id, a key such as `LAB`, or `Workspace/Project`. Prefer a project ID in integrations.
 - **Audit**: `timdo audit` reports on your own editable tasks (assigned to you, or unassigned and created by you) and epics you created. Collaborators' tasks are theirs to tidy, and goal links are private, so their "missing goal" count means nothing to you. `--all` covers everything you can edit.
 - **Search and customers**: the search endpoint has no sharing fields yet, so the CLI adds `orgName`, `projectName`, `assigneeName` and friends from `GET /projects`; `customers` adds a `workspaces` list the same way.
 - **Workspaces**: `timdo workspace` (aliases `ws`, `org`): `list`, `show`, `members`, `create`, `rename`, `share <ws> <email> [--role member|viewer|admin]` (prints added, already a member, or the invite link), `role`, `remove`, `revoke`, `leave`, `add-project`, `move-project <project> <ws> --yes`, `accept <token>`. `remove`, `leave` and `move-project` ask on a terminal and need `--yes` otherwise.

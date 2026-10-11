@@ -6,6 +6,7 @@ import { onApiError } from './middleware/apiErrors';
 import { combinedAuthMiddleware, internalAuthMiddleware } from './middleware/auth';
 import activityApp from './routes/activity';
 import aiApp from './routes/ai';
+import botsApp from './routes/bots';
 import customersApp from './routes/customers';
 import epicsApp from './routes/epics';
 import goalsApp from './routes/goals';
@@ -29,6 +30,7 @@ declare module 'hono' {
   interface ContextVariableMap {
     db: DrizzleD1Database<typeof schema>;
     userId: string;
+    userKind: 'human' | 'bot';
     /** How the caller signed in: web session, personal token, or the owner's internal secret */
     authMethod: 'jwt' | 'token' | 'internal';
     /** Set when signed in with a personal token */
@@ -81,6 +83,7 @@ app.use('/api/v2/activity', combinedAuthMiddleware);
 app.use('/api/v2/refs/*', combinedAuthMiddleware);
 
 // Register route handlers.
+app.route('/api/v2/organisations', botsApp);
 app.route('/api/v2/organisations', organisationsApp);
 app.route('/api/v2/projects', projectsApp);
 app.route('/api/v2/tasks', tasksApp);

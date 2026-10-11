@@ -17,12 +17,12 @@ import {
   canEdit,
   canManage,
   getAccessibleProjects,
-  getUserNames,
   resolveProjectForWrite,
   type AccessibleProject,
   type Role,
 } from './accessService';
 import { describeFieldEdits, diffFields, logActivity, statusLabel } from './activityService';
+import { getPeople, getUserKind, type PersonKind, type PersonProjection } from './personService';
 
 type DB = DrizzleD1Database<typeof schema>;
 type EpicRow = typeof schema.epics.$inferSelect;
@@ -49,18 +49,23 @@ export interface EpicWithStats {
   canEdit: boolean;
   createdById: string;
   createdByName: string | null;
+  createdByKind: PersonKind;
   updatedById: string | null;
   updatedByName: string | null;
+  updatedByKind: PersonKind;
 }
 
 function toView(
   epic: EpicRow,
   project: AccessibleProject | undefined,
   userId: string,
-  names: Map<string, string>,
-  stats: { totalTasks: number; doneTasks: number }
+  people: Map<string, PersonProjection>,
+  stats: { totalTasks: number; doneTasks: number },
+  isHuman: boolean
 ): EpicWithStats {
-  const isCreator = epic.userId === userId;
+  const isCreator = isHuman && epic.userId === userId;
+  const creator = people.get(epic.userId);
+  const updater = people.get(epic.updatedBy ?? epic.userId);
   const role: Role | null = project ? project.role : isCreator ? 'owner' : null;
   return {
     id: epic.id,
@@ -84,27 +89,34 @@ function toView(
     myRole: role,
     canEdit: canEdit(role),
     createdById: epic.userId,
-    createdByName: names.get(epic.userId) ?? null,
+    createdByName: creator?.name ?? null,
+    createdByKind: creator?.kind ?? 'human',
     updatedById: epic.updatedBy ?? epic.userId,
-    updatedByName: names.get(epic.updatedBy ?? epic.userId) ?? null,
+    updatedByName: updater?.name ?? null,
+    updatedByKind: updater?.kind ?? 'human',
   };
 }
 
-async function visibleEpics(db: DB, userId: string, _projects: AccessibleProject[]) {
+async function visibleEpics(
+  db: DB,
+  userId: string,
+  _projects: AccessibleProject[],
+  includeUnscoped: boolean
+) {
+  const shared = sql`exists (
+    select 1 from Projects visible_epic_project
+    inner join OrganisationMembers visible_epic_member
+      on visible_epic_member.org_id = visible_epic_project.org_id
+    where visible_epic_project.id = Epics.project_id
+      and visible_epic_member.user_id = ${userId}
+  )`;
   return db
     .select()
     .from(schema.epics)
     .where(
-      or(
-        sql`exists (
-          select 1 from Projects visible_epic_project
-          inner join OrganisationMembers visible_epic_member
-            on visible_epic_member.org_id = visible_epic_project.org_id
-          where visible_epic_project.id = Epics.project_id
-            and visible_epic_member.user_id = ${userId}
-        )`,
-        and(isNull(schema.epics.projectId), eq(schema.epics.userId, userId))
-      )
+      includeUnscoped
+        ? or(shared, and(isNull(schema.epics.projectId), eq(schema.epics.userId, userId)))
+        : shared
     )
     .orderBy(asc(schema.epics.createdAt));
 }
@@ -156,9 +168,11 @@ export async function getEpicsForUser(
   userId: string,
   category?: string
 ): Promise<EpicWithStats[]> {
+  const actorKind = await getUserKind(db, userId);
+  const isHuman = actorKind !== 'bot';
   const projects = await getAccessibleProjects(db, userId);
   const byId = new Map(projects.map((p) => [p.id, p]));
-  let epics = await visibleEpics(db, userId, projects);
+  let epics = await visibleEpics(db, userId, projects, isHuman);
   if (category) {
     const c = category.trim().toLowerCase();
     epics = epics.filter((e) => {
@@ -177,7 +191,7 @@ export async function getEpicsForUser(
     );
     chunk.forEach((v, k) => stats.set(k, v));
   }
-  const names = await getUserNames(
+  const people = await getPeople(
     db,
     epics.flatMap((e) => [e.userId, e.updatedBy])
   );
@@ -187,8 +201,9 @@ export async function getEpicsForUser(
       e,
       e.projectId ? byId.get(e.projectId) : undefined,
       userId,
-      names,
-      stats.get(e.id) || { totalTasks: 0, doneTasks: 0 }
+      people,
+      stats.get(e.id) || { totalTasks: 0, doneTasks: 0 },
+      isHuman
     )
   );
 }
@@ -202,21 +217,24 @@ export async function getEpicForUser(
   if (!epic) {
     return null;
   }
+  const actorKind = await getUserKind(db, userId);
+  const isHuman = actorKind !== 'bot';
   const projects = await getAccessibleProjects(db, userId);
   const project = epic.projectId ? projects.find((p) => p.id === epic.projectId) : undefined;
-  if (epic.projectId ? !project : epic.userId !== userId) {
+  if (epic.projectId ? !project : !isHuman || epic.userId !== userId) {
     return null;
   }
-  const [stats, names] = await Promise.all([
+  const [stats, people] = await Promise.all([
     statsFor(db, userId, [epic.id]),
-    getUserNames(db, [epic.userId, epic.updatedBy]),
+    getPeople(db, [epic.userId, epic.updatedBy]),
   ]);
   return toView(
     epic,
     project,
     userId,
-    names,
-    stats.get(epic.id) || { totalTasks: 0, doneTasks: 0 }
+    people,
+    stats.get(epic.id) || { totalTasks: 0, doneTasks: 0 },
+    isHuman
   );
 }
 
@@ -225,6 +243,10 @@ export async function createEpic(
   userId: string,
   data: (EpicCreateInput | EpicCreatePayload) & { id?: string; projectId?: string }
 ) {
+  const isBot = (await getUserKind(db, userId)) === 'bot';
+  if (isBot && data.goalId !== undefined) {
+    throw new AccessError('Bots do not have life goals');
+  }
   let project: AccessibleProject | undefined;
   if (data.projectId) {
     project = (await getAccessibleProjects(db, userId)).find((p) => p.id === data.projectId);
@@ -236,6 +258,9 @@ export async function createEpic(
     }
   } else if (data.category) {
     project = await resolveProjectForWrite(db, userId, data.category);
+  }
+  if (isBot && !project) {
+    throw new AccessError('Bots can only create project-scoped epics');
   }
 
   const now = new Date().toISOString();
@@ -273,7 +298,8 @@ async function loadEditableEpic(db: DB, userId: string, epicId: string) {
   }
   const projects = await getAccessibleProjects(db, userId);
   const project = epic.projectId ? projects.find((p) => p.id === epic.projectId) : undefined;
-  if (epic.projectId ? !project : epic.userId !== userId) {
+  const isBot = (await getUserKind(db, userId)) === 'bot';
+  if (epic.projectId ? !project : isBot || epic.userId !== userId) {
     return null;
   }
   if (project && !canEdit(project.role)) {
@@ -291,6 +317,9 @@ export async function updateEpic(
   const loaded = await loadEditableEpic(db, userId, epicId);
   if (!loaded) {
     return null;
+  }
+  if (data.goalId !== undefined && (await getUserKind(db, userId)) === 'bot') {
+    throw new AccessError('Bots do not have life goals');
   }
   const { epic } = loaded;
   let { project } = loaded;

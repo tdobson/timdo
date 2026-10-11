@@ -167,6 +167,7 @@ describe('voice and task refs', () => {
         await vi.importActual<typeof import('@langchain/core/prompts')>('@langchain/core/prompts');
       const template = PromptTemplate.fromTemplate(VOICE_PROMPT_TEMPLATE);
       expect([...template.inputVariables].sort()).toEqual([
+        'botTaskCreations',
         'epics',
         'me',
         'projects',

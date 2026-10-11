@@ -37,6 +37,7 @@ import { PendingInvites } from './PendingInvites';
 import { PeopleSection, RoleBadge } from './PeopleSection';
 import { ProjectsSection } from './ProjectsSection';
 import { canManage, plural, whoCanSee, workspaceLabel } from './sharingRules';
+import { WorkspaceBotsPanel } from './WorkspaceBotsPanel';
 
 function WorkspaceName({ workspace }: { workspace: SharingWorkspace }) {
   const [editing, setEditing] = useState(false);
@@ -231,6 +232,8 @@ export function WorkspaceCard({ workspace, allWorkspaces }: WorkspaceCardProps) 
         </Group>
 
         <PeopleSection workspace={workspace} />
+
+        {manage && !workspace.isPersonal && <WorkspaceBotsPanel workspace={workspace} />}
 
         {manage && (
           <>

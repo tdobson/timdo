@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, screen, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import * as refQueries from '../../app/hooks/useRefQueries';
 import type { Project, RefView } from '../../app/types/project.types';
@@ -117,6 +117,38 @@ describe('TaskRefs', () => {
     expect(screen.queryByRole('link', { name: /forum\.post/ })).not.toBeInTheDocument();
     expect(screen.getByText('forum.post:4411')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy forum.post:4411' })).toBeInTheDocument();
+  });
+
+  it('marks bot creators in the accessible ref tooltip', async () => {
+    renderRefs(
+      [refView({ id: 'r-bot', createdByName: 'Forum watcher', createdByKind: 'bot' })],
+      false
+    );
+
+    await userEvent.hover(screen.getByRole('link', { name: /github issue acme\/widgets#12/i }));
+
+    await waitFor(() => expect(screen.getByText(/added by Forum watcher \[bot\]/)).toBeVisible());
+  });
+
+  it('announces bot authorship when focusing a reference without a URL', async () => {
+    const botRef = refView({
+      id: 'r-bot',
+      kind: 'acme.member',
+      ref: '123456',
+      canonical: 'acme.member:123456',
+      url: null,
+      displayLabel: 'Forum member',
+      createdByName: 'Forum watcher',
+      createdByKind: 'bot',
+    });
+    renderRefs([botRef], false);
+
+    const reference = screen.getByRole('group', {
+      name: 'acme.member:123456, added by Forum watcher [bot]',
+    });
+    expect(reference).toHaveAttribute('tabindex', '0');
+    await userEvent.tab();
+    expect(reference).toHaveFocus();
   });
 
   it('collapses a long group to three and "and N more"', async () => {

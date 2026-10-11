@@ -2,8 +2,9 @@ import { eq } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import * as schema from '../db/schema';
 import type { UserCreatePayload } from '../validators/userValidators';
-import { ensurePersonalOrg } from './accessService';
+import { AccessError, ensurePersonalOrg } from './accessService';
 import { claimPendingInvites } from './organisationService';
+import { withActorContext } from './requestActorContext';
 
 type DB = DrizzleD1Database<typeof schema>;
 
@@ -12,19 +13,28 @@ type DB = DrizzleD1Database<typeof schema>;
  * workspace, and turns any invites sent to their email into memberships.
  */
 export async function ensureUser(db: DB, data: UserCreatePayload) {
-  const { emailVerified: _verified, ...profile } = data;
-  const user = await upsertUser(db, profile);
-  if (user) {
-    try {
-      await ensurePersonalOrg(db, user.id);
-      if (data.emailVerified) {
-        await claimPendingInvites(db, user.id, user.email);
-      }
-    } catch (err) {
-      console.error('[ensureUser] workspace setup failed', err);
-    }
+  if (
+    data.id.toLowerCase().startsWith('bot|') ||
+    (data.email.toLowerCase().startsWith('bot+') &&
+      data.email.toLowerCase().endsWith('@bots.timdo.invalid'))
+  ) {
+    throw new AccessError('Reserved bot identities cannot be provisioned as people');
   }
-  return user;
+  const { emailVerified: _verified, ...profile } = data;
+  return withActorContext(db, { via: 'system' }, async () => {
+    const user = await upsertUser(db, profile);
+    if (user) {
+      try {
+        await ensurePersonalOrg(db, user.id);
+        if (data.emailVerified) {
+          await claimPendingInvites(db, user.id, user.email);
+        }
+      } catch (err) {
+        console.error('[ensureUser] workspace setup failed', err);
+      }
+    }
+    return user;
+  });
 }
 
 async function upsertUser(db: DB, data: UserCreatePayload) {

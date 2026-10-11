@@ -120,9 +120,10 @@ function authHeaders(token?: string, json = false): Record<string, string> {
 /**
  * Fetch the signed-in user (`GET /users/me`)
  */
-export async function fetchCurrentUser(token?: string): Promise<CurrentUser> {
+export async function fetchCurrentUser(token?: string, signal?: AbortSignal): Promise<CurrentUser> {
   return apiCall<CurrentUser>(`${getWorkerApiBaseUrl()}/users/me`, {
     headers: authHeaders(token),
+    signal,
   });
 }
 
@@ -171,11 +172,12 @@ export async function getEpicById(epicId: string, token?: string): Promise<Epic 
  */
 export async function fetchOrganisationProjects(
   orgId: string,
-  token?: string
+  token?: string,
+  signal?: AbortSignal
 ): Promise<ProjectContainer[]> {
   return apiCall<ProjectContainer[]>(
     `${getWorkerApiBaseUrl()}/organisations/${encodeURIComponent(orgId)}/projects`,
-    { headers: authHeaders(token) }
+    { headers: authHeaders(token), signal }
   );
 }
 
@@ -718,13 +720,17 @@ export async function getLifeGoalsPoster(
 /**
  * Fetch all organisations the current user belongs to
  */
-export async function fetchOrganisations(token?: string): Promise<Organisation[]> {
+export async function fetchOrganisations(
+  token?: string,
+  signal?: AbortSignal
+): Promise<Organisation[]> {
   const headers: HeadersInit = {};
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
   return apiCall<Organisation[]>(`${getWorkerApiBaseUrl()}/organisations`, {
     headers,
+    signal,
   });
 }
 
@@ -751,13 +757,18 @@ export async function createOrganisation(
 /**
  * Fetch organisation by ID
  */
-export async function fetchOrganisation(orgId: string, token?: string): Promise<Organisation> {
+export async function fetchOrganisation(
+  orgId: string,
+  token?: string,
+  signal?: AbortSignal
+): Promise<Organisation> {
   const headers: HeadersInit = {};
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
   return apiCall<Organisation>(`${getWorkerApiBaseUrl()}/organisations/${orgId}`, {
     headers,
+    signal,
   });
 }
 
@@ -766,7 +777,8 @@ export async function fetchOrganisation(orgId: string, token?: string): Promise<
  */
 export async function fetchOrganisationMembers(
   orgId: string,
-  token?: string
+  token?: string,
+  signal?: AbortSignal
 ): Promise<OrganisationMember[]> {
   const headers: HeadersInit = {};
   if (token) {
@@ -774,6 +786,7 @@ export async function fetchOrganisationMembers(
   }
   return apiCall<OrganisationMember[]>(`${getWorkerApiBaseUrl()}/organisations/${orgId}/members`, {
     headers,
+    signal,
   });
 }
 
@@ -783,7 +796,8 @@ export async function fetchOrganisationMembers(
 export async function searchUsers(
   orgId: string,
   query: string,
-  token?: string
+  token?: string,
+  signal?: AbortSignal
 ): Promise<AutocompleteUserResult[]> {
   const headers: HeadersInit = {};
   if (token) {
@@ -791,9 +805,7 @@ export async function searchUsers(
   }
   return apiCall<AutocompleteUserResult[]>(
     `${getWorkerApiBaseUrl()}/organisations/${orgId}/users/search?q=${encodeURIComponent(query)}`,
-    {
-      headers,
-    }
+    { headers, signal }
   );
 }
 
@@ -823,7 +835,8 @@ export async function inviteUser(
  */
 export async function fetchOrganisationInvites(
   orgId: string,
-  token?: string
+  token?: string,
+  signal?: AbortSignal
 ): Promise<OrganisationInvite[]> {
   const headers: HeadersInit = {};
   if (token) {
@@ -831,6 +844,7 @@ export async function fetchOrganisationInvites(
   }
   return apiCall<OrganisationInvite[]>(`${getWorkerApiBaseUrl()}/organisations/${orgId}/invites`, {
     headers,
+    signal,
   });
 }
 

@@ -7,14 +7,23 @@ import type {
   GoalCreatePayload,
   GoalUpdatePayload,
 } from '../validators/goalValidators';
+import { AccessError } from './accessService';
+import { getUserKind } from './personService';
 
 type DB = DrizzleD1Database<typeof schema>;
+
+export async function assertHumanGoals(db: DB, userId: string) {
+  if ((await getUserKind(db, userId)) === 'bot') {
+    throw new AccessError('Bots do not have life goals');
+  }
+}
 
 export async function getGoalsForUser(
   db: DB,
   userId: string,
   type?: 'aim' | 'focus' | 'value' | 'housekeeping'
 ) {
+  await assertHumanGoals(db, userId);
   const conditions = [eq(schema.goals.userId, userId), eq(schema.goals.isActive, true)];
 
   if (type) {
@@ -33,6 +42,7 @@ export async function createGoal(
   userId: string,
   data: (GoalCreateInput | GoalCreatePayload) & { id?: string }
 ) {
+  await assertHumanGoals(db, userId);
   const newGoalData = {
     id: data.id ?? uuidv4(),
     userId,
@@ -51,6 +61,7 @@ export async function createGoal(
 }
 
 export async function updateGoal(db: DB, userId: string, goalId: string, data: GoalUpdatePayload) {
+  await assertHumanGoals(db, userId);
   const updatedData = {
     ...data,
     updatedAt: new Date().toISOString(),
@@ -66,6 +77,7 @@ export async function updateGoal(db: DB, userId: string, goalId: string, data: G
 }
 
 export async function deleteGoal(db: DB, userId: string, goalId: string) {
+  await assertHumanGoals(db, userId);
   const result = await db
     .delete(schema.goals)
     .where(and(eq(schema.goals.id, goalId), eq(schema.goals.userId, userId)))

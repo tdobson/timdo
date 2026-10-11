@@ -33,6 +33,7 @@ import {
   useUpdateMemberRole,
 } from '../../app/hooks/useOrganisationQueries';
 import type { AutocompleteUserResult } from '../../app/types/organisation.types';
+import { BotMarker } from '../Team/BotMarker';
 import { InviteMemberForm } from './InviteMemberForm';
 import { MemberAutocomplete } from './MemberAutocomplete';
 
@@ -160,6 +161,7 @@ export function OrgSettingsModal({ opened, onClose, orgId, currentUserId }: OrgS
                     {members.map((member) => {
                       const isSelf = member.userId === currentUserId;
                       const isTargetOwner = member.role === 'owner';
+                      const isBot = member.kind === 'bot' || member.userId.startsWith('bot|');
 
                       return (
                         <Table.Tr key={member.id} data-testid={`member-row-${member.userId}`}>
@@ -169,17 +171,20 @@ export function OrgSettingsModal({ opened, onClose, orgId, currentUserId }: OrgS
                               <Box>
                                 <Group gap="xs">
                                   <Text size="sm" fw={500}>
-                                    {member.userName || 'Unnamed User'}
+                                    {member.userName || (isBot ? 'Bot' : 'Unnamed User')}
                                   </Text>
+                                  <BotMarker kind={isBot ? 'bot' : member.kind} />
                                   {isSelf && (
                                     <Badge size="xs" color="blue" variant="outline">
                                       You
                                     </Badge>
                                   )}
                                 </Group>
-                                <Text size="xs" c="dimmed">
-                                  {member.userEmail}
-                                </Text>
+                                {!isBot && member.userEmail && (
+                                  <Text size="xs" c="dimmed">
+                                    {member.userEmail}
+                                  </Text>
+                                )}
                               </Box>
                             </Group>
                           </Table.Td>
@@ -188,7 +193,7 @@ export function OrgSettingsModal({ opened, onClose, orgId, currentUserId }: OrgS
                               <Badge leftSection={<IconCrown size={12} />} color="yellow">
                                 Owner
                               </Badge>
-                            ) : isOwnerOrAdmin && !isSelf ? (
+                            ) : isOwnerOrAdmin && !isSelf && !isBot ? (
                               <Select
                                 size="xs"
                                 value={member.role}
@@ -211,7 +216,7 @@ export function OrgSettingsModal({ opened, onClose, orgId, currentUserId }: OrgS
                           </Table.Td>
                           {isOwnerOrAdmin && (
                             <Table.Td style={{ textAlign: 'right' }}>
-                              {!isSelf && !isTargetOwner && (
+                              {!isSelf && !isTargetOwner && !isBot && (
                                 <ActionIcon
                                   color="red"
                                   variant="subtle"

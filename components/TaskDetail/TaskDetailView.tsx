@@ -59,6 +59,7 @@ import { buildEpicOptions, PRIVATE_GOAL_HINT, ProjectPicker } from '../ProjectPi
 import { ProjectStars } from '../ProjectStars/ProjectStars';
 import {
   absoluteTime,
+  BotMarker,
   canEditItem,
   personLabel,
   relativeTime,
@@ -263,8 +264,11 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
   );
 
   const otherMembers = members
-    .filter((m) => m.userId !== userId)
-    .map((m) => m.userName || m.userEmail);
+    .filter((member) => member.userId !== userId)
+    .map((member) => {
+      const name = member.userName || member.userEmail || 'Someone';
+      return member.kind === 'bot' ? `${name} [bot]` : name;
+    });
   const isAssignedToMe = !!assigneeId && assigneeId === userId;
 
   return (
@@ -400,6 +404,7 @@ export function TaskDetailView({ task }: TaskDetailViewProps) {
                     orgId={task.orgId}
                     value={assigneeId}
                     currentName={task.assigneeName}
+                    currentKind={task.assigneeKind}
                     onChange={handleAssigneeChange}
                     disabled={!canEdit}
                   />
@@ -624,7 +629,8 @@ function Attribution({ task, meId }: { task: Project; meId: string | null }) {
     parts.push(
       <Tooltip key="created" label={absoluteTime(task.createdAt)} withArrow openDelay={300}>
         <span>
-          Created by {personLabel(task.reporterName, task.reporterId, meId, { capitalise: false })}
+          Created by {personLabel(task.reporterName, task.reporterId, meId, { capitalise: false })}{' '}
+          <BotMarker kind={task.reporterKind} />
         </span>
       </Tooltip>
     );
@@ -645,7 +651,8 @@ function Attribution({ task, meId }: { task: Project; meId: string | null }) {
         <span>
           {task.assigneeId
             ? `Assigned to ${personLabel(task.assigneeName, task.assigneeId, meId, { capitalise: false })}`
-            : 'Unassigned'}
+            : 'Unassigned'}{' '}
+          {task.assigneeId && <BotMarker kind={task.assigneeKind} />}
         </span>
       </Group>
     );
@@ -657,7 +664,8 @@ function Attribution({ task, meId }: { task: Project; meId: string | null }) {
       <Tooltip key="updated" label={absoluteTime(task.updatedAt)} withArrow openDelay={300}>
         <span>
           Last updated by{' '}
-          {personLabel(task.updatedByName, task.updatedById, meId, { capitalise: false })}
+          {personLabel(task.updatedByName, task.updatedById, meId, { capitalise: false })}{' '}
+          <BotMarker kind={task.updatedByKind} />
           {when ? `, ${when}` : ''}
         </span>
       </Tooltip>

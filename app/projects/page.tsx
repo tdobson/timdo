@@ -162,8 +162,13 @@ export default function ProjectsOverviewPage() {
         ) : (
           sections.map((section) => {
             const others = (membersByOrg[section.id] || [])
-              .filter((m) => m.userId !== userId)
-              .map((m) => m.userName || m.userEmail);
+              .filter((member) => member.userId !== userId)
+              .map((member) => {
+                const name = member.userName || member.userEmail || 'Someone';
+                return member.kind === 'bot' || member.userId.startsWith('bot|')
+                  ? `${name} [bot]`
+                  : name;
+              });
             return (
               <Stack key={section.id} gap="sm" component="section" aria-label={section.label}>
                 <Group gap="xs" align="center">

@@ -19,10 +19,10 @@ import {
   AccessError,
   canEdit,
   getAccessibleProjects,
-  getUserNames,
   matchingProjectsForCategory,
   type AccessibleProject,
 } from './accessService';
+import { getPeople, type PersonKind } from './personService';
 
 type DB = DrizzleD1Database<typeof schema>;
 type SimilarTaskQueryRow = [
@@ -46,6 +46,7 @@ export interface SimilarTask {
   orgName: string;
   assigneeId: string | null;
   assigneeName: string | null;
+  assigneeKind: PersonKind | null;
   /** 0.5 to 1: the share of the title's significant words found (title 1, reason or notes 0.5). */
   score: number;
   /** Whether the caller can add a note or otherwise edit the task. */
@@ -247,20 +248,18 @@ export async function findSimilarTasks(
     ORDER BY score DESC, rank ASC, updated_at DESC
     LIMIT ${limit}
   `);
-  const scored = scoredRows.map(
-    ([id, title, status, projectId, assigneeId, updatedAt, score]) => ({
-      id,
-      title,
-      status,
-      projectId,
-      assigneeId,
-      updatedAt,
-      score,
-    })
-  );
+  const scored = scoredRows.map(([id, title, status, projectId, assigneeId, updatedAt, score]) => ({
+    id,
+    title,
+    status,
+    projectId,
+    assigneeId,
+    updatedAt,
+    score,
+  }));
 
   const byId = new Map(all.map((p) => [p.id, p]));
-  const names = await getUserNames(
+  const people = await getPeople(
     db,
     scored.map((r) => r.assigneeId)
   );
@@ -276,7 +275,8 @@ export async function findSimilarTasks(
       orgId: project.orgId,
       orgName: project.orgName,
       assigneeId: r.assigneeId,
-      assigneeName: r.assigneeId ? (names.get(r.assigneeId) ?? null) : null,
+      assigneeName: r.assigneeId ? (people.get(r.assigneeId)?.name ?? null) : null,
+      assigneeKind: r.assigneeId ? (people.get(r.assigneeId)?.kind ?? 'human') : null,
       score: Math.round(r.score * 100) / 100,
       matchedRef: false as const,
       canEdit: canEdit(project.role),

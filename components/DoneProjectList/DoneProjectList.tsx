@@ -4,7 +4,7 @@ import { Button, Group, Paper, Select, SimpleGrid, Stack, Text, Title } from '@m
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { getVisibleBoardTasks, groupBoardTasks, type BoardGroupBy } from '../../app/lib/boardState';
 import type { Project, ProjectSummary } from '../../app/types/project.types';
-import { personLabel, TeamAvatar } from '../Team';
+import { BotMarker, personLabel, TeamAvatar } from '../Team';
 import classes from './DoneProjectList.module.css';
 
 interface DoneProjectListProps {
@@ -106,12 +106,15 @@ export function DoneProjectList({
     <div key={project.id} className={classes.listItem} data-testid="done-project-item">
       <Group gap={6} wrap="nowrap">
         {project.isShared && project.assigneeId && (
-          <TeamAvatar
-            name={project.assigneeName}
-            seed={project.assigneeId}
-            size={18}
-            tooltip={`Assigned to ${personLabel(project.assigneeName, project.assigneeId, userId, { capitalise: false })}`}
-          />
+          <>
+            <TeamAvatar
+              name={project.assigneeName}
+              seed={project.assigneeId}
+              size={18}
+              tooltip={`Assigned to ${personLabel(project.assigneeName, project.assigneeId, userId, { capitalise: false })}${project.assigneeKind === 'bot' ? ' [bot]' : ''}`}
+            />
+            <BotMarker kind={project.assigneeKind} />
+          </>
         )}
         <Text
           component={Link}

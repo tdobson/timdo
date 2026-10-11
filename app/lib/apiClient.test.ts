@@ -620,12 +620,14 @@ describe('apiClient', () => {
         json: async () => mockMembers,
       } as any);
 
-      const res = await fetchOrganisationMembers('org-1', 'test-token');
+      const controller = new AbortController();
+      const res = await fetchOrganisationMembers('org-1', 'test-token', controller.signal);
       expect(res).toEqual(mockMembers);
       expect(global.fetch).toHaveBeenCalledWith(
         expect.stringContaining('/organisations/org-1/members'),
         expect.objectContaining({
           headers: { Authorization: 'Bearer test-token' },
+          signal: controller.signal,
         })
       );
     });

@@ -3,12 +3,19 @@ import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
 import type { TaskCreatePayload, TaskUpdatePayload } from '../validators/taskValidators';
-import { getAccessibleProjects, getUserNames } from './accessService';
+import { AccessError, getAccessibleProjects } from './accessService';
+import { getPeople, getUserKind } from './personService';
 import * as projectService from './projectService';
 import * as taskListService from './taskListService';
 import type { TaskListFilters } from './taskListService';
 
 type DB = DrizzleD1Database<typeof schema>;
+
+async function requireHumanGoals(db: DB, userId: string) {
+  if ((await getUserKind(db, userId)) === 'bot') {
+    throw new AccessError('Bots do not have life goals');
+  }
+}
 
 export interface TaskFilters extends TaskListFilters {}
 
@@ -149,6 +156,7 @@ export async function addTaskUpdate(
     taskId,
     authorId: userId,
     authorName: added.authorName,
+    authorKind: added.authorKind,
     note: added.note,
     gmailThreadId: added.gmailThreadId,
     createdAt: added.createdAt,
@@ -167,14 +175,19 @@ export async function getTaskUpdates(db: DB, userId: string, taskId: string) {
     .from(schema.taskUpdates)
     .where(eq(schema.taskUpdates.taskId, taskId))
     .orderBy(desc(schema.taskUpdates.createdAt));
-  const names = await getUserNames(
+  const people = await getPeople(
     db,
     rows.map((r) => r.authorId)
   );
-  return rows.map((r) => ({ ...r, authorName: names.get(r.authorId) ?? null }));
+  return rows.map((r) => ({
+    ...r,
+    authorName: people.get(r.authorId)?.name ?? null,
+    authorKind: people.get(r.authorId)?.kind ?? 'human',
+  }));
 }
 
 export async function linkPersonalGoal(db: DB, userId: string, taskId: string, goalId: string) {
+  await requireHumanGoals(db, userId);
   const task = await getTaskById(db, userId, taskId);
   if (!task) {
     return null;
@@ -221,6 +234,7 @@ export async function linkPersonalGoal(db: DB, userId: string, taskId: string, g
 }
 
 export async function unlinkPersonalGoal(db: DB, userId: string, taskId: string, goalId: string) {
+  await requireHumanGoals(db, userId);
   const task = await getTaskById(db, userId, taskId);
   if (!task) {
     return false;
@@ -241,6 +255,7 @@ export async function unlinkPersonalGoal(db: DB, userId: string, taskId: string,
 }
 
 export async function getTaskPersonalGoals(db: DB, userId: string, taskId: string) {
+  await requireHumanGoals(db, userId);
   const task = await getTaskById(db, userId, taskId);
   if (!task) {
     return null;

@@ -9,6 +9,10 @@ import type {
   AcceptInviteResult,
   ActivityEntry,
   ActivityFilters,
+  BotRole,
+  BotView,
+  CreatedBotResult,
+  CreatedBotToken,
   InviteResult,
   InviteRole,
   Me,
@@ -73,7 +77,7 @@ export function readErrorMessage(body: unknown, status: number): string {
 async function request<T>(
   path: string,
   token: string | undefined,
-  options: { method?: string; body?: unknown } = {}
+  options: { method?: string; body?: unknown; signal?: AbortSignal; cache?: RequestCache } = {}
 ): Promise<T> {
   const headers: Record<string, string> = {};
   if (token) {
@@ -87,6 +91,8 @@ async function request<T>(
     method: options.method ?? 'GET',
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    signal: options.signal,
+    cache: options.cache,
   });
 
   if (!res.ok) {
@@ -94,23 +100,29 @@ async function request<T>(
     throw new CollaborationApiError(readErrorMessage(body, res.status), res.status);
   }
 
+  if (res.status === 204) {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }
 
 /* ------------------------------------------------------------------ who am I */
 
-export function fetchMe(token?: string): Promise<Me> {
-  return request<Me>('/users/me', token);
+export function fetchMe(token?: string, signal?: AbortSignal): Promise<Me> {
+  return request<Me>('/users/me', token, { signal });
 }
 
 /* ------------------------------------------------------------------ workspaces */
 
-export function fetchWorkspaces(token?: string): Promise<WorkspaceSummary[]> {
-  return request<WorkspaceSummary[]>('/organisations', token);
+export function fetchWorkspaces(token?: string, signal?: AbortSignal): Promise<WorkspaceSummary[]> {
+  return request<WorkspaceSummary[]>('/organisations', token, { signal });
 }
 
-export function fetchSharingOverview(token?: string): Promise<SharingWorkspace[]> {
-  return request<SharingWorkspace[]>('/organisations/sharing', token);
+export function fetchSharingOverview(
+  token?: string,
+  signal?: AbortSignal
+): Promise<SharingWorkspace[]> {
+  return request<SharingWorkspace[]>('/organisations/sharing', token, { signal });
 }
 
 export function createWorkspace(name: string, token?: string): Promise<WorkspaceSummary> {
@@ -137,11 +149,13 @@ export function deleteWorkspace(orgId: string, token?: string): Promise<{ messag
 export function searchPeople(
   orgId: string,
   query: string,
-  token?: string
+  token?: string,
+  signal?: AbortSignal
 ): Promise<UserSearchResult[]> {
   return request<UserSearchResult[]>(
     `/organisations/${orgId}/users/search?q=${encodeURIComponent(query)}`,
-    token
+    token,
+    { signal }
   );
 }
 
@@ -246,6 +260,70 @@ export function activityQueryString(filters: ActivityFilters): string {
   return qs ? `?${qs}` : '';
 }
 
-export function fetchActivity(filters: ActivityFilters, token?: string): Promise<ActivityEntry[]> {
-  return request<ActivityEntry[]>(`/activity${activityQueryString(filters)}`, token);
+export function fetchActivity(
+  filters: ActivityFilters,
+  token?: string,
+  signal?: AbortSignal
+): Promise<ActivityEntry[]> {
+  return request<ActivityEntry[]>(`/activity${activityQueryString(filters)}`, token, { signal });
+}
+
+/* ------------------------------------------------------------------ bots */
+
+const botsPath = (orgId: string) => `/organisations/${encodeURIComponent(orgId)}/bots`;
+const botPath = (orgId: string, botId: string) => `${botsPath(orgId)}/${encodeURIComponent(botId)}`;
+
+export function fetchBots(orgId: string, token?: string, signal?: AbortSignal): Promise<BotView[]> {
+  return request<BotView[]>(botsPath(orgId), token, { signal });
+}
+
+/** Returns a copy-once secret. Call directly from component code, never a query or mutation. */
+export function createBot(
+  orgId: string,
+  input: { name: string; role?: BotRole; tokenName?: string },
+  token?: string
+): Promise<CreatedBotResult> {
+  return request<CreatedBotResult>(botsPath(orgId), token, {
+    method: 'POST',
+    body: input,
+    cache: 'no-store',
+  });
+}
+
+export function updateBot(
+  orgId: string,
+  botId: string,
+  input: { name?: string; role?: BotRole },
+  token?: string
+): Promise<BotView> {
+  return request<BotView>(botPath(orgId, botId), token, { method: 'PUT', body: input });
+}
+
+export function disableBot(orgId: string, botId: string, token?: string): Promise<void> {
+  return request<void>(botPath(orgId, botId), token, { method: 'DELETE' });
+}
+
+/** Returns a copy-once secret. Call directly from component code, never a query or mutation. */
+export function createBotToken(
+  orgId: string,
+  botId: string,
+  name: string,
+  token?: string
+): Promise<CreatedBotToken> {
+  return request<CreatedBotToken>(`${botPath(orgId, botId)}/tokens`, token, {
+    method: 'POST',
+    body: { name },
+    cache: 'no-store',
+  });
+}
+
+export function revokeBotToken(
+  orgId: string,
+  botId: string,
+  tokenId: string,
+  token?: string
+): Promise<void> {
+  return request<void>(`${botPath(orgId, botId)}/tokens/${encodeURIComponent(tokenId)}`, token, {
+    method: 'DELETE',
+  });
 }

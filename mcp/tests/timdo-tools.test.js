@@ -35,6 +35,13 @@ const NEW_TOOLS = [
   'timdo_update_member_role',
   'timdo_remove_member',
   'timdo_move_project',
+  'timdo_list_bots',
+  'timdo_create_bot',
+  'timdo_rename_bot',
+  'timdo_set_bot_role',
+  'timdo_issue_bot_token',
+  'timdo_revoke_bot_token',
+  'timdo_disable_bot',
 ];
 
 const REF_TOOLS = ['timdo_add_ref', 'timdo_remove_ref', 'timdo_find_by_ref'];
@@ -74,6 +81,22 @@ test('multi-user parameters and asUser are exposed', () => {
   for (const t of TIMDO_TOOLS) assert.ok(t.inputSchema.properties.asUser, `${t.name} accepts asUser`);
   assert.match(byName.timdo_list_workspaces.description, /viewer/);
   for (const t of TIMDO_TOOLS) assert.ok(!t.description.includes('\u2014'), `${t.name} has no em-dash`);
+});
+
+test('task creation and assignment descriptions match bot API restrictions', () => {
+  const add = byName.timdo_add_task;
+  const update = byName.timdo_update_task;
+  assert.match(add.description, /people can create a personal project with a new category name/i);
+  assert.match(add.description, /bots must use an existing writable project in their home workspace/i);
+  assert.match(add.description, /human-created tasks default to their creator/i);
+  assert.match(add.description, /bot-created tasks default to unassigned/i);
+  assert.match(add.description, /bots cannot be assigned or own life goals/i);
+  assert.match(add.inputSchema.properties.assignTo.description, /bots default to unassigned/i);
+  assert.match(add.inputSchema.properties.assignTo.description, /human member/i);
+  assert.match(add.inputSchema.properties.assignTo.description, /cannot be assigned/i);
+  assert.match(add.inputSchema.properties.goal.description, /bots cannot own goals/i);
+  assert.match(update.inputSchema.properties.assignTo.description, /bots cannot be assigned/i);
+  assert.match(update.inputSchema.properties.claim.description, /bots cannot be assignees/i);
 });
 
 test('handleTimdoTool runs the CLI with --yes for drastic actions and passes asUser', async () => {

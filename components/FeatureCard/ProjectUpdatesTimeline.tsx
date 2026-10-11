@@ -27,7 +27,7 @@ import {
   updateTaskNoteSummary,
 } from '../../app/lib/taskCache';
 import type { ProjectUpdate } from '../../app/types/project.types';
-import { absoluteTime, personLabel, relativeTime, TeamAvatar } from '../Team';
+import { absoluteTime, BotMarker, personLabel, relativeTime, TeamAvatar } from '../Team';
 
 interface ProjectUpdatesTimelineProps {
   projectId: string;
@@ -295,7 +295,8 @@ export function ProjectUpdatesTimeline({
                       <Group gap={4} wrap="nowrap">
                         <TeamAvatar name={update.authorName} seed={update.userId} size={18} />
                         <Text size="xs" fw={500}>
-                          {personLabel(update.authorName, update.userId, userId)}
+                          {personLabel(update.authorName, update.userId, userId)}{' '}
+                          <BotMarker kind={update.authorKind} />
                         </Text>
                       </Group>
                     ) : null}

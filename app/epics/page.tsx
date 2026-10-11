@@ -28,7 +28,13 @@ import {
 import { useForm } from '@mantine/form';
 import { useDisclosure } from '@mantine/hooks';
 import { PRIVATE_GOAL_HINT, ProjectPicker } from '../../components/ProjectPicker/ProjectPicker';
-import { canEditItem, personLabel, TeamAvatar, WorkspaceBadge } from '../../components/Team';
+import {
+  BotMarker,
+  canEditItem,
+  personLabel,
+  TeamAvatar,
+  WorkspaceBadge,
+} from '../../components/Team';
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import { useCreateEpic, useEpics } from '../hooks/useEpicQueries';
 import { useGoals } from '../hooks/useGoalQueries';
@@ -337,7 +343,8 @@ function EpicCard({ epic, meId }: { epic: Epic; meId: string | null }) {
                   <TeamAvatar name={epic.createdByName} seed={epic.createdById} size={18} />
                   <Text size="xs" c="dimmed" truncate>
                     Created by{' '}
-                    {personLabel(epic.createdByName, epic.createdById, meId, { capitalise: false })}
+                    {personLabel(epic.createdByName, epic.createdById, meId, { capitalise: false })}{' '}
+                    <BotMarker kind={epic.createdByKind} />
                   </Text>
                 </Group>
               ) : (

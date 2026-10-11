@@ -29,19 +29,20 @@ import { activityKeys } from './useActivityQueries';
  * (here or elsewhere in the app) also refreshes the sharing page.
  */
 export const sharingKeys = {
-  all: ['organisations'] as const,
-  overview: () => ['organisations', 'sharing'] as const,
-  search: (orgId: string, query: string) =>
-    ['organisations', 'people-search', orgId, query] as const,
+  all: ['organisations', 'sharing'] as const,
+  account: (accountId: string | null) => ['organisations', 'sharing', accountId] as const,
+  overview: (accountId: string | null) => [...sharingKeys.account(accountId), 'overview'] as const,
+  search: (accountId: string | null, orgId: string, query: string) =>
+    [...sharingKeys.account(accountId), 'people-search', orgId, query] as const,
 };
 
 export const meKeys = {
-  me: ['users', 'me'] as const,
+  all: ['users', 'me'] as const,
+  me: (accountId: string | null) => [...meKeys.all, accountId] as const,
 };
 
 /** Every cache that can change when people or projects move between workspaces. */
 const SHARED_KEYS = [
-  ['organisations'],
   ['projects'],
   ['project-updates'],
   ['board-summary'],
@@ -57,19 +58,31 @@ const SHARED_KEYS = [
 
 export function invalidateAfterSharingChange(
   queryClient: QueryClient,
-  _scope: 'people' | 'projects' = 'projects'
+  _scope: 'people' | 'projects' = 'projects',
+  accountId: string | null = null
 ) {
+  // Keep sharing, member and activity refreshes within the account that made the change.
+  if (accountId) {
+    void queryClient.resetQueries({ queryKey: sharingKeys.account(accountId) });
+    void queryClient.resetQueries({ queryKey: ['organisations', accountId] });
+    void queryClient.resetQueries({ queryKey: activityKeys.account(accountId) });
+  } else {
+    void queryClient.resetQueries({ queryKey: sharingKeys.all });
+    void queryClient.resetQueries({ queryKey: activityKeys.all });
+  }
   // Membership and workspace moves can revoke access. Clear cached payloads before active
   // queries refetch so a failed authorization check cannot leave old task bodies on screen.
   for (const key of SHARED_KEYS) {
     void queryClient.resetQueries({ queryKey: [...key] });
   }
-  void queryClient.resetQueries({ queryKey: activityKeys.all });
 }
 
-function useToken() {
+function useIdentity() {
   const { data: session } = useSession();
-  return session?.accessToken;
+  return {
+    token: session?.accessToken,
+    accountId: session?.user?.id || session?.user?.email || null,
+  };
 }
 
 function showError(title: string) {
@@ -86,34 +99,34 @@ function showError(title: string) {
 
 /** The signed-in user: `{ id, email, name }`. Used to show "You" in activity. */
 export function useMe() {
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useQuery({
-    queryKey: meKeys.me,
-    queryFn: () => fetchMe(token),
-    enabled: !!token,
+    queryKey: meKeys.me(accountId),
+    queryFn: ({ signal }) => fetchMe(token, signal),
+    enabled: !!token && !!accountId,
     staleTime: 30 * 60 * 1000,
   });
 }
 
 /** Everything the sharing page needs: workspaces, people, invites and projects. */
 export function useSharingOverview() {
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useQuery({
-    queryKey: sharingKeys.overview(),
-    queryFn: () => fetchSharingOverview(token),
-    enabled: !!token,
+    queryKey: sharingKeys.overview(accountId),
+    queryFn: ({ signal }) => fetchSharingOverview(token, signal),
+    enabled: !!token && !!accountId,
     staleTime: 30 * 1000,
   });
 }
 
 /** People to add to a workspace. Needs 2+ characters. */
 export function usePeopleSearch(orgId: string, query: string) {
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   const q = query.trim();
   return useQuery({
-    queryKey: sharingKeys.search(orgId, q),
-    queryFn: () => searchPeople(orgId, q, token),
-    enabled: !!token && !!orgId && q.length >= 2,
+    queryKey: sharingKeys.search(accountId, orgId, q),
+    queryFn: ({ signal }) => searchPeople(orgId, q, token, signal),
+    enabled: !!token && !!accountId && !!orgId && q.length >= 2,
     staleTime: 60 * 1000,
   });
 }
@@ -122,11 +135,11 @@ export function usePeopleSearch(orgId: string, query: string) {
 
 export function useCreateWorkspace() {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: (name: string) => createWorkspace(name, token),
     onSuccess: (org) => {
-      invalidateAfterSharingChange(queryClient, 'people');
+      invalidateAfterSharingChange(queryClient, 'people', accountId);
       notifications.show({
         title: 'Workspace created',
         message: `${org.name} is ready. Add people and projects to share them.`,
@@ -139,12 +152,12 @@ export function useCreateWorkspace() {
 
 export function useRenameWorkspace() {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: ({ orgId, name }: { orgId: string; name: string }) =>
       renameWorkspace(orgId, name, token),
     onSuccess: () => {
-      invalidateAfterSharingChange(queryClient, 'projects');
+      invalidateAfterSharingChange(queryClient, 'projects', accountId);
       notifications.show({ message: 'Workspace renamed', color: 'green' });
     },
     onError: showError('Could not rename the workspace'),
@@ -153,11 +166,11 @@ export function useRenameWorkspace() {
 
 export function useDeleteWorkspace() {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: (orgId: string) => deleteWorkspace(orgId, token),
     onSuccess: () => {
-      invalidateAfterSharingChange(queryClient, 'people');
+      invalidateAfterSharingChange(queryClient, 'people', accountId);
       notifications.show({ message: 'Workspace deleted', color: 'green' });
     },
     onError: showError('Could not delete the workspace'),
@@ -172,13 +185,13 @@ export function useDeleteWorkspace() {
  */
 export function useSharePerson(orgId: string) {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: ({ email, role }: { email: string; role: InviteRole }) =>
       sharePerson(orgId, email, role, token),
     onSuccess: (result) => {
       if (result.status !== 'already_member') {
-        invalidateAfterSharingChange(queryClient, 'people');
+        invalidateAfterSharingChange(queryClient, 'people', accountId);
       }
     },
     onError: showError('Could not share'),
@@ -187,12 +200,12 @@ export function useSharePerson(orgId: string) {
 
 export function useRevokeInvite(orgId: string) {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: (inviteId: string) => revokeInvite(orgId, inviteId, token),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: sharingKeys.all });
-      queryClient.invalidateQueries({ queryKey: activityKeys.all });
+      queryClient.invalidateQueries({ queryKey: sharingKeys.account(accountId) });
+      queryClient.invalidateQueries({ queryKey: activityKeys.account(accountId) });
       notifications.show({
         message: 'Invite cancelled. The link no longer works.',
         color: 'green',
@@ -205,16 +218,18 @@ export function useRevokeInvite(orgId: string) {
 /** Change someone's role. Updates the page straight away and rolls back if the server says no. */
 export function useChangeRole(orgId: string) {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: ({ userId, role }: { userId: string; role: WorkspaceRole }) =>
       changeMemberRole(orgId, userId, role, token),
     onMutate: async ({ userId, role }) => {
-      await queryClient.cancelQueries({ queryKey: sharingKeys.overview() });
-      const previous = queryClient.getQueryData<SharingWorkspace[]>(sharingKeys.overview());
+      await queryClient.cancelQueries({ queryKey: sharingKeys.overview(accountId) });
+      const previous = queryClient.getQueryData<SharingWorkspace[]>(
+        sharingKeys.overview(accountId)
+      );
       if (previous) {
         queryClient.setQueryData<SharingWorkspace[]>(
-          sharingKeys.overview(),
+          sharingKeys.overview(accountId),
           previous.map((ws) =>
             ws.id !== orgId
               ? ws
@@ -230,7 +245,7 @@ export function useChangeRole(orgId: string) {
     },
     onError: (error: Error, _vars, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(sharingKeys.overview(), context.previous);
+        queryClient.setQueryData(sharingKeys.overview(accountId), context.previous);
       }
       showError('Could not change the role')(error);
     },
@@ -238,7 +253,7 @@ export function useChangeRole(orgId: string) {
       notifications.show({ message: 'Role updated', color: 'green' });
     },
     onSettled: () => {
-      invalidateAfterSharingChange(queryClient, 'people');
+      invalidateAfterSharingChange(queryClient, 'people', accountId);
     },
   });
 }
@@ -246,12 +261,12 @@ export function useChangeRole(orgId: string) {
 /** Remove someone, or leave yourself (pass your own id). */
 export function useRemoveMember(orgId: string) {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: ({ userId }: { userId: string; leaving?: boolean; name?: string }) =>
       removeMember(orgId, userId, token),
     onSuccess: (_data, { leaving, name }) => {
-      invalidateAfterSharingChange(queryClient, 'people');
+      invalidateAfterSharingChange(queryClient, 'people', accountId);
       notifications.show({
         message: leaving
           ? 'You have left the workspace'
@@ -268,12 +283,12 @@ export function useRemoveMember(orgId: string) {
 
 export function useAddWorkspaceProject(orgId: string) {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: (data: { name: string; description?: string | null }) =>
       addWorkspaceProject(orgId, data, token),
     onSuccess: (project) => {
-      invalidateAfterSharingChange(queryClient, 'projects');
+      invalidateAfterSharingChange(queryClient, 'projects', accountId);
       notifications.show({ message: `Added the ${project.name} project`, color: 'green' });
     },
     onError: showError('Could not add the project'),
@@ -290,12 +305,12 @@ export interface UpdateProjectVars {
 /** Rename, archive/unarchive, or move a project to another workspace (`data.orgId`). */
 export function useUpdateWorkspaceProject(orgId: string) {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: ({ projectId, data }: UpdateProjectVars) =>
       updateWorkspaceProject(orgId, projectId, data, token),
     onSuccess: (_result, { successMessage }) => {
-      invalidateAfterSharingChange(queryClient, 'projects');
+      invalidateAfterSharingChange(queryClient, 'projects', accountId);
       notifications.show({ message: successMessage || 'Project updated', color: 'green' });
     },
     onError: showError('Could not update the project'),
@@ -306,11 +321,11 @@ export function useUpdateWorkspaceProject(orgId: string) {
 
 export function useAcceptInvite() {
   const queryClient = useQueryClient();
-  const token = useToken();
+  const { token, accountId } = useIdentity();
   return useMutation({
     mutationFn: (inviteToken: string) => acceptInvite(inviteToken, token),
     onSuccess: () => {
-      invalidateAfterSharingChange(queryClient, 'projects');
+      invalidateAfterSharingChange(queryClient, 'projects', accountId);
     },
   });
 }

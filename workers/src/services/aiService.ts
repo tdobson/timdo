@@ -11,6 +11,7 @@ import {
   describeWorkspaces,
   resolveProposals,
   type RawChange,
+  type VoiceBotTaskCreationFacts,
   type VoiceContext,
   type VoiceTask,
 } from './voiceContextService';
@@ -181,6 +182,12 @@ THE SIGNED-IN USER (the person speaking):
 WORKSPACES, PROJECTS AND PEOPLE:
 {workspaces}
 
+BOT TASK CREATION FACTS FOR TODAY:
+{botTaskCreations}
+
+The People list contains human members who may be assigned tasks. Bots are listed separately and cannot be assigned. Never turn a bot name or identifier into an assignee.
+For questions about how many tasks a bot created today, use only the aggregate rows above. "Today" means the Europe/London calendar date shown there. The interval's start is inclusive and its end is exclusive. If the status is unavailable, say the count could not be loaded; do not report zero or guess. A missing row is not a zero. If the requested bot/workspace has no visible row, say there is no visible count for it. If available, report the visible rows and mention how many were omitted when the total exceeds the rows shown. These facts contain no task text or event summaries.
+
 EPICS:
 {epics}
 
@@ -254,6 +261,7 @@ Current Tasks JSON:
 const NO_CONTEXT = {
   me: '(unknown)',
   workspaces: '(not provided: use the categories on the tasks)',
+  botTaskCreations: 'Status: unavailable. No bot task counts were provided; do not infer zero.',
   epics: '(not provided)',
   refKinds: '(not provided)',
 };
@@ -298,6 +306,30 @@ function describeTaskSample(context: VoiceContext | undefined, sampleSize: numbe
   ].join('\n');
 }
 
+function describeBotTaskCreations(context: VoiceContext | undefined): string {
+  const facts: VoiceBotTaskCreationFacts | undefined = context?.botTaskCreationsToday;
+  if (!facts || facts.status !== 'available' || facts.total === null || facts.omitted === null) {
+    return [
+      'Status: unavailable. Bot task creation counts could not be loaded.',
+      'Do not state or imply that the count is zero.',
+    ].join('\n');
+  }
+
+  const items = facts.items.slice(0, 50);
+  const rows = items.map(
+    (item) =>
+      `- "${item.botName}" in "${item.orgName}": ${item.tasksCreated} task${item.tasksCreated === 1 ? '' : 's'} created`
+  );
+  return [
+    'Status: available.',
+    `Europe/London calendar date: ${facts.localDate}.`,
+    `Interval: from ${facts.from} inclusive to ${facts.to} exclusive, for that Europe/London date.`,
+    `Visible total rows: ${facts.total}; shown: ${items.length}; omitted: ${facts.omitted}.`,
+    'Visible bot/workspace task creation counts:',
+    rows.length ? rows.join('\n') : '(no visible bot/workspace rows)',
+  ].join('\n');
+}
+
 async function getProjectUpdates(
   transcript: string,
   projects: unknown[],
@@ -317,8 +349,9 @@ async function getProjectUpdates(
 
   const promptContext = context
     ? {
-        me: `${context.me.name} <${context.me.email}>`,
+        me: `${context.me.name}${context.me.email ? ` <${context.me.email}>` : ''}`,
         workspaces: describeWorkspaces(context),
+        botTaskCreations: describeBotTaskCreations(context),
         epics: describeEpics(context),
         refKinds: describeRefKinds(context),
         taskSample: describeTaskSample(context, projects.length),

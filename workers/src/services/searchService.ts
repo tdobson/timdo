@@ -2,7 +2,8 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import * as schema from '../db/schema';
 import { parseRef } from '../lib/refs';
-import { getAccessibleProjects, getUserNames } from './accessService';
+import { getAccessibleProjects } from './accessService';
+import { getPeople, type PersonKind } from './personService';
 import { taskHasRef } from './refService';
 import { taskIsVisibleTo } from './taskListService';
 
@@ -25,6 +26,7 @@ export interface SearchResult {
   orgName: string | null;
   assigneeId: string | null;
   assigneeName: string | null;
+  assigneeKind: PersonKind | null;
   /** Set when the query was a URL or kind:ref and this task carries it exactly. */
   matchedRef?: true;
 }
@@ -117,7 +119,7 @@ export async function searchTasksForUser(
     ...(ftsResults || []).filter((r) => !matchedIds.has(r.id)),
   ].slice(0, 30);
 
-  const names = await getUserNames(
+  const people = await getPeople(
     db,
     rawResults.map((r) => r.assigneeId)
   );
@@ -137,7 +139,8 @@ export async function searchTasksForUser(
     orgId: projectsById.get(r.projectId)?.orgId ?? null,
     orgName: projectsById.get(r.projectId)?.orgName ?? null,
     assigneeId: r.assigneeId,
-    assigneeName: r.assigneeId ? (names.get(r.assigneeId) ?? null) : null,
+    assigneeName: r.assigneeId ? (people.get(r.assigneeId)?.name ?? null) : null,
+    assigneeKind: r.assigneeId ? (people.get(r.assigneeId)?.kind ?? 'human') : null,
     ...(r.matchedRef ? { matchedRef: true as const } : {}),
   }));
 }

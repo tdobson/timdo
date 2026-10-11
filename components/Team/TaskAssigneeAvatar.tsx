@@ -1,8 +1,9 @@
 'use client';
 
 import React from 'react';
-import { Badge, Tooltip } from '@mantine/core';
+import { Badge, Group, Tooltip } from '@mantine/core';
 import type { Project } from '../../app/types/project.types';
+import { BotMarker } from './BotMarker';
 import { TeamAvatar } from './TeamAvatar';
 import { personLabel } from './teamFormat';
 
@@ -15,7 +16,7 @@ export function TaskAssigneeAvatar({
   meId,
   size = 20,
 }: {
-  task: Pick<Project, 'isShared' | 'assigneeId' | 'assigneeName'>;
+  task: Pick<Project, 'isShared' | 'assigneeId' | 'assigneeName' | 'assigneeKind'>;
   meId: string | null;
   size?: number;
 }) {
@@ -31,12 +32,16 @@ export function TaskAssigneeAvatar({
       </Tooltip>
     );
   }
+  const isBot = task.assigneeKind === 'bot' || task.assigneeId.startsWith('bot|');
   return (
-    <TeamAvatar
-      name={task.assigneeName}
-      seed={task.assigneeId}
-      size={size}
-      tooltip={`Assigned to ${personLabel(task.assigneeName, task.assigneeId, meId, { capitalise: false })}`}
-    />
+    <Group gap={4} wrap="nowrap" aria-label={isBot ? 'Bot assignee' : undefined}>
+      <TeamAvatar
+        name={task.assigneeName}
+        seed={task.assigneeId}
+        size={size}
+        tooltip={`Assigned to ${personLabel(task.assigneeName, task.assigneeId, meId, { capitalise: false })}${isBot ? ' [bot]' : ''}`}
+      />
+      <BotMarker kind={isBot ? 'bot' : task.assigneeKind} />
+    </Group>
   );
 }

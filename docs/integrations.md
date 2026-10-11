@@ -6,29 +6,38 @@ The examples use a made-up forum for Acme Solar: post 4411 at `https://forum.exa
 
 ## 1. Get a token
 
-Sign in to the web app, open **CLI & MCP** (`/settings/access`) and create a personal token. It starts with `tdo_` and is shown once. Send it as `Authorization: Bearer tdo_...`.
+For a workspace integration, ask a human owner/admin to create a `member` bot in **Sharing** (`/sharing`). Its token starts with `tdo_` and is shown once. The watcher then has its own name in task history, can only reach that workspace, and creates unassigned tasks unless it names an eligible human assignee. A `viewer` bot can read but cannot submit reports.
 
-A token acts as the person who made it, so every task and note the watcher writes is attributed to them. Make the token on the account that should own the watcher's work, and revoke it from the same page if it leaks. Separate bot accounts are planned; until then a personal token is the way in.
+See [Workspace bots and activity attribution](bots-and-attribution.md) for setup, rotation and lost-response recovery. Never give an integration the installation owner's internal secret. A personal token from **CLI & MCP** (`/settings/access`) is still available for work that should act as you, but it has your visibility and attribution rather than a bot's workspace boundary.
+
+Load the token from a secret store in an unattended watcher. For a one-off Bash session, this prompts without displaying it or putting it in shell history. The helper passes the header through curl's standard input, not its command arguments. Leave shell tracing off while handling credentials.
 
 ```bash
 export TIMDO_API=https://timdo-v2-api.tdobson.net/api/v2   # or your own worker's /api/v2
-export TIMDO_TOKEN=tdo_...
+read -r -s -p 'TimDo token: ' TIMDO_TOKEN
+printf '\n'
+export TIMDO_TOKEN
+
+timdo_api() {
+  curl --silent --show-error --config - "$@" <<EOF
+header = "Authorization: Bearer ${TIMDO_TOKEN:?Set TIMDO_TOKEN from a secret store}"
+EOF
+}
 ```
 
 ## 2. Find the project id
 
-Tasks live in projects, and projects live in workspaces. Use the project's id rather than its name: a name nobody has yet creates a new project in your personal workspace, which is not where a typo should send a customer's report.
+Tasks live in projects, and projects live in workspaces. Use an existing project's ID rather than its name. Bots cannot create projects or submit tasks outside their home workspace. With a human token, an unknown category can create a project in their personal workspace, which is not where a typo should send a customer's report.
 
 ```bash
-curl -sS "$TIMDO_API/organisations" -H "Authorization: Bearer $TIMDO_TOKEN"
-curl -sS "$TIMDO_API/organisations/<workspace id>/projects" -H "Authorization: Bearer $TIMDO_TOKEN"
+timdo_api "$TIMDO_API/organisations"
+timdo_api "$TIMDO_API/organisations/<workspace id>/projects"
 ```
 
 ## 3. Create with a source
 
 ```bash
-curl -sS -X POST "$TIMDO_API/projects" \
-  -H "Authorization: Bearer $TIMDO_TOKEN" \
+timdo_api -X POST "$TIMDO_API/projects" \
   -H 'Content-Type: application/json' \
   -d '{
     "project": "Broken offer page",
@@ -91,7 +100,7 @@ What `report` adds to the existing task: any `reported_by`, `about` or `link` re
 Find the task for an item, any status:
 
 ```bash
-curl -sS "$TIMDO_API/projects?ref=forum.post:4411&role=source" -H "Authorization: Bearer $TIMDO_TOKEN"
+timdo_api "$TIMDO_API/projects?ref=forum.post:4411&role=source"
 bin/timdo find forum.post:4411 --role source
 ```
 
@@ -102,8 +111,8 @@ Checking first and then creating leaves a gap another worker can slip through. C
 When a person (or an agent) creates from free text there is no source to go on. Ask for similar open tasks before creating, and offer to add a note to one of them instead:
 
 ```bash
-curl -sS -G "$TIMDO_API/tasks/similar" --data-urlencode "title=Fix the offer page" \
-  --data-urlencode "projectId=<project id>" -H "Authorization: Bearer $TIMDO_TOKEN"
+timdo_api -G "$TIMDO_API/tasks/similar" --data-urlencode "title=Fix the offer page" \
+  --data-urlencode "projectId=<project id>"
 bin/timdo similar "Fix the offer page" -p Website
 ```
 

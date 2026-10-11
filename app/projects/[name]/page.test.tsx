@@ -114,7 +114,7 @@ describe('ProjectDetailPage (/projects/[name])', () => {
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = WORKER_API_URL;
     useSessionMock.mockReturnValue({
       data: {
-        user: { name: 'Test User' },
+        user: { name: 'Test User', email: 'test@example.com' },
         accessToken: 'test-token',
       },
       status: 'authenticated',
@@ -180,7 +180,12 @@ describe('ProjectDetailPage (/projects/[name])', () => {
         return Promise.resolve({
           ok: true,
           json: async () => [
-            { userId: 'user-2', userName: 'Jordan Example', userEmail: 'jordan@example.com', role: 'owner' },
+            {
+              userId: 'user-2',
+              userName: 'Jordan Example',
+              userEmail: 'jordan@example.com',
+              role: 'owner',
+            },
           ],
         });
       }

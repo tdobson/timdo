@@ -91,8 +91,11 @@ export function CategoryDetailView({ categoryName, tasks, epics }: CategoryDetai
 
   const { data: members = [] } = useOrganisationMembers(isShared ? orgId || '' : '');
   const otherMembers = members
-    .filter((m) => m.userId !== userId)
-    .map((m) => m.userName || m.userEmail);
+    .filter((member) => member.userId !== userId)
+    .map((member) => {
+      const name = member.userName || member.userEmail || 'Someone';
+      return member.kind === 'bot' || member.userId.startsWith('bot|') ? `${name} [bot]` : name;
+    });
   const categoryEpics = epics.filter(
     (e) => (e.category || '').toLowerCase() === categoryName.toLowerCase()
   );

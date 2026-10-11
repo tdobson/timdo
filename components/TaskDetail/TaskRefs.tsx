@@ -165,7 +165,7 @@ function RefChip({
   const removeRef = useRemoveRef();
   const pending = isPendingRef(ref);
   const tooltip = ref.createdByName
-    ? `${ref.canonical}, added by ${ref.createdByName}`
+    ? `${ref.canonical}, added by ${ref.createdByName}${ref.createdByKind === 'bot' ? ' [bot]' : ''}`
     : ref.canonical;
 
   return (
@@ -192,7 +192,15 @@ function RefChip({
             {ref.displayLabel}
           </Anchor>
         ) : (
-          <Text size="sm" truncate maw={280}>
+          <Text
+            component="span"
+            size="sm"
+            truncate
+            maw={280}
+            role="group"
+            tabIndex={0}
+            aria-label={tooltip}
+          >
             {ref.displayLabel}
           </Text>
         )}

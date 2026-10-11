@@ -16,8 +16,11 @@ import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import * as schema from '../db/schema';
 import { canonicalRef, normaliseRole, parseRef, shortRefLabel, type RefRole } from '../lib/refs';
 import { canEdit, getAccessibleProjects, type AccessibleProject, type Role } from './accessService';
+import * as botService from './botService';
+import type { BotTaskCreationCount } from './botService';
 import { getEpicsForUser } from './epicService';
 import { getGoalsForUser } from './goalService';
+import { getLondonDayWindow } from './londonDayWindow';
 import { getOrganisationMembers } from './organisationService';
 import { getSelectedTaskSummariesForUser, type TaskView } from './projectService';
 import { findSimilarTasks, type SimilarQuery, type SimilarTask } from './similarService';
@@ -41,14 +44,35 @@ export interface VoicePerson {
   role: Role;
 }
 
+/** A safe bot identity. It has no email or credential fields and is never assignable. */
+export interface VoiceBot {
+  userId: string;
+  name: string;
+  role: Role;
+}
+
 export interface VoiceWorkspace {
   id: string;
   name: string;
   isPersonal: boolean;
   role: Role;
   canEdit: boolean;
+  /** Human members only. */
   members: VoicePerson[];
+  /** Active bots are separate from the assignable people list. */
+  bots: VoiceBot[];
   projects: AccessibleProject[];
+}
+
+export interface VoiceBotTaskCreationFacts {
+  status: 'available' | 'unavailable';
+  localDate: string;
+  timeZone: 'Europe/London';
+  from: string;
+  to: string;
+  items: BotTaskCreationCount[];
+  total: number | null;
+  omitted: number | null;
 }
 
 export interface VoiceEpic {
@@ -74,12 +98,14 @@ export type VoiceTask = Partial<TaskView> & {
 };
 
 export interface VoiceContext {
-  me: { id: string; name: string; email: string };
+  me: { id: string; name: string; email?: string };
   workspaces: VoiceWorkspace[];
   projects: AccessibleProject[];
   tasks: VoiceTask[];
   epics: VoiceEpic[];
   goals: VoiceGoal[];
+  /** Today's visible bot task-created aggregates, with explicit bounds and availability. */
+  botTaskCreationsToday?: VoiceBotTaskCreationFacts;
   /** True SQL totals, independent of the selected task sample. */
   taskCounts?: import('./taskListService').TaskAggregateCounts;
   /** The limit applied to the selected task sample. */
@@ -110,26 +136,61 @@ export interface VoiceContext {
 export async function loadVoiceContext(
   db: DB,
   userId: string,
-  transcript = ''
+  transcript = '',
+  now: Date = new Date()
 ): Promise<VoiceContext> {
-  const [projects, meRow, epicsRaw, goalsRaw, taskCounts, selection] = await Promise.all([
-    getAccessibleProjects(db, userId),
-    db
-      .select({ id: schema.users.id, name: schema.users.name, email: schema.users.email })
-      .from(schema.users)
-      .where(eq(schema.users.id, userId))
-      .get(),
-    getEpicsForUser(db, userId).catch(() => []),
-    getGoalsForUser(db, userId).catch(() => []),
-    getTaskAggregateCountsForUser(db, userId),
-    selectVoiceTaskIds(db, userId, transcript),
-  ]);
+  const dayWindow = getLondonDayWindow(now);
+  const botTaskCreationsPromise: Promise<VoiceBotTaskCreationFacts> = botService
+    .getBotTaskCreationCounts(db, userId, {
+      from: dayWindow.from,
+      to: dayWindow.to,
+      limit: 50,
+    })
+    .then(({ items, total }) => {
+      const boundedItems = items.slice(0, 50);
+      const boundedTotal = Math.max(0, Math.floor(total));
+      return {
+        ...dayWindow,
+        status: 'available' as const,
+        items: boundedItems,
+        total: boundedTotal,
+        omitted: Math.max(0, boundedTotal - boundedItems.length),
+      };
+    })
+    .catch(() => ({
+      ...dayWindow,
+      status: 'unavailable' as const,
+      items: [],
+      total: null,
+      omitted: null,
+    }));
+
+  const [projects, meRow, epicsRaw, goalsRaw, taskCounts, selection, botTaskCreationsToday] =
+    await Promise.all([
+      getAccessibleProjects(db, userId),
+      db
+        .select({
+          id: schema.users.id,
+          name: schema.users.name,
+          email: schema.users.email,
+          kind: schema.users.kind,
+        })
+        .from(schema.users)
+        .where(eq(schema.users.id, userId))
+        .get(),
+      getEpicsForUser(db, userId).catch(() => []),
+      getGoalsForUser(db, userId).catch(() => []),
+      getTaskAggregateCountsForUser(db, userId),
+      selectVoiceTaskIds(db, userId, transcript),
+      botTaskCreationsPromise,
+    ]);
 
   const orgIds = Array.from(new Set(projects.map((p) => p.orgId)));
   const memberLists = await Promise.all(orgIds.map((id) => getOrganisationMembers(db, id)));
 
   const workspaces: VoiceWorkspace[] = orgIds.map((orgId, i) => {
     const orgProjects = projects.filter((p) => p.orgId === orgId);
+    const orgMembers = memberLists[i];
     const first = orgProjects[0];
     return {
       id: orgId,
@@ -138,12 +199,21 @@ export async function loadVoiceContext(
       role: first.role,
       canEdit: canEdit(first.role),
       projects: orgProjects,
-      members: memberLists[i].map((m) => ({
-        userId: m.userId,
-        name: m.userName || m.userEmail.split('@')[0],
-        email: m.userEmail,
-        role: m.role as Role,
-      })),
+      members: orgMembers
+        .filter((m) => m.kind !== 'bot')
+        .map((m) => ({
+          userId: m.userId,
+          name: m.userName || m.userEmail?.split('@')[0] || 'Someone',
+          email: m.userEmail ?? '',
+          role: m.role as Role,
+        })),
+      bots: orgMembers
+        .filter((m) => m.kind === 'bot')
+        .map((m) => ({
+          userId: m.userId,
+          name: m.userName || 'Bot',
+          role: m.role as Role,
+        })),
     };
   });
   // Personal first, then by name: matches how the rest of the app lists workspaces
@@ -158,9 +228,13 @@ export async function loadVoiceContext(
     tasks.map((task) => task.id)
   );
   const selectedIds = new Set(tasks.map((task) => task.id));
-  const email = meRow?.email || '';
+  const email = meRow?.kind === 'bot' ? undefined : meRow?.email || undefined;
   return {
-    me: { id: userId, name: meRow?.name || email.split('@')[0] || 'You', email },
+    me: {
+      id: userId,
+      name: meRow?.name || email?.split('@')[0] || 'You',
+      ...(email ? { email } : {}),
+    },
     workspaces,
     projects,
     tasks,
@@ -173,6 +247,7 @@ export async function loadVoiceContext(
     })),
     goals: (goalsRaw as any[]).map((g) => ({ id: g.id, title: g.title })),
     taskCounts,
+    botTaskCreationsToday,
     sampleCap: VOICE_TASK_SAMPLE_CAP,
     selectionWarnings: selection.warnings,
     promptFields,
@@ -210,10 +285,14 @@ export function describeWorkspaces(ctx: VoiceContext): string {
       const people = w.members
         .map((m) => `${m.name}${m.userId === ctx.me.id ? ' (you)' : ''} <${m.email}> ${m.role}`)
         .join('; ');
+      const bots = (w.bots ?? [])
+        .map((bot) => `${bot.name} [bot, not assignable] ${bot.role}`)
+        .join('; ');
       return [
         `- Workspace "${w.name}" (${kind}, your role: ${roleLabel(w.role)})`,
         `  Projects: ${projects || '(none)'}`,
-        `  People you can assign to: ${people}`,
+        `  People you can assign to: ${people || '(none)'}`,
+        `  Bots (not assignable): ${bots || '(none)'}`,
       ].join('\n');
     })
     .join('\n');
@@ -435,11 +514,16 @@ type PersonMatch =
   | { kind: 'me' }
   | { kind: 'nobody' }
   | { kind: 'person'; person: VoicePerson }
+  | { kind: 'bot'; bots: VoiceBot[] }
   | { kind: 'ambiguous'; people: VoicePerson[] }
   | { kind: 'none' };
 
-/** Match a spoken name or email against a list of people. */
-export function matchPerson(spoken: string, people: VoicePerson[], meId: string): PersonMatch {
+/** Match a spoken name, human email or exact id against the supplied identities. */
+export function matchPerson(
+  spoken: string,
+  people: Array<VoicePerson | VoiceBot>,
+  meId: string
+): PersonMatch {
   const raw = spoken.trim().toLowerCase();
   if (!raw) {
     return { kind: 'none' };
@@ -451,32 +535,42 @@ export function matchPerson(spoken: string, people: VoicePerson[], meId: string)
     return { kind: 'nobody' };
   }
 
-  const pick = (hits: VoicePerson[]): PersonMatch | null => {
+  const pick = (hits: Array<VoicePerson | VoiceBot>): PersonMatch | null => {
     const unique = Array.from(new Map(hits.map((p) => [p.userId, p])).values());
-    if (unique.length === 1) {
-      return unique[0].userId === meId ? { kind: 'me' } : { kind: 'person', person: unique[0] };
+    const bots = unique.filter((p): p is VoiceBot => !('email' in p));
+    if (bots.length > 0) {
+      return { kind: 'bot', bots };
     }
-    if (unique.length > 1) {
-      return { kind: 'ambiguous', people: unique };
+    const humans = unique as VoicePerson[];
+    if (humans.length === 1) {
+      return humans[0].userId === meId ? { kind: 'me' } : { kind: 'person', person: humans[0] };
+    }
+    if (humans.length > 1) {
+      return { kind: 'ambiguous', people: humans };
     }
     return null;
   };
 
-  const first = (p: VoicePerson) => p.name.trim().split(/\s+/)[0] || '';
-  const last = (p: VoicePerson) => {
+  const first = (p: VoicePerson | VoiceBot) => p.name.trim().split(/\s+/)[0] || '';
+  const last = (p: VoicePerson | VoiceBot) => {
     const parts = p.name.trim().split(/\s+/);
     return parts.length > 1 ? parts[parts.length - 1] : '';
   };
   const n = norm(raw);
-  const tests: Array<(p: VoicePerson) => boolean> = [
-    (p) => p.email.toLowerCase() === raw,
+  const tests: Array<(p: VoicePerson | VoiceBot) => boolean> = [
+    (p) => p.userId.toLowerCase() === raw,
+    (p) => 'email' in p && p.email.toLowerCase() === raw,
     (p) => p.name.trim().toLowerCase() === raw || norm(p.name) === n,
     (p) => norm(first(p)) === n,
     (p) => !!last(p) && norm(last(p)) === n,
-    (p) => norm(p.email.split('@')[0]) === n,
+    (p) => 'email' in p && norm(p.email.split('@')[0]) === n,
     // "Jor" for Jordan, "Jordan E" for Jordan Example
     (p) => n.length >= 2 && (norm(first(p)).startsWith(n) || norm(p.name).startsWith(n)),
     (p) => n.length >= 5 && levenshtein(norm(first(p)), n) <= 1,
+    (p) =>
+      !('email' in p) &&
+      n.length >= 5 &&
+      (levenshtein(norm(p.name), n) <= 2 || (!!last(p) && levenshtein(norm(last(p)), n) <= 1)),
   ];
   for (const test of tests) {
     const result = pick(people.filter(test));
@@ -656,10 +750,11 @@ function resolveAssignee(
   if (spoken === undefined || spoken === null || !String(spoken).trim()) {
     return { assigneeId: fallback.assigneeId, assigneeName: fallback.assigneeName };
   }
-  const members = workspace?.members ?? [
-    { userId: ctx.me.id, name: ctx.me.name, email: ctx.me.email, role: 'owner' as Role },
+  const people = workspace?.members ?? [
+    { userId: ctx.me.id, name: ctx.me.name, email: ctx.me.email ?? '', role: 'owner' as Role },
   ];
-  const match = matchPerson(String(spoken), members, ctx.me.id);
+  const identities = [...people, ...(workspace?.bots ?? [])];
+  const match = matchPerson(String(spoken), identities, ctx.me.id);
   const wsName = workspace?.name ?? 'your personal';
   if (match.kind === 'me') {
     return { assigneeId: ctx.me.id, assigneeName: ctx.me.name };
@@ -669,6 +764,10 @@ function resolveAssignee(
   }
   if (match.kind === 'person') {
     return { assigneeId: match.person.userId, assigneeName: match.person.name };
+  }
+  if (match.kind === 'bot') {
+    warnings.push(`Bots can't be assigned tasks, so I ${fallback.label}.`);
+    return { assigneeId: fallback.assigneeId, assigneeName: fallback.assigneeName };
   }
   if (match.kind === 'ambiguous') {
     warnings.push(
@@ -680,8 +779,13 @@ function resolveAssignee(
   const everyone = Array.from(
     new Map(ctx.workspaces.flatMap((w) => w.members).map((p) => [p.userId, p])).values()
   );
-  const elsewhere = matchPerson(String(spoken), everyone, ctx.me.id);
-  if (elsewhere.kind === 'person') {
+  const bots = Array.from(
+    new Map(ctx.workspaces.flatMap((w) => w.bots ?? []).map((bot) => [bot.userId, bot])).values()
+  );
+  const elsewhere = matchPerson(String(spoken), [...everyone, ...bots], ctx.me.id);
+  if (elsewhere.kind === 'bot') {
+    warnings.push(`Bots can't be assigned tasks, so I ${fallback.label}.`);
+  } else if (elsewhere.kind === 'person') {
     warnings.push(
       `${elsewhere.person.name} isn't in the ${wsName} workspace, so I ${fallback.label}.`
     );
@@ -1293,8 +1397,16 @@ export function resolveProposals(changes: RawChange[], ctx: VoiceContext): Resol
         label: "didn't change who it's assigned to",
       };
       // The model often echoes the task's current assignee back: that isn't a request
+      const requestedMatch = assigneeHint
+        ? matchPerson(
+            assigneeHint,
+            [...(targetWorkspace?.members ?? []), ...(targetWorkspace?.bots ?? [])],
+            ctx.me.id
+          )
+        : null;
       const echoed =
         !!assigneeHint &&
+        requestedMatch?.kind !== 'bot' &&
         [before!.assigneeName ?? 'unassigned', 'someone'].some(
           (n) => norm(n) === norm(assigneeHint)
         );

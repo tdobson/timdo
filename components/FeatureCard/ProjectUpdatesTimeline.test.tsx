@@ -175,6 +175,20 @@ describe('ProjectUpdatesTimeline note mutations', () => {
     );
   });
 
+  it('marks bot note authors while leaving human and historical kinds alone', async () => {
+    const botNote = update('bot-note', '2026-10-10T10:00:00.000Z', {
+      userId: 'bot|fixture',
+      authorName: 'Forum watcher',
+      authorKind: 'bot',
+    });
+    seedCaches(queryClient, [botNote]);
+
+    mountTimeline(queryClient);
+
+    expect(await screen.findByText('Forum watcher')).toBeInTheDocument();
+    expect(await screen.findByLabelText('Bot identity')).toBeInTheDocument();
+  });
+
   it('does not write a delayed add response into the next account timeline', async () => {
     const pending = deferred<ProjectUpdate>();
     const addedByPreviousAccount = update('note-old-account', '2026-10-03T10:00:00.000Z');

@@ -24,6 +24,13 @@ import {
   buildUnlinkTasksArgs,
   buildAuditArgs,
   buildActivityArgs,
+  buildListBotsArgs,
+  buildCreateBotArgs,
+  buildRenameBotArgs,
+  buildSetBotRoleArgs,
+  buildIssueBotTokenArgs,
+  buildRevokeBotTokenArgs,
+  buildDisableBotArgs,
   buildWhoamiArgs,
   buildListWorkspacesArgs,
   buildGetWorkspaceArgs,
@@ -47,8 +54,8 @@ const MODEL =
 
 const TASK_FIELDS_NOTE =
   'Each task includes orgName (workspace), projectName/projectKey, isShared, myRole, canEdit, ' +
-  'assigneeId/assigneeName, reporterName (created by), updatedByName (last updated by), isMine, ' +
-  'and refs (links to things outside TimDo, each with id, role, canonical "kind:id", url and label).';
+  'assigneeId/assigneeName/assigneeKind, reporterName/reporterKind (created by), updatedByName/updatedByKind (last updated by), isMine, ' +
+  'and refs (links to things outside TimDo, each with id, role, canonical "kind:id", url and label). Bot people have kind "bot"; their internal email is never exposed.';
 
 // Written for an agent that has never seen TimDo: what a ref is, the roles, examples, safety, privacy.
 const REFS_NOTE =
@@ -112,6 +119,10 @@ const RELATIONS = ['relates_to', 'blocks', 'blocked_by', 'duplicates'];
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
 const bool = (description) => ({ type: 'boolean', description });
 
+const OWNER_SECRET = bool(
+  'Set true to select the configured owner secret (TIMDO_SECRET) for this bot-management call. The default stays token-first; this never retries a token denial. No secret value is accepted here.'
+);
+
 function tool(name, description, properties = {}, required = []) {
   return {
     name,
@@ -171,13 +182,13 @@ export const TIMDO_TOOLS = [
   ),
   tool(
     'timdo_get_task',
-    'Get one TimDo task: workspace, project, epic, assignee, created by, last updated by, refs (links to things outside TimDo, sorted by role: Source, About, Reported by, Link; each with an id you can pass to timdo_remove_ref), linked tasks, notes (with author names) and recent activity.',
+    'Get one TimDo task: workspace, project, epic, assignee, creator and updater kinds, refs (links to things outside TimDo, sorted by role: Source, About, Reported by, Link; each with an id you can pass to timdo_remove_ref), linked tasks, notes with author kinds, and recent activity with actor kind and authentication path. Bot people have kind "bot"; their internal email is never exposed.',
     { id: str('Task ID (prefix or full UUID)') },
     ['id']
   ),
   tool(
     'timdo_add_task',
-    `Create a TimDo task. "category" picks the project by name: a project already in a shared workspace puts the task there (so collaborators see it); a new name creates the project in your personal workspace. New tasks are assigned to the creator unless assignTo says otherwise. Viewers cannot create tasks. Optional refs are added with the task after validation. If a source ref is already tracked, onDuplicate controls the answer: error (default) returns 409 with the existing task, return gives that task back unchanged with created: false, and report adds the other refs and one report note, then returns created: false, reported: true. ${DUPLICATES_NOTE} ${REFS_NOTE}`,
+    `Create a TimDo task. "category" selects a project: people can create a personal project with a new category name, while bots must use an existing writable project in their home workspace. Human-created tasks default to their creator; bot-created tasks default to unassigned. Bots cannot be assigned or own life goals. Viewers cannot create tasks. Optional refs are added with the task after validation. If a source ref is already tracked, onDuplicate controls the answer: error (default) returns 409 with the existing task, return gives that task back unchanged with created: false, and report adds the other refs and one report note, then returns created: false, reported: true. ${DUPLICATES_NOTE} ${REFS_NOTE}`,
     {
       project: str('Task title / name'),
       reason: str('Why this task matters'),
@@ -188,9 +199,9 @@ export const TIMDO_TOOLS = [
       size: str('Estimated size/effort: * to ***** (default: ***)'),
       category: str('Project (category) name, e.g. Acme Solar, Personal. Required unless projectId is given.'),
       projectId: str('Exact project by id, key (e.g. ACME) or "Workspace/Project"'),
-      assignTo: str('"me" (default), "none" for unassigned, or a member of the project\'s workspace by name or email'),
+      assignTo: str('"me" for human creators (default for humans), "none" for unassigned, or a human member of the project\'s workspace by name or email. Bots default to unassigned and cannot be assigned.'),
       epic: str('Parent epic title or ID'),
-      goal: str('Your life goal title or ID (private to you)'),
+      goal: str('Human-only: one of your private life goals; bots cannot own goals.'),
       customer: str('Customer or client name (e.g. Acme Solar)'),
       tags: str('Tags (comma-separated)'),
       linkTaskId: str('Task ID or prefix to link with after creation'),
@@ -241,7 +252,7 @@ export const TIMDO_TOOLS = [
   ),
   tool(
     'timdo_update_task',
-    `Update a TimDo task: status, details, project, epic, who it is assigned to, and its refs. Assignees must be members of the task's workspace. Viewers cannot edit (error "View only: ..."). refs are added to the ones the task already has (never replacing them); removeRefs takes refs away. Each ref change is tried even if another fails; any failure makes the call fail with the reasons, but the rest are saved. ${REFS_NOTE}`,
+    `Update a TimDo task: status, details, project, epic, assignee and refs. Assignees must be human members of the task's workspace; bots cannot be assigned. Viewers cannot edit (error "View only: ..."). refs are added to the ones the task already has (never replacing them); removeRefs takes refs away. Each ref change is tried even if another fails; any failure makes the call fail with the reasons, but the rest are saved. ${REFS_NOTE}`,
     {
       id: str('Task ID (prefix or full UUID) to update'),
       project: str('New title for the task'),
@@ -252,11 +263,11 @@ export const TIMDO_TOOLS = [
       priority: { type: 'number', description: 'Priority 1-10' },
       category: str('Move to another project by name'),
       projectId: str('Move to an exact project by id, key (e.g. ACME) or "Workspace/Project"'),
-      assignTo: str('"me", "none" (unassign), or a workspace member\'s name or email'),
-      claim: bool('Assign the task to yourself'),
+      assignTo: str('"me" for a human caller, "none" to unassign, or a human workspace member by name or email. Bots cannot be assigned.'),
+      claim: bool('Assign the task to yourself (bots cannot be assignees)'),
       unassign: bool('Leave the task unassigned'),
       epic: str('Parent epic title or ID'),
-      goal: str('Your life goal title or ID'),
+      goal: str('Human-only: your private life goal; bots cannot own goals.'),
       customer: str('Customer or client name'),
       tags: str('Tags (comma-separated)'),
       linkTaskId: str('Task ID or prefix to link with'),
@@ -287,7 +298,7 @@ export const TIMDO_TOOLS = [
   ),
   tool(
     'timdo_list_notes',
-    'Dated notes on a TimDo task, oldest first, each with authorName.',
+    'Dated notes on a TimDo task, oldest first, each with authorName and authorKind so bot authors are clear.',
     { id: str('Task ID (prefix or full UUID)') },
     ['id']
   ),
@@ -424,7 +435,7 @@ export const TIMDO_TOOLS = [
   // Collaboration
   tool(
     'timdo_activity',
-    'Who did what in TimDo, newest first: task changes, notes, assignments, moves, epics, members. Each entry has actorName ("TimDo" for automatic actions), summary (e.g. Moved "Fix inverter" from Do to Done), projectName and createdAt.',
+    'Who did what in TimDo, newest first: task changes, notes, assignments, moves, epics, members. Each entry has actorName ("TimDo" for automatic actions), actorKind, summary, projectName, createdAt, via (web, token, owner_secret, system or null) and viaDetail. viaDetail may contain a token name; do not put it in inline bylines.',
     {
       taskId: str('Only this task (ID or prefix)'),
       epic: str('Only this epic (ID or title)'),
@@ -435,7 +446,7 @@ export const TIMDO_TOOLS = [
   ),
   tool(
     'timdo_whoami',
-    `Which TimDo account the tools act as (id, email, name) and the API in use. ${MODEL}`
+    `Which TimDo account the tools act as (id, kind, name) and the API in use. Bot identity includes its safe workspace and role and omits the synthetic email. ${MODEL}`
   ),
   tool(
     'timdo_list_workspaces',
@@ -481,6 +492,71 @@ export const TIMDO_TOOLS = [
       workspace: str('Destination workspace name or id'),
     },
     ['project', 'workspace']
+  ),
+
+  // Workspace bot management
+  tool(
+    'timdo_list_bots',
+    'List active and disabled bots in one workspace, including safe names, roles and redacted active token summaries. Only a human workspace owner or admin can use these management endpoints.',
+    { workspace: str('Workspace name or id'), ownerSecret: OWNER_SECRET },
+    ['workspace']
+  ),
+  tool(
+    'timdo_create_bot',
+    'Create a bot in a workspace with member or viewer access. Confirm with the user first: agree the bot name and role. The response contains a one-time token: store it now because it cannot be recovered. If the response is lost, check the redacted bot list, revoke the token and issue a replacement. The initial token name defaults to "initial".',
+    {
+      workspace: str('Workspace name or id'),
+      name: str('Bot name'),
+      role: str('Workspace role (default: member)', { enum: ['member', 'viewer'] }),
+      tokenName: str('Initial token name (default: initial)'),
+      ownerSecret: OWNER_SECRET,
+    },
+    ['workspace', 'name']
+  ),
+  tool(
+    'timdo_rename_bot',
+    'Rename a bot in its existing workspace. Confirm with the user first: agree the new name. A rename does not change its credentials or permissions.',
+    { workspace: str('Workspace name or id'), bot: str('Bot name or ID prefix'), name: str('New bot name'), ownerSecret: OWNER_SECRET },
+    ['workspace', 'bot', 'name']
+  ),
+  tool(
+    'timdo_set_bot_role',
+    'Change a bot between member and viewer in its existing workspace. Confirm with the user first: agree the new role.',
+    {
+      workspace: str('Workspace name or id'),
+      bot: str('Bot name or ID prefix'),
+      role: str('New workspace role', { enum: ['member', 'viewer'] }),
+      ownerSecret: OWNER_SECRET,
+    },
+    ['workspace', 'bot', 'role']
+  ),
+  tool(
+    'timdo_issue_bot_token',
+    'Issue a replacement token for a bot. Confirm with the user first: agree which bot needs the new credential. The response contains a one-time token that cannot be recovered, so store it now. A lost response needs a redacted-list check, revocation and another issue. The token name defaults to "CLI token".',
+    {
+      workspace: str('Workspace name or id'),
+      bot: str('Bot name or ID prefix'),
+      name: str('Replacement token name (default: CLI token)'),
+      ownerSecret: OWNER_SECRET,
+    },
+    ['workspace', 'bot']
+  ),
+  tool(
+    'timdo_revoke_bot_token',
+    'Revoke one active bot token. Confirm with the user first: agree the bot and token. The MCP call uses --yes after that confirmation, acts immediately and does not prompt in a terminal.',
+    {
+      workspace: str('Workspace name or id'),
+      bot: str('Bot name or ID prefix'),
+      token: str('Active token name, full id or unique id prefix'),
+      ownerSecret: OWNER_SECRET,
+    },
+    ['workspace', 'bot', 'token']
+  ),
+  tool(
+    'timdo_disable_bot',
+    'Disable a bot in its workspace. This revokes all its tokens and removes its membership. Confirm with the user first: agree the bot and workspace. The MCP call uses --yes after that confirmation, acts immediately and does not prompt in a terminal.',
+    { workspace: str('Workspace name or id'), bot: str('Bot name or ID prefix'), ownerSecret: OWNER_SECRET },
+    ['workspace', 'bot']
   ),
 ];
 
@@ -528,6 +604,13 @@ export const TIMDO_ARG_BUILDERS = {
   timdo_find_by_ref: (a) => buildFindByRefArgs(a),
   timdo_find_similar: (a) => buildFindSimilarArgs(a),
   timdo_activity: (a) => buildActivityArgs(a),
+  timdo_list_bots: (a) => buildListBotsArgs(a),
+  timdo_create_bot: (a) => buildCreateBotArgs(a),
+  timdo_rename_bot: (a) => buildRenameBotArgs(a),
+  timdo_set_bot_role: (a) => buildSetBotRoleArgs(a),
+  timdo_issue_bot_token: (a) => buildIssueBotTokenArgs(a),
+  timdo_revoke_bot_token: (a) => buildRevokeBotTokenArgs(a),
+  timdo_disable_bot: (a) => buildDisableBotArgs(a),
   timdo_whoami: () => buildWhoamiArgs(),
   timdo_list_workspaces: () => buildListWorkspacesArgs(),
   timdo_get_workspace: (a) => buildGetWorkspaceArgs(a),
@@ -576,6 +659,16 @@ export function groupTaskItems(items, groupBy) {
   return Array.from(groups.values());
 }
 
+const BOT_MANAGEMENT_TOOLS = new Set([
+  'timdo_list_bots',
+  'timdo_create_bot',
+  'timdo_rename_bot',
+  'timdo_set_bot_role',
+  'timdo_issue_bot_token',
+  'timdo_revoke_bot_token',
+  'timdo_disable_bot',
+]);
+
 /**
  * Handle a timdo_* tool call. Returns an MCP result, or null when the name is not a TimDo tool.
  * Errors (including "View only: ..." from the API) are thrown for the caller to report.
@@ -584,7 +677,9 @@ export async function handleTimdoTool(name, rawArgs = {}, run = runTimdoCli) {
   const build = TIMDO_ARG_BUILDERS[name];
   if (!build) return null;
   const args = rawArgs || {};
-  const options = args.asUser ? { asUser: args.asUser } : {};
+  const options = {};
+  if (args.asUser) options.asUser = args.asUser;
+  if (BOT_MANAGEMENT_TOOLS.has(name) && args.ownerSecret === true) options.ownerSecret = true;
   let result;
   try {
     result = await run(build(args), undefined, options);

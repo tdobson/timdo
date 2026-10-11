@@ -3,6 +3,8 @@
  * @module app/types/project.types
  */
 
+import type { PersonKind } from './collaboration.types';
+
 /**
  * All valid workflow states for a project card.
  * Soft deletion is represented via the `isDeleted` property on {@link Project}.
@@ -30,8 +32,9 @@ export interface User {
  */
 export interface CurrentUser {
   id: string;
-  email: string;
+  email?: string;
   name?: string | null;
+  kind?: PersonKind;
 }
 
 /**
@@ -62,6 +65,7 @@ export interface RefView {
   displayLabel: string;
   createdById: string | null;
   createdByName: string | null;
+  createdByKind?: PersonKind | null;
   createdAt: string | null;
   /** True when you can edit the task. */
   canDelete: boolean;
@@ -99,10 +103,13 @@ export interface Project {
   canEdit?: boolean;
   reporterId?: string | null;
   reporterName?: string | null;
+  reporterKind?: PersonKind;
   assigneeId?: string | null;
   assigneeName?: string | null;
+  assigneeKind?: PersonKind | null;
   updatedById?: string | null;
   updatedByName?: string | null;
+  updatedByKind?: PersonKind;
   /** Assigned to me, or unassigned and created by me. */
   isMine?: boolean;
   title?: string;
@@ -200,6 +207,7 @@ export interface ProjectUpdate {
   userId: string;
   authorId?: string;
   authorName?: string | null;
+  authorKind?: PersonKind;
   note: string;
   gmailThreadId?: string | null;
   /** True for the note's author and for workspace owners/admins. */

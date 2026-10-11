@@ -208,8 +208,9 @@ describe('EpicDetailPage (/epics/[id])', () => {
       isShared: true,
       orgName: 'Northstar Workshop',
       canEdit: true,
-      createdById: 'user-1',
-      createdByName: 'Casey Example',
+      createdById: 'bot|fixture',
+      createdByName: 'Forum watcher',
+      createdByKind: 'bot',
       // Jordan Example isn't the creator, so the API never sends him the goal
       goalId: null,
     };
@@ -246,7 +247,8 @@ describe('EpicDetailPage (/epics/[id])', () => {
 
     expect(await screen.findByText('Build Autonomous Rover')).toBeInTheDocument();
     expect(screen.getByText('Northstar Workshop')).toBeInTheDocument();
-    expect(screen.getByTestId('epic-attribution')).toHaveTextContent('Created by Casey Example');
+    expect(screen.getByTestId('epic-attribution')).toHaveTextContent('Created by Forum watcher');
+    expect(screen.getByLabelText('Bot identity')).toBeInTheDocument();
     expect(screen.getAllByRole('img', { name: 'Assigned to Casey Example' })).toHaveLength(2);
     expect(screen.queryByText(/Plan a community garden/i)).not.toBeInTheDocument();
     expect(screen.getByTestId('activity-feed')).toHaveTextContent('activity for epic-123');

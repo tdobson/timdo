@@ -28,7 +28,13 @@ export function getTimdoBinaryPath(env = process.env) {
 export async function runTimdoCli(subcommandArgs, binPath = getTimdoBinaryPath(), options = {}) {
   // "--" ends bin/timdo's global flags, so a value that looks like one (a ref or title of
   // "--as=someone@example.com") reaches the subcommand as data and cannot switch the user
-  const fullArgs = ['--json', '--', ...subcommandArgs];
+  const isBotCommand = subcommandArgs[0] === 'bot';
+  if (options.ownerSecret === true && !isBotCommand) {
+    throw new Error('ownerSecret is available for bot-management commands only.');
+  }
+  const protectedArgs = [...subcommandArgs];
+  if (options.ownerSecret === true) protectedArgs.splice(1, 0, '--owner-secret');
+  const fullArgs = ['--json', '--', ...protectedArgs];
   const env = { ...process.env };
   if (options.asUser) env.TIMDO_AS = String(options.asUser);
   try {
@@ -499,6 +505,53 @@ export function buildActivityArgs({ taskId, epic, project, workspace, limit } = 
   if (workspace) args.push('--workspace', workspace);
   if (limit !== undefined && limit !== null && limit !== '') args.push('-n', String(limit));
   return args;
+}
+
+const BOT_ROLES = ['member', 'viewer'];
+const botRequired = (value, field) => {
+  if (value === undefined || value === null || value === '') throw new Error(`${field} is required.`);
+  return value;
+};
+const botPositionals = (subcommand, ...values) => ['bot', subcommand, '--', ...values.map((value) => String(value))];
+
+export function buildListBotsArgs({ workspace } = {}) {
+  return botPositionals('list', botRequired(workspace, 'Workspace'));
+}
+
+export function buildCreateBotArgs({ workspace, name, role, tokenName } = {}) {
+  const args = ['bot', 'create'];
+  if (role !== undefined && role !== null && role !== '') {
+    if (!BOT_ROLES.includes(role)) throw new Error('role must be member or viewer.');
+    args.push('--role', role);
+  }
+  if (tokenName !== undefined && tokenName !== null && tokenName !== '') args.push('--token-name', String(tokenName));
+  args.push('--', String(botRequired(workspace, 'Workspace')), String(botRequired(name, 'Bot name')));
+  return args;
+}
+
+export function buildRenameBotArgs({ workspace, bot, name } = {}) {
+  return botPositionals('rename', botRequired(workspace, 'Workspace'), botRequired(bot, 'Bot'), botRequired(name, 'New bot name'));
+}
+
+export function buildSetBotRoleArgs({ workspace, bot, role } = {}) {
+  if (!BOT_ROLES.includes(role)) throw new Error('role must be member or viewer.');
+  return botPositionals('role', botRequired(workspace, 'Workspace'), botRequired(bot, 'Bot'), role);
+}
+
+export function buildIssueBotTokenArgs({ workspace, bot, name } = {}) {
+  const args = ['bot', 'token'];
+  if (name !== undefined && name !== null && name !== '') args.push('--name', String(name));
+  args.push('--', String(botRequired(workspace, 'Workspace')), String(botRequired(bot, 'Bot')));
+  return args;
+}
+
+export function buildRevokeBotTokenArgs({ workspace, bot, token } = {}) {
+  return ['bot', 'revoke-token', '--yes', '--', String(botRequired(workspace, 'Workspace')),
+    String(botRequired(bot, 'Bot')), String(botRequired(token, 'Token'))];
+}
+
+export function buildDisableBotArgs({ workspace, bot } = {}) {
+  return ['bot', 'disable', '--yes', '--', String(botRequired(workspace, 'Workspace')), String(botRequired(bot, 'Bot'))];
 }
 
 /**

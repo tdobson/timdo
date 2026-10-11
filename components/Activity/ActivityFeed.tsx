@@ -10,6 +10,7 @@ import {
   IconCheck,
   IconGitMerge,
   IconHistory,
+  IconKey,
   IconMailForward,
   IconMessage,
   IconMessageOff,
@@ -40,9 +41,11 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { useActivity } from '../../app/hooks/useActivityQueries';
+import { organisationKeys } from '../../app/hooks/useOrganisationQueries';
 import { useMe } from '../../app/hooks/useSharingQueries';
 import { fetchWorkspaces } from '../../app/lib/collaborationApi';
 import type { ActivityEntry } from '../../app/types/collaboration.types';
+import { BotMarker } from '../Team/BotMarker';
 import {
   absoluteTime,
   continueSentence,
@@ -95,10 +98,11 @@ const ACTION_ICONS: Record<string, { icon: Icon; color: string }> = {
 function useWorkspaceNames(enabled: boolean) {
   const { data: session } = useSession();
   const token = session?.accessToken;
+  const accountId = session?.user?.id || session?.user?.email || null;
   const { data } = useQuery({
-    queryKey: ['organisations', 'list'],
-    queryFn: () => fetchWorkspaces(token),
-    enabled: enabled && !!token,
+    queryKey: organisationKeys.lists(accountId),
+    queryFn: ({ signal }) => fetchWorkspaces(token, signal),
+    enabled: enabled && !!token && !!accountId,
     staleTime: 5 * 60 * 1000,
   });
   return useMemo(
@@ -194,7 +198,13 @@ function ActivityItem({ entry, meId, compact, href, contextLabel, now }: ItemPro
         <Text size={compact ? 'xs' : 'sm'} style={{ overflowWrap: 'anywhere' }} lh={1.45}>
           <Text span inherit fw={600}>
             {actor}
-          </Text>{' '}
+          </Text>
+          {!isSystem && <BotMarker kind={entry.actorKind} />}
+          {entry.via === 'owner_secret' && (
+            <Text span inherit size="xs" c="dimmed">
+              (via owner secret)
+            </Text>
+          )}{' '}
           {parts && href ? (
             <>
               {parts.before}
@@ -223,6 +233,21 @@ function ActivityItem({ entry, meId, compact, href, contextLabel, now }: ItemPro
               >
                 {relativeTime(when, now)}
               </Text>
+            </Tooltip>
+          )}
+          {entry.via === 'token' && (
+            <Tooltip
+              label={entry.viaDetail ? `Via token "${entry.viaDetail}"` : 'Via token'}
+              withArrow
+              openDelay={200}
+            >
+              <span
+                role="img"
+                aria-label={entry.viaDetail ? `Via token "${entry.viaDetail}"` : 'Via token'}
+                style={{ display: 'inline-flex', alignItems: 'center' }}
+              >
+                <IconKey size={14} aria-hidden />
+              </span>
             </Tooltip>
           )}
           {contextLabel && (

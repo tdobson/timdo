@@ -51,7 +51,7 @@ T1 = "aaaa1111-0000-4000-8000-000000000001"
 T2 = "bbbb2222-0000-4000-8000-000000000002"
 T3 = "cccc3333-0000-4000-8000-000000000003"
 TASKS = {
-    T1: task(T1, "Broken offer page", gmail="1a11f9b5ec8c2b2f"),
+    T1: task(T1, "Broken offer page", gmail="0000000000000001"),
     T2: task(T2, "Old widget report", status="done"),
     T3: task(T3, "Read-only task", can_edit=False),
 }
@@ -102,7 +102,7 @@ REFS = [
     ref_row(T1, "reported_by", "acme.member", "300"),
     ref_row(T1, "reported_by", "acme.member", "400"),
     ref_row(T1, "link", "github.issue", "acme/widgets#12", "https://github.com/acme/widgets/issues/12", label="Widgets bug"),
-    ref_row(T1, "link", "gmail.thread", "1a11f9b5ec8c2b2f", "https://mail.google.com/mail/u/0/#all/1a11f9b5ec8c2b2f"),
+    ref_row(T1, "link", "gmail.thread", "0000000000000001", "https://mail.google.com/mail/u/0/#all/0000000000000001"),
     ref_row(T2, "link", "github.issue", "acme/widgets#12", "https://github.com/acme/widgets/issues/12"),
 ]
 
@@ -312,19 +312,22 @@ run_cli() {
 }
 
 echo "=== 1. Help texts explain refs with fictional examples ==="
+# A grep -q pipeline can give its producer SIGPIPE after an early match under pipefail.
+# Here-strings test the match without a concurrent producer changing the exit status.
 run_cli 0 help
-echo "$OUT" | grep -q "Record people by their id in the other system, not by name or email." || fail "timdo help lacks the privacy line" "$OUT"
-echo "$OUT" | grep -q "github.issue:acme/widgets#12" || fail "timdo help lacks a canonical example" "$OUT"
+grep -qF "Record people by their id in the other system, not by name or email." <<< "$OUT" || fail "timdo help lacks the privacy line" "$OUT"
+grep -qF "github.issue:acme/widgets#12" <<< "$OUT" || fail "timdo help lacks a canonical example" "$OUT"
 run_cli 0 ref --help
 for want in "github.issue:acme/widgets#12" "forum.post:4411" "acme.member:123456" "Record people by their id" "reported_by"; do
-  echo "$OUT" | grep -qF "$want" || fail "timdo ref --help lacks: $want" "$OUT"
+  grep -qF "$want" <<< "$OUT" || fail "timdo ref --help lacks: $want" "$OUT"
 done
 run_cli 0 add --help
-echo "$OUT" | grep -q -- "--reported-by" || fail "timdo add --help lacks --reported-by" "$OUT"
+grep -qF -- "--reported-by" <<< "$OUT" || fail "timdo add --help lacks --reported-by" "$OUT"
 run_cli 0 update --help
-echo "$OUT" | grep -q -- "--unref" || fail "timdo update --help lacks --unref" "$OUT"
+grep -qF -- "--unref" <<< "$OUT" || fail "timdo update --help lacks --unref" "$OUT"
 run_cli 0 find --help
-if "$BIN_TIMDO" help ref --help find --help 2>&1 | grep -q $'\xe2\x80\x94'; then fail "help text contains an em-dash"; fi
+run_cli 0 help ref --help find --help
+if grep -q $'\xe2\x80\x94' <<< "$OUT"; then fail "help text contains an em-dash"; fi
 pass "help texts"
 
 echo "=== 2. add sends every ref flag in the create body, in order ==="

@@ -23,6 +23,7 @@ import {
 } from './accessService';
 import { logActivity } from './activityService';
 import { generateSlug } from './migrationService';
+import { getUserKind } from './personService';
 import { assertSourcesFreeIn, updateRefOrgs } from './refService';
 
 type DB = DrizzleD1Database<typeof schema>;
@@ -118,10 +119,17 @@ async function requireRole(db: DB, userId: string, orgId: string, check: (r: Rol
   return role;
 }
 
+async function requireHuman(db: DB, userId: string, message: string) {
+  if ((await getUserKind(db, userId)) === 'bot') {
+    throw new AccessError(message);
+  }
+}
+
 /**
  * Create a shared workspace with the creator as owner.
  */
 export async function createOrganisation(db: DB, userId: string, name: string, slug?: string) {
+  await requireHuman(db, userId, 'Bots cannot create workspaces');
   const orgId = uuidv4();
   const now = new Date().toISOString();
   await db.insert(schema.organisations).values({
@@ -196,7 +204,7 @@ export async function deleteOrganisation(db: DB, userId: string, orgId: string) 
 }
 
 export async function getOrganisationMembers(db: DB, orgId: string) {
-  return db
+  const rows = await db
     .select({
       id: schema.organisationMembers.id,
       orgId: schema.organisationMembers.orgId,
@@ -205,12 +213,17 @@ export async function getOrganisationMembers(db: DB, orgId: string) {
       createdAt: schema.organisationMembers.createdAt,
       userName: schema.users.name,
       userEmail: schema.users.email,
+      kind: schema.users.kind,
     })
     .from(schema.organisationMembers)
     .innerJoin(schema.users, eq(schema.organisationMembers.userId, schema.users.id))
     .where(eq(schema.organisationMembers.orgId, orgId))
-    .orderBy(asc(schema.users.name))
-    .all();
+    .orderBy(asc(schema.users.name));
+  return rows.map(({ userEmail, kind, ...member }) => ({
+    ...member,
+    kind: kind === 'bot' ? 'bot' : 'human',
+    ...(kind === 'bot' ? {} : { userEmail }),
+  }));
 }
 
 /**
@@ -234,14 +247,17 @@ export async function searchUsersForAutocomplete(
     .select({ id: schema.users.id, name: schema.users.name, email: schema.users.email })
     .from(schema.users)
     .where(
-      or(
-        sql`lower(${schema.users.email}) = ${q}`,
-        and(
-          or(like(schema.users.name, pattern), like(schema.users.email, pattern)),
-          sql`${schema.users.id} in (
-            select om2.user_id from OrganisationMembers om1
-            join OrganisationMembers om2 on om2.org_id = om1.org_id
-            where om1.user_id = ${callerId})`
+      and(
+        eq(schema.users.kind, 'human'),
+        or(
+          sql`lower(${schema.users.email}) = ${q}`,
+          and(
+            or(like(schema.users.name, pattern), like(schema.users.email, pattern)),
+            sql`${schema.users.id} in (
+              select om2.user_id from OrganisationMembers om1
+              join OrganisationMembers om2 on om2.org_id = om1.org_id
+              where om1.user_id = ${callerId})`
+          )
         )
       )
     )
@@ -260,6 +276,7 @@ export async function searchUsersForAutocomplete(
 }
 
 async function addMemberRow(db: DB, orgId: string, userId: string, role: Role) {
+  await requireHuman(db, userId, 'Bots cannot join workspaces');
   const now = new Date().toISOString();
   await db.insert(schema.organisationMembers).values({
     id: uuidv4(),
@@ -309,6 +326,9 @@ export async function inviteMember(
     throw new AccessError('Only owners can add admins');
   }
   const cleanEmail = email.toLowerCase().trim();
+  if (cleanEmail.startsWith('bot+') && cleanEmail.endsWith('@bots.timdo.invalid')) {
+    throw new AccessError('Reserved bot addresses cannot be invited');
+  }
   const name = await orgName(db, orgId);
 
   const existingUser = await db
@@ -417,6 +437,7 @@ export async function revokeInvite(db: DB, userId: string, orgId: string, invite
  * Accept an invite by token (the invite link).
  */
 export async function acceptInvite(db: DB, userId: string, token: string) {
+  await requireHuman(db, userId, 'Bots cannot accept workspace invites');
   const invite = await db
     .select()
     .from(schema.organisationInvites)
@@ -462,6 +483,7 @@ export async function acceptInvite(db: DB, userId: string, token: string) {
  * On sign-in: any unexpired invites sent to this email become memberships.
  */
 export async function claimPendingInvites(db: DB, userId: string, email: string) {
+  await requireHuman(db, userId, 'Bots cannot claim workspace invites');
   const invites = await db
     .select()
     .from(schema.organisationInvites)
@@ -503,6 +525,7 @@ export async function updateMemberRole(
   if (!targetRole) {
     return null;
   }
+  await requireHuman(db, targetUserId, 'Use bot management to change bot roles');
 
   const touchesOwnerOrAdmin =
     newRole === 'owner' || newRole === 'admin' || targetRole === 'owner' || targetRole === 'admin';
@@ -554,6 +577,7 @@ export async function removeMember(db: DB, callerId: string, orgId: string, targ
   if (!targetRole) {
     return false;
   }
+  await requireHuman(db, targetUserId, 'Disable the bot to remove its workspace membership');
 
   const org = await getOrganisationById(db, callerId, orgId);
   if (org?.isPersonal && targetRole === 'owner') {
