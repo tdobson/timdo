@@ -57,12 +57,23 @@ Add an `"env": { ... }` object to set any of the variables below.
 
 The server passes its environment straight to the CLI, so anything the CLI reads works here too.
 
+## Task lists and counts
+
+`timdo_list_tasks` returns a page envelope with `items`, `nextCursor` and `total`. It defaults to 50 summary tasks per call. Set `limit` from 1 to 200, then pass the returned `nextCursor` to continue with the same membership filters. `total` is the count after those filters and before paging.
+
+`fields` accepts `summary` or `full`; summary is the default and omits the task's full notes body. `groupBy` accepts `project`, `epic` or `assignee`. When set, the response adds `groupBy` and `groups`. Each group has a stable `key`, a display `label` and the `taskIds` from this page. The flat `items` array, server order, cursor and total stay unchanged.
+
+`timdo_counts` accepts the same visibility and membership filters. It returns SQL totals for all five statuses, including zeroes. It does not count a page sample.
+
+The list result now uses a page envelope. Existing clients that expect an array need updating. The standalone MCP server version is now 0.2.0.
+
 ## Tools
 
 Every tool also takes an optional `asUser` (an email address, sent as `X-Timdo-User`). Only the account owner's secret can use it to act as someone else. With a personal token you can only name yourself, and the API refuses any other email with a 403.
 
 Tasks and notes:
-- `timdo_list_tasks`: list tasks by status, project, workspace, assignee, epic, goal, customer, tag, ref or missing links.
+- `timdo_list_tasks`: list tasks by status, project, workspace, assignee, epic, goal, customer, tag, ref or missing links. It defaults to 50 summary rows; `limit` sets the page size and `fields` selects the body projection.
+- `timdo_counts`: count matching tasks across all five statuses.
 - `timdo_get_task`: one task with its refs, linked tasks, notes and recent activity.
 - `timdo_add_task`: create a task, optionally assigned, linked to another task, and with refs. The result says whether it was `created` and lists up to 3 `similar` open tasks.
 - `timdo_find_similar`: open tasks whose title looks like one you are about to create. Use it before creating from free text.
@@ -125,7 +136,7 @@ The sharing tools (`timdo_share_workspace`, `timdo_update_member_role`, `timdo_r
 cd mcp && npm test
 ```
 
-The tests don't touch the API. One starts the server over stdio and checks that the tools are listed.
+The tests use local HTTP fixtures for CLI requests and check tool registration over stdio. They do not contact the TimDo service.
 
 ## Licence
 

@@ -26,6 +26,7 @@ const ORIGINAL_TOOLS = [
 ];
 
 const NEW_TOOLS = [
+  'timdo_counts',
   'timdo_activity',
   'timdo_whoami',
   'timdo_list_workspaces',
@@ -87,7 +88,7 @@ test('handleTimdoTool runs the CLI with --yes for drastic actions and passes asU
   assert.equal(JSON.parse(res.content[0].text).ok, true);
 
   await handleTimdoTool('timdo_list_tasks', { assignee: 'me' }, fakeRun);
-  assert.deepEqual(calls[1].args, ['list', 'do', '--assignee', 'me']);
+  assert.deepEqual(calls[1].args, ['list', 'do', '--assignee', 'me', '--limit', '50', '--fields', 'summary']);
   assert.deepEqual(calls[1].options, {});
 
   assert.equal(await handleTimdoTool('not_a_timdo_tool', {}, fakeRun), null);
@@ -181,8 +182,12 @@ test('ref tools map to the right CLI arguments', () => {
   ]);
   assert.deepEqual(b.timdo_find_by_ref({ ref: 'forum.post:4411', role: 'source' }), ['find', 'forum.post:4411', '--role', 'source']);
   assert.deepEqual(b.timdo_find_by_ref({ ref: 'acme.member:123456' }), ['find', 'acme.member:123456']);
-  assert.deepEqual(b.timdo_list_tasks({ ref: 'github.issue:acme/widgets#12' }), ['list', 'all', '--ref', 'github.issue:acme/widgets#12']);
-  assert.deepEqual(b.timdo_list_tasks({ ref: 'forum.post:1', status: 'do' }), ['list', 'do', '--ref', 'forum.post:1']);
+  assert.deepEqual(b.timdo_list_tasks({ ref: 'github.issue:acme/widgets#12' }), [
+    'list', 'all', '--ref', 'github.issue:acme/widgets#12', '--limit', '50', '--fields', 'summary',
+  ]);
+  assert.deepEqual(b.timdo_list_tasks({ ref: 'forum.post:1', status: 'do' }), [
+    'list', 'do', '--ref', 'forum.post:1', '--limit', '50', '--fields', 'summary',
+  ]);
   assert.throws(() => b.timdo_add_ref({ id: 'aaaa1111' }), /URL or kind:id/);
   assert.throws(() => b.timdo_add_ref({ ref: 'forum.post:1' }), /Task id is required/);
   assert.throws(() => b.timdo_add_ref({ id: 'a', ref: 'forum.post:1', role: 'owner' }), /Role must be link, source, reported_by or about/);

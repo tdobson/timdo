@@ -49,22 +49,91 @@ jest.mock('../hooks/useOrganisationQueries', () => ({
 
 /** Answer each API call by URL so extra queries (me, members, epics) don't steal responses. */
 function mockApi(projects: unknown, projectsResponse?: Partial<Response>) {
-  fetchMock.mockImplementation((url: string) => {
-    if (url.endsWith('/projects')) {
-      return Promise.resolve(projectsResponse ?? { ok: true, json: async () => projects });
+  const source = Array.isArray(projects) ? (projects as Project[]) : [];
+  const countRows = (url: URL) => {
+    let rows = source;
+    const orgId = url.searchParams.get('orgId');
+    const category = url.searchParams.get('category');
+    const customer = url.searchParams.get('customer');
+    const assignee = url.searchParams.get('assignee');
+    if (orgId) {
+      rows = rows.filter((project) => project.orgId === orgId);
     }
-    if (url.endsWith('/users/me')) {
+    if (category) {
+      const normalizedCategory = category.trim().toLowerCase();
+      rows = rows.filter(
+        (project) => project.category?.trim().toLowerCase() === normalizedCategory
+      );
+    }
+    if (customer) {
+      rows = rows.filter((project) => project.customer === customer);
+    }
+    if (assignee === 'me') {
+      rows = rows.filter((project) => project.isMine !== false);
+    }
+    if (assignee === 'unassigned') {
+      rows = rows.filter((project) => !project.assigneeId);
+    }
+    const byStatus = { do: 0, delay: 0, awaiting: 0, delegate: 0, done: 0 };
+    rows.forEach((project) => byStatus[project.status]++);
+    return { byStatus, total: rows.length };
+  };
+
+  fetchMock.mockImplementation((url: string) => {
+    const parsedUrl = new URL(url);
+    const { pathname } = parsedUrl;
+    if (pathname.endsWith('/projects/counts')) {
+      return Promise.resolve({ ok: true, json: async () => countRows(parsedUrl) });
+    }
+    if (/\/organisations\/[^/]+\/projects$/.test(pathname)) {
+      return Promise.resolve({ ok: true, json: async () => [] });
+    }
+    if (/\/projects\/[^/]+\/updates$/.test(pathname)) {
+      return Promise.resolve({ ok: true, json: async () => [] });
+    }
+    if (pathname.endsWith('/projects')) {
+      if (projectsResponse) {
+        return Promise.resolve(projectsResponse);
+      }
+      const doneSince = parsedUrl.searchParams.get('doneSince');
+      const rows = source.filter((project) => {
+        if (project.status !== 'done' || !doneSince) {
+          return true;
+        }
+        const completedAt = project.statusLastChangedOn || project.createdAt;
+        return completedAt.slice(0, 10) >= doneSince;
+      });
+      const summaries = rows.map((project) => {
+        const { notes: _notes, ...summary } = project;
+        return {
+          ...summary,
+          noteCount: project.noteCount ?? 0,
+          lastNoteAt: project.lastNoteAt ?? null,
+        };
+      });
+      return Promise.resolve({ ok: true, json: async () => summaries });
+    }
+    const detailMatch = pathname.match(/\/projects\/([^/]+)$/);
+    if (detailMatch) {
+      const task = source.find((project) => project.id === decodeURIComponent(detailMatch[1]));
+      return Promise.resolve(
+        task
+          ? { ok: true, json: async () => task }
+          : { ok: false, status: 404, json: async () => ({ error: 'Not found' }) }
+      );
+    }
+    if (pathname.endsWith('/users/me')) {
       return Promise.resolve({
         ok: true,
-        json: async () => ({ id: 'user-1', email: 'casey@example.com', name: 'Casey Example' }),
+        json: async () => ({ id: 'user-1', email: 'member-one@example.test', name: 'Member One' }),
       });
     }
-    if (url.includes('/organisations/org-2/members')) {
+    if (pathname.endsWith('/organisations/org-2/members')) {
       return Promise.resolve({
         ok: true,
         json: async () => [
-          { userId: 'user-1', userName: 'Casey Example', userEmail: 'casey@example.com' },
-          { userId: 'user-2', userName: 'Jordan Example', userEmail: 'jordan@example.com' },
+          { userId: 'user-1', userName: 'Member One', userEmail: 'member-one@example.test' },
+          { userId: 'user-2', userName: 'Member Two', userEmail: 'member-two@example.test' },
         ],
       });
     }
@@ -114,9 +183,9 @@ const mockProjects: Project[] = [
     notes: '',
     userId: 'user-1',
     isDeleted: false,
-    createdAt: '2024-01-03T00:00:00.000Z',
-    updatedAt: '2024-01-03T00:00:00.000Z',
-    statusLastChangedOn: '2024-01-03T00:00:00.000Z',
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    statusLastChangedOn: '2026-10-01T00:00:00.000Z',
   },
   {
     id: '4',
@@ -140,10 +209,13 @@ describe('BoardPage', () => {
     jest.clearAllMocks();
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = WORKER_API_URL;
     window.localStorage.clear();
+    mockSearchParams.delete('category');
+    mockSearchParams.delete('customer');
+    mockSearchParams.delete('group');
     // Default to authenticated state for most tests
     useSessionMock.mockReturnValue({
       data: {
-        user: { name: 'Test User' },
+        user: { name: 'Test User', id: 'user-1' },
         accessToken: 'test-token',
       },
       status: 'authenticated',
@@ -160,13 +232,13 @@ describe('BoardPage', () => {
     // Assert
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        `${WORKER_API_URL}/projects`,
+        expect.stringMatching(/^https:\/\/worker\.example\.com\/api\/v2\/projects\?/),
         expect.objectContaining({ headers: expect.any(Object) })
       )
     );
     // Check "Do" section
     const doSection = await screen.findByTestId('section-do');
-    expect(within(doSection).getByRole('heading', { name: 'Do' })).toBeInTheDocument();
+    expect(within(doSection).getByRole('heading', { name: /Do/ })).toBeInTheDocument();
     const doProjectControls = within(doSection).getAllByTestId(/project-card-control-/);
     expect(doProjectControls).toHaveLength(2);
     expect(within(doSection).getByText('Do Project')).toBeInTheDocument();
@@ -189,7 +261,7 @@ describe('BoardPage', () => {
     expect(within(doneSection).getByText('Done Project')).toBeInTheDocument();
   });
 
-  it('renders the awaiting section collapsed by default', async () => {
+  it('expands a small awaiting section by default', async () => {
     const awaitingProjects: Project[] = [
       ...mockProjects,
       {
@@ -214,7 +286,7 @@ describe('BoardPage', () => {
 
     const awaitingSection = await screen.findByTestId('section-awaiting');
     expect(within(awaitingSection).getByRole('heading', { name: /awaiting/i })).toBeInTheDocument();
-    expect(within(awaitingSection).queryByText('Awaiting Project')).not.toBeInTheDocument();
+    expect(within(awaitingSection).getByText('Awaiting Project')).toBeInTheDocument();
   });
 
   it('allows the delay section to be collapsed and expanded', async () => {
@@ -248,7 +320,24 @@ describe('BoardPage', () => {
     const acmeSolarPill = await screen.findByRole('button', { name: 'Acme Solar' });
     await user.click(acmeSolarPill);
 
-    expect(mockPush).toHaveBeenCalledWith('/board?category=Acme%20Solar');
+    expect(mockPush).toHaveBeenCalledWith('/board?category=Acme+Solar');
+  });
+
+  it('matches URL categories case-insensitively after trimming and selects the matching pill', async () => {
+    mockSearchParams.set('category', ' acme solar ');
+    mockApi(mockProjects);
+
+    render(<BoardPage />);
+
+    expect(await screen.findByText('Do Project')).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('section-do')).queryByText('Another Do Project')
+    ).not.toBeInTheDocument();
+    const categoryPill = screen.getByRole('button', { name: 'Acme Solar' });
+    expect(categoryPill).toHaveAttribute('aria-pressed', 'true');
+    expect(categoryPill).toHaveTextContent('Acme Solar');
+    expect(mockSearchParams.get('category')).toBe(' acme solar ');
+    mockSearchParams.delete('category');
   });
 
   it('shows a loader while the session is loading', () => {
@@ -293,6 +382,136 @@ describe('BoardPage', () => {
     expect(screen.getByRole('radio', { name: 'Everyone' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Mine' })).toBeInTheDocument();
   });
+
+  it('hydrates an expanded summary from full detail before showing the task body', async () => {
+    const fullBody = 'Original full task body with enough detail to survive hydration.';
+    const summary = {
+      ...mockProjects[0],
+      id: 'task-hydration',
+      projectId: 'container-a',
+      notes: undefined,
+      noteCount: 3,
+    };
+    const detail = {
+      ...mockProjects[0],
+      id: 'task-hydration',
+      projectId: 'container-a',
+      notes: fullBody,
+    };
+    fetchMock.mockImplementation((url: string) => {
+      const { pathname } = new URL(url);
+      if (pathname.endsWith('/projects/counts')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            byStatus: { do: 1, delay: 0, awaiting: 0, delegate: 0, done: 0 },
+            total: 1,
+          }),
+        });
+      }
+      if (pathname.endsWith('/projects/task-hydration/updates')) {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (pathname.endsWith('/projects/task-hydration')) {
+        return Promise.resolve({ ok: true, json: async () => detail });
+      }
+      if (pathname.endsWith('/projects')) {
+        return Promise.resolve({ ok: true, json: async () => [summary] });
+      }
+      if (pathname.endsWith('/users/me')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            id: 'user-1',
+            email: 'member-one@example.test',
+            name: 'Member One',
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => [] });
+    });
+
+    render(<BoardPage />);
+
+    expect(await screen.findByText(fullBody)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${WORKER_API_URL}/projects/task-hydration`,
+      expect.objectContaining({ headers: expect.any(Object) })
+    );
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/projects/task-hydration'))
+    ).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith('/projects/task-hydration/updates')
+      )
+    ).toHaveLength(1);
+  });
+
+  it('offers older Done history when the recent summary is empty', async () => {
+    const oldDone = {
+      ...mockProjects[2],
+      statusLastChangedOn: '2026-08-01T00:00:00.000Z',
+    };
+    mockApi([oldDone]);
+    const user = userEvent.setup();
+
+    render(<BoardPage />);
+
+    const doneSection = await screen.findByTestId('section-done');
+    const showOlder = await within(doneSection).findByRole('button', { name: /show older tasks/i });
+    await user.click(showOlder);
+
+    expect(await within(doneSection).findByText('Done Project')).toBeInTheDocument();
+    expect(await within(doneSection).findByText('Older tasks (1 loaded)')).toBeInTheDocument();
+  });
+
+  it('persists section-level expansion choices', async () => {
+    window.localStorage.setItem('timdo:board:sections:user-1', JSON.stringify({ do: false }));
+    mockApi(mockProjects);
+    const user = userEvent.setup();
+
+    render(<BoardPage />);
+
+    const section = await screen.findByTestId('section-do');
+    const expandButton = await within(section).findByRole('button', { name: 'Expand Do section' });
+    await user.click(expandButton);
+
+    await waitFor(() => {
+      expect(
+        JSON.parse(window.localStorage.getItem('timdo:board:sections:user-1') || '{}').do
+      ).toBe(true);
+    });
+  });
+
+  it('collapses a 16-task section and keeps its cards closed until expanded', async () => {
+    const tasks = Array.from({ length: 16 }, (_, index) => ({
+      ...mockProjects[0],
+      id: `large-${index}`,
+      project: `Large task ${index}`,
+    }));
+    mockApi(tasks);
+    const user = userEvent.setup();
+
+    render(<BoardPage />);
+
+    const section = await screen.findByTestId('section-do');
+    const expandSection = within(section).getByRole('button', { name: 'Expand Do section' });
+    expect(expandSection).toBeInTheDocument();
+    expect(within(section).queryByTestId(/project-card-control-/)).not.toBeInTheDocument();
+
+    await user.click(expandSection);
+    expect(within(section).getAllByTestId(/project-card-control-/)).toHaveLength(16);
+    expect(within(section).queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        /\/projects\/large-\d+$/.test(new URL(String(url)).pathname)
+      )
+    ).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/updates'))).toHaveLength(
+      0
+    );
+  });
 });
 
 describe('BoardPage with shared work', () => {
@@ -336,6 +555,9 @@ describe('BoardPage with shared work', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     window.localStorage.clear();
+    mockSearchParams.delete('category');
+    mockSearchParams.delete('customer');
+    mockSearchParams.delete('group');
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = WORKER_API_URL;
     useSessionMock.mockReturnValue({
       data: { user: { name: 'Casey Example', id: 'user-1' }, accessToken: 'test-token' },

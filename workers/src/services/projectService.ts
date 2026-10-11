@@ -10,7 +10,7 @@ import type { DrizzleD1Database, SQLiteD1Session } from 'drizzle-orm/d1';
 import type { SQLiteAsyncDialect } from 'drizzle-orm/sqlite-core';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
-import { canonicalRef, type ParsedRef, type RefRole } from '../lib/refs';
+import { canonicalRef } from '../lib/refs';
 import { generateProjectKey } from './migrationService';
 import type {
   ProjectCreatePayload,
@@ -54,33 +54,19 @@ import {
   releaseSource,
   sourceConflict,
   syncGmailThread,
-  taskHasRef,
   updateRefOrgs,
   type RefInput,
   type RefView,
   type SourceHolderGuard,
 } from './refService';
 import { findSimilarTasks, type SimilarTask } from './similarService';
-import { resolveTaskIdForUser } from './taskService';
+import * as taskListService from './taskListService';
+import type { TaskListFields, TaskListFilters, TaskListResult, TaskCounts } from './taskListService';
 
 type DB = DrizzleD1Database<typeof schema>;
 type TaskRow = typeof schema.tasks.$inferSelect;
 
-export interface ProjectFilters {
-  category?: string;
-  epicId?: string;
-  goalId?: string;
-  customer?: string;
-  tag?: string;
-  relatedTo?: string;
-  /** 'me' | 'unassigned' | 'mine_or_unassigned' | <userId> */
-  assignee?: string;
-  orgId?: string;
-  projectId?: string;
-  /** Only tasks carrying this ref (already parsed), optionally in one role. */
-  ref?: Pick<ParsedRef, 'kind' | 'ref'>;
-  refRole?: RefRole;
-}
+export interface ProjectFilters extends TaskListFilters {}
 
 /** A task in the original `/projects` shape, plus who-did-what and sharing context. */
 export interface TaskView {
@@ -92,6 +78,8 @@ export interface TaskView {
   priority: number;
   size: TaskRow['size'];
   notes: string | null;
+  noteCount: number;
+  lastNoteAt: string | null;
   statusLastChangedOn: string | null;
   awaitUntil: string | null;
   gmailThreadId: string | null;
@@ -122,15 +110,20 @@ export interface TaskView {
   refs: RefView[];
 }
 
+/** A projected list row, which deliberately has no full task body. */
+export interface TaskSummaryView extends Omit<TaskView, 'notes'> {}
+export type TaskListView = TaskView | TaskSummaryView;
+
 function toView(
   task: TaskRow,
   project: AccessibleProject,
   userId: string,
   names: Map<string, string>,
   goalId: string | null,
-  refs: RefView[]
-): TaskView {
-  return {
+  refs: RefView[],
+  noteMetadata: { noteCount: number; lastNoteAt: string | null }
+): TaskListView {
+  const base = {
     id: task.id,
     userId: task.reporterId,
     project: task.title,
@@ -138,7 +131,8 @@ function toView(
     status: task.status,
     priority: task.priority,
     size: task.size,
-    notes: task.notes,
+    noteCount: noteMetadata.noteCount,
+    lastNoteAt: noteMetadata.lastNoteAt,
     statusLastChangedOn: task.statusLastChangedOn,
     awaitUntil: task.awaitUntil,
     gmailThreadId: task.gmailThreadId,
@@ -168,17 +162,29 @@ function toView(
     isMine: task.assigneeId === userId || (!task.assigneeId && task.reporterId === userId),
     refs,
   };
+  return Object.hasOwn(task, 'notes')
+    ? ({ ...base, notes: task.notes } as TaskView)
+    : base;
 }
 
-async function personalGoalMap(db: DB, userId: string) {
-  const links = await db
-    .select({ taskId: schema.taskUserGoals.taskId, goalId: schema.taskUserGoals.goalId })
-    .from(schema.taskUserGoals)
-    .where(eq(schema.taskUserGoals.userId, userId));
+async function personalGoalMap(db: DB, userId: string, taskIds: string[]) {
   const map = new Map<string, string>();
-  for (const l of links) {
-    if (!map.has(l.taskId)) {
-      map.set(l.taskId, l.goalId);
+  const ids = Array.from(new Set(taskIds));
+  for (let index = 0; index < ids.length; index += 90) {
+    const chunk = ids.slice(index, index + 90);
+    const links = await db
+      .select({ taskId: schema.taskUserGoals.taskId, goalId: schema.taskUserGoals.goalId })
+      .from(schema.taskUserGoals)
+      .where(
+        and(
+          eq(schema.taskUserGoals.userId, userId),
+          inArray(schema.taskUserGoals.taskId, chunk)
+        )
+      );
+    for (const link of links) {
+      if (!map.has(link.taskId)) {
+        map.set(link.taskId, link.goalId);
+      }
     }
   }
   return map;
@@ -186,31 +192,78 @@ async function personalGoalMap(db: DB, userId: string) {
 
 async function buildViews(db: DB, userId: string, rows: TaskRow[], projects: AccessibleProject[]) {
   const byId = new Map(projects.map((p) => [p.id, p]));
-  const visible = rows.filter((t) => byId.has(t.projectId));
-  // Refs come in one query for the whole list, so their authors can share the names lookup
+  const visible = rows.filter((task) => byId.has(task.projectId));
+  if (visible.length === 0) {
+    return [] as TaskListView[];
+  }
+  const taskIds = visible.map((task) => task.id);
   const refs = await fetchRefRows(
     db,
-    visible.map((t) => byId.get(t.projectId)!.orgId),
-    new Set(visible.map((t) => t.id))
+    visible.map((task) => byId.get(task.projectId)!.orgId),
+    new Set(taskIds)
   );
-  const [names, goals] = await Promise.all([
+  const [names, goals, noteMetadata] = await Promise.all([
     getUserNames(db, [
-      ...visible.flatMap((t) => [t.reporterId, t.assigneeId, t.updatedBy]),
-      ...Array.from(refs.values()).flatMap((list) => list.map((r) => r.createdBy)),
+      ...visible.flatMap((task) => [task.reporterId, task.assigneeId, task.updatedBy]),
+      ...Array.from(refs.values()).flatMap((list) => list.map((ref) => ref.createdBy)),
     ]),
-    personalGoalMap(db, userId),
+    personalGoalMap(db, userId, taskIds),
+    taskListService.getTaskNoteMetadata(db, taskIds),
   ]);
-  return visible.map((t) => {
-    const project = byId.get(t.projectId)!;
+  return visible.map((task) => {
+    const project = byId.get(task.projectId)!;
     return toView(
-      t,
+      task,
       project,
       userId,
       names,
-      goals.get(t.id) ?? null,
-      refViewsFor(refs.get(t.id), names, canEdit(project.role))
+      goals.get(task.id) ?? null,
+      refViewsFor(refs.get(task.id), names, canEdit(project.role)),
+      noteMetadata.get(task.id) ?? { noteCount: 0, lastNoteAt: null }
     );
   });
+}
+
+export async function getProjectTaskListForUser(
+  db: DB,
+  userId: string,
+  filters: ProjectFilters = {},
+  options: { fields?: TaskListFields; limit?: number; cursor?: string } = {}
+): Promise<TaskListResult<TaskListView>> {
+  const [result, projects] = await Promise.all([
+    taskListService.getTaskListForUser(db, userId, filters, {
+      ...options,
+      scope: 'projects',
+    }),
+    getAccessibleProjects(db, userId),
+  ]);
+  const items = await buildViews(db, userId, result.items as TaskRow[], projects);
+  return {
+    items,
+    ...(result.total !== undefined ? { total: result.total } : {}),
+    ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+  };
+}
+
+export async function getProjectTaskCountsForUser(
+  db: DB,
+  userId: string,
+  filters: ProjectFilters = {}
+): Promise<TaskCounts> {
+  return taskListService.getTaskCountsForUser(db, userId, filters, 'projects');
+}
+
+/** Read selected task ids for bounded context-building callers such as voice. */
+export async function getSelectedTaskSummariesForUser(
+  db: DB,
+  userId: string,
+  taskIds: string[]
+): Promise<TaskSummaryView[]> {
+  const [rows, projects] = await Promise.all([
+    taskListService.getSelectedTaskRows(db, userId, taskIds, { fields: 'summary' }),
+    getAccessibleProjects(db, userId),
+  ]);
+  return (await buildViews(db, userId, rows as TaskRow[], projects)) as TaskSummaryView[];
 }
 
 export async function getProjectsForUser(
@@ -218,81 +271,8 @@ export async function getProjectsForUser(
   userId: string,
   filters: ProjectFilters = {}
 ): Promise<TaskView[]> {
-  let projects = await getAccessibleProjects(db, userId);
-  if (filters.orgId) {
-    projects = projects.filter((p) => p.orgId === filters.orgId);
-  }
-  if (filters.projectId) {
-    projects = projects.filter((p) => p.id === filters.projectId);
-  }
-  if (filters.category) {
-    const c = filters.category.trim().toLowerCase();
-    projects = projects.filter((p) => p.name.toLowerCase() === c);
-  }
-  if (projects.length === 0) {
-    return [];
-  }
-
-  const conditions = [
-    inArray(
-      schema.tasks.projectId,
-      projects.map((p) => p.id)
-    ),
-    eq(schema.tasks.isDeleted, false),
-  ];
-
-  if (filters.epicId) {
-    conditions.push(eq(schema.tasks.epicId, filters.epicId));
-  }
-  if (filters.goalId) {
-    conditions.push(
-      sql`${schema.tasks.id} in (select task_id from TaskUserGoals where user_id = ${userId} and goal_id = ${filters.goalId})`
-    );
-  }
-  if (filters.customer) {
-    conditions.push(sql`lower(${schema.tasks.customer}) = lower(${filters.customer.trim()})`);
-  }
-  if (filters.tag) {
-    const cleanTag = filters.tag.trim().toLowerCase();
-    conditions.push(sql`lower(coalesce(${schema.tasks.tags}, '')) LIKE lower(${`%${cleanTag}%`})`);
-  }
-  if (filters.assignee) {
-    const a = filters.assignee;
-    if (a === 'me') {
-      conditions.push(
-        sql`(${schema.tasks.assigneeId} = ${userId} or (${schema.tasks.assigneeId} is null and ${schema.tasks.reporterId} = ${userId}))`
-      );
-    } else if (a === 'unassigned') {
-      conditions.push(sql`${schema.tasks.assigneeId} is null`);
-    } else if (a === 'mine_or_unassigned') {
-      conditions.push(
-        sql`(${schema.tasks.assigneeId} = ${userId} or ${schema.tasks.assigneeId} is null)`
-      );
-    } else {
-      conditions.push(eq(schema.tasks.assigneeId, a));
-    }
-  }
-  if (filters.ref) {
-    // Visibility still comes from the project filter above, so other workspaces never leak
-    conditions.push(taskHasRef(filters.ref, filters.refRole));
-  }
-  if (filters.relatedTo) {
-    const target = await resolveTaskIdForUser(db, userId, filters.relatedTo);
-    if (!target) {
-      return [];
-    }
-    conditions.push(
-      sql`${schema.tasks.id} in (
-        select target_task_id from TaskRelations where source_task_id = ${target}
-        union select source_task_id from TaskRelations where target_task_id = ${target})`
-    );
-  }
-
-  const rows = await db
-    .select()
-    .from(schema.tasks)
-    .where(and(...conditions));
-  return buildViews(db, userId, rows, projects);
+  const result = await getProjectTaskListForUser(db, userId, filters, { fields: 'full' });
+  return result.items as TaskView[];
 }
 
 /** One task, if the user can see it. */
@@ -308,7 +288,7 @@ export async function getTaskView(
   }
   const projects = await getAccessibleProjects(db, userId);
   const views = await buildViews(db, userId, [task], projects);
-  return views[0] ?? null;
+  return (views[0] as TaskView | undefined) ?? null;
 }
 
 /** Load a task the user is allowed to change: null if they can't see it, AccessError if view-only. */
@@ -428,14 +408,6 @@ function personalGoalStatements(
     statements.push(db.insert(schema.taskUserGoals).values({ taskId, userId, goalId }));
   }
   return statements;
-}
-
-async function setPersonalGoal(db: DB, userId: string, taskId: string, goalId: string | null) {
-  if (goalId) {
-    await validatePersonalGoal(db, userId, goalId);
-  }
-  const statements = personalGoalStatements(db, userId, taskId, goalId);
-  await db.batch(statements as [BatchItem<'sqlite'>, ...BatchItem<'sqlite'>[]]);
 }
 
 /**
@@ -897,7 +869,7 @@ export async function updateProject(
   // the task and ref move so a failed move cannot leave a partial change behind.
   let goalWrites: BatchItem<'sqlite'>[] = [];
   if (data.goalId !== undefined) {
-    const current = (await personalGoalMap(db, userId)).get(taskId) ?? null;
+    const current = (await personalGoalMap(db, userId, [taskId])).get(taskId) ?? null;
     const next = data.goalId ?? null;
     if (next !== current) {
       if (next) {
@@ -1478,7 +1450,7 @@ Merged from "${s.title}" (${s.id.slice(0, 8)}):
 
   const [goals, refStatements, relationStatements, targetUpdates, sourceUpdates, newestGmailRef] =
     await Promise.all([
-      personalGoalMap(db, userId),
+      personalGoalMap(db, userId, [t.id, s.id]),
       prepareRefsForMerge(db, s.id, t.id),
       prepareRelationsForMerge(db, t.id, s.id),
       db

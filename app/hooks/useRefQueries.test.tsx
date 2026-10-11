@@ -2,7 +2,8 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { notifications } from '@mantine/notifications';
-import type { Project, RefView } from '../types/project.types';
+import { clearOnAccountChange } from '../../components/Providers';
+import type { Project, ProjectSummary, RefView } from '../types/project.types';
 import { projectKeys } from './useProjectQueries';
 import { isPendingRef, RefApiError, sortRefs, useAddRef, useRemoveRef } from './useRefQueries';
 
@@ -97,6 +98,10 @@ describe('ref mutations', () => {
     });
     queryClient.setQueryData(projectKeys.all, [task([existing])]);
     queryClient.setQueryData(projectKeys.detail('task-1'), task([existing]));
+    queryClient.setQueryData<ProjectSummary[]>(
+      ['board-summary', 'test-user-id'],
+      [{ ...task([existing]), noteCount: 1, lastNoteAt: '2026-10-01T00:00:00.000Z' }]
+    );
     // Each test answers the request when it wants to, so the optimistic state can be checked
     global.fetch = jest.fn(
       () =>
@@ -129,6 +134,12 @@ describe('ref mutations', () => {
       url: 'https://github.com/acme/widgets/issues/12',
     });
     expect(cachedRefs().detail).toHaveLength(2);
+    const summary = queryClient.getQueryData<ProjectSummary[]>([
+      'board-summary',
+      'test-user-id',
+    ])?.[0];
+    expect(summary?.refs).toHaveLength(2);
+    expect(summary).not.toHaveProperty('notes');
 
     expect(global.fetch).toHaveBeenCalledWith(
       `${API}/tasks/task-1/refs`,
@@ -212,6 +223,30 @@ describe('ref mutations', () => {
         color: 'red',
       })
     );
+  });
+
+  it('does not write a delayed ref mutation into the next account cache', async () => {
+    clearOnAccountChange(queryClient, undefined, 'test-user-id');
+    const { result } = renderHook(() => useAddRef(), { wrapper });
+    let mutation: Promise<unknown>;
+
+    act(() => {
+      mutation = result.current.mutateAsync({
+        taskId: 'task-1',
+        input: { ref: 'forum.post:7', role: 'link' },
+      });
+    });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+
+    clearOnAccountChange(queryClient, 'test-user-id', 'account-b');
+    queryClient.setQueryData(projectKeys.all, [task([])]);
+
+    await act(async () => {
+      resolveFetch(jsonResponse(201, { ...refView({ id: 'ref-new' }), existing: false }));
+      await mutation;
+    });
+
+    expect(queryClient.getQueryData<Project[]>(projectKeys.all)?.[0].refs).toEqual([]);
   });
 
   it('refreshes tasks and activity once the change is stored', async () => {

@@ -1,8 +1,11 @@
 import React from 'react';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { useSession } from 'next-auth/react';
 import { notifications } from '@mantine/notifications';
+import { Providers } from '../../../components/Providers';
 import type { VoiceCommandResult } from '../../../components/VoiceCommand/voiceTypes';
 import { render } from '../../../test-utils/render';
+import { invalidateBoardCaches } from '../../lib/taskCache';
 import ReviewChangesPage from './page';
 
 const mockPush = jest.fn();
@@ -17,9 +20,49 @@ jest.mock('@mantine/notifications', () => ({
   notifications: { show: jest.fn() },
 }));
 
+jest.mock('../../lib/taskCache', () => ({
+  ...jest.requireActual('../../lib/taskCache'),
+  invalidateBoardCaches: jest.fn().mockResolvedValue(undefined),
+}));
+
 const API = 'https://worker.example.com/api/v2';
 const fetchMock = jest.fn();
 global.fetch = fetchMock as any;
+const useSessionMock = useSession as jest.Mock;
+const REVIEW_STORAGE_KEY = 'timdo:voice-review';
+
+function setSession(
+  accountId = 'test-user-id',
+  accessToken = 'test-token',
+  status = 'authenticated'
+) {
+  useSessionMock.mockReturnValue({
+    data:
+      status === 'authenticated'
+        ? { user: { id: accountId, email: `${accountId}@example.test` }, accessToken }
+        : null,
+    status,
+  });
+}
+
+function storeVoiceReview(
+  review: VoiceCommandResult,
+  accountId = 'test-user-id',
+  reviewId = `review-${accountId}`
+) {
+  sessionStorage.setItem(
+    REVIEW_STORAGE_KEY,
+    JSON.stringify({ version: 1, accountId, reviewId, result: review })
+  );
+}
+
+function renderReviewPage() {
+  return render(
+    <Providers>
+      <ReviewChangesPage />
+    </Providers>
+  );
+}
 
 const result: VoiceCommandResult = {
   transcript: 'Add a Acme Solar task for Robin to check the inverter datasheet',
@@ -73,12 +116,15 @@ const result: VoiceCommandResult = {
 describe('Review voice changes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setSession();
+    mockSearchParams.delete('review');
+    mockSearchParams.delete('changes');
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = API;
-    sessionStorage.setItem('timdo:voice-review', JSON.stringify(result));
+    storeVoiceReview(result);
   });
 
   it('shows the workspace, project, assignee, transcript and warnings', async () => {
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     expect(await screen.findByText('New task')).toBeInTheDocument();
     expect(screen.getByText('Northstar Workshop / Acme Solar')).toBeInTheDocument();
     expect(screen.getByText('Assign to Robin Fairweather')).toBeInTheDocument();
@@ -94,7 +140,7 @@ describe('Review voice changes', () => {
 
   it('applies with ids, shows "Assign to you" for a claim, and finishes', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Apply and next' }));
 
     expect(await screen.findByText('Claim task')).toBeInTheDocument();
@@ -121,7 +167,7 @@ describe('Review voice changes', () => {
       status: 403,
       json: async () => ({ error: 'You have view-only access to "Acme Solar"' }),
     });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Apply and next' }));
     await waitFor(() =>
       expect(notifications.show).toHaveBeenCalledWith(
@@ -137,7 +183,7 @@ describe('Review voice changes', () => {
   });
 
   it('counts skips', async () => {
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Skip' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Skip' }));
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/board'));
@@ -149,8 +195,167 @@ describe('Review voice changes', () => {
 
   it('goes back to the board when there is nothing to review', async () => {
     sessionStorage.clear();
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/board'));
+  });
+
+  it('does not show or apply the next proposal after the account changes during apply', async () => {
+    const storedResult = { ...result };
+    setSession('account-a', 'token-a');
+    storeVoiceReview(storedResult, 'account-a', 'review-a');
+    const storedValue = sessionStorage.getItem(REVIEW_STORAGE_KEY);
+    let resolveRequest!: (response: unknown) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRequest = resolve;
+        })
+    );
+
+    const view = renderReviewPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply and next' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    setSession('account-b', 'token-b');
+    view.rerender(
+      <Providers>
+        <ReviewChangesPage />
+      </Providers>
+    );
+    expect(screen.queryByText('Change 1 of 2')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Apply/ })).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveRequest({ ok: true, status: 201, json: async () => ({ id: 'created' }) });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(notifications.show).not.toHaveBeenCalledWith(
+      expect.objectContaining({ color: 'green' })
+    );
+    expect(invalidateBoardCaches).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(REVIEW_STORAGE_KEY)).toBe(storedValue);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clear or navigate after a final apply resolves in another account', async () => {
+    const oneChange: VoiceCommandResult = {
+      ...result,
+      proposedChanges: [result.proposedChanges[0]],
+    };
+    setSession('account-a', 'token-a');
+    storeVoiceReview(oneChange, 'account-a', 'review-a-final');
+    const storedValue = sessionStorage.getItem(REVIEW_STORAGE_KEY);
+    let resolveRequest!: (response: unknown) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRequest = resolve;
+        })
+    );
+
+    const view = renderReviewPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply and finish' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    setSession('account-b', 'token-b');
+    view.rerender(
+      <Providers>
+        <ReviewChangesPage />
+      </Providers>
+    );
+
+    await act(async () => {
+      resolveRequest({ ok: true, status: 201, json: async () => ({ id: 'created' }) });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(REVIEW_STORAGE_KEY)).toBe(storedValue);
+    expect(notifications.show).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Review complete' })
+    );
+  });
+
+  it('does not load a review owned by another account', async () => {
+    storeVoiceReview(result, 'account-a', 'review-a-for-b');
+    setSession('account-b', 'token-b');
+
+    renderReviewPage();
+
+    expect(await screen.findByText(/belongs to a different account/i)).toBeInTheDocument();
+    expect(screen.queryByText('New task')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Apply/ })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a legacy unowned review instead of assigning it to the signed-in account', async () => {
+    sessionStorage.setItem(REVIEW_STORAGE_KEY, JSON.stringify(result));
+    setSession('account-b', 'token-b');
+
+    renderReviewPage();
+
+    expect(
+      await screen.findByText(/older voice review cannot be tied to this account/i)
+    ).toBeInTheDocument();
+
+    expect(screen.queryByText('New task')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Apply/ })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a stale API error after logout and same-account relogin', async () => {
+    const oneChange: VoiceCommandResult = {
+      ...result,
+      proposedChanges: [result.proposedChanges[0]],
+    };
+    setSession('account-a', 'token-a');
+    storeVoiceReview(oneChange, 'account-a', 'review-a-relogin');
+    const storedValue = sessionStorage.getItem(REVIEW_STORAGE_KEY);
+    let resolveRequest!: (response: unknown) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRequest = resolve;
+        })
+    );
+
+    const view = renderReviewPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply and finish' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    setSession('', '', 'unauthenticated');
+    view.rerender(
+      <Providers>
+        <ReviewChangesPage />
+      </Providers>
+    );
+    setSession('account-a', 'token-a-new');
+    view.rerender(
+      <Providers>
+        <ReviewChangesPage />
+      </Providers>
+    );
+
+    await act(async () => {
+      resolveRequest({
+        ok: false,
+        status: 403,
+        json: async () => ({ error: 'Account A cannot apply this change' }),
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(notifications.show).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Account A cannot apply this change' })
+    );
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(REVIEW_STORAGE_KEY)).toBe(storedValue);
   });
 });
 
@@ -206,12 +411,15 @@ describe('Review voice changes: links', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    setSession();
+    mockSearchParams.delete('review');
+    mockSearchParams.delete('changes');
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = API;
-    sessionStorage.setItem('timdo:voice-review', JSON.stringify(withLinks));
+    storeVoiceReview(withLinks);
   });
 
   it('shows each proposed link change plainly before anything is applied', async () => {
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     const section = await screen.findByTestId('voice-ref-changes');
     expect(section).toHaveTextContent('Remove source forum.post:4411');
     expect(section).toHaveTextContent('Link github.issue:acme/widgets#12');
@@ -225,7 +433,7 @@ describe('Review voice changes: links', () => {
 
   it('applies only the ticked links, after the task change', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     const reporter = await screen.findByRole('checkbox', {
       name: 'Include: Reported by acme.member:4411',
     });
@@ -268,7 +476,7 @@ describe('Review voice changes: links', () => {
         status: 400,
         json: async () => ({ error: 'Role must be link, source, reported_by or about' }),
       });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Apply and finish' }));
     await waitFor(() =>
       expect(notifications.show).toHaveBeenCalledWith(
@@ -308,8 +516,11 @@ describe('Review voice changes: atomic source refs', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    setSession();
+    mockSearchParams.delete('review');
+    mockSearchParams.delete('changes');
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = API;
-    sessionStorage.setItem('timdo:voice-review', JSON.stringify(withSources));
+    storeVoiceReview(withSources);
   });
 
   it.each([
@@ -321,7 +532,7 @@ describe('Review voice changes: atomic source refs', () => {
       status: 201,
       json: async () => ({ id: 'created-task', created: true }),
     });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     const sourceCheckbox = await screen.findByRole('checkbox', {
       name: 'Include: Source forum.post:4411',
     });
@@ -375,7 +586,7 @@ describe('Review voice changes: atomic source refs', () => {
     },
   ])('shows $name as an existing task and does not advance', async ({ response }) => {
     fetchMock.mockResolvedValue(response);
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Apply and finish' }));
 
     expect(
@@ -453,12 +664,15 @@ describe('Review voice changes: likely duplicates', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    setSession();
+    mockSearchParams.delete('review');
+    mockSearchParams.delete('changes');
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = API;
-    sessionStorage.setItem('timdo:voice-review', JSON.stringify(withDuplicates));
+    storeVoiceReview(withDuplicates);
   });
 
   it('says it looks like an existing task, with the switch off by default', async () => {
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     const hint = await screen.findByTestId('voice-duplicate-hint');
     expect(hint).toHaveTextContent(
       'Looks like an existing task: #task-off Broken offer page (Acme Solar)'
@@ -478,11 +692,11 @@ describe('Review voice changes: likely duplicates', () => {
 
   it('distinguishes matching titles in the same project by short ID', async () => {
     const sameTitle = { ...offer, id: 'task-other', shortId: 'other001' };
-    sessionStorage.setItem(
-      'timdo:voice-review',
-      JSON.stringify({ ...withDuplicates, proposedChanges: [create(1, [offer, sameTitle])] })
-    );
-    render(<ReviewChangesPage />);
+    storeVoiceReview({
+      ...withDuplicates,
+      proposedChanges: [create(1, [offer, sameTitle])],
+    });
+    renderReviewPage();
 
     expect(
       await screen.findByRole('link', { name: 'Open #task-off Broken offer page (Acme Solar)' })
@@ -501,11 +715,11 @@ describe('Review voice changes: likely duplicates', () => {
 
   it('does not offer the note action for a read-only matching task', async () => {
     const viewOnly = { ...offer, canEdit: false };
-    sessionStorage.setItem(
-      'timdo:voice-review',
-      JSON.stringify({ ...withDuplicates, proposedChanges: [create(1, [viewOnly])] })
-    );
-    render(<ReviewChangesPage />);
+    storeVoiceReview({
+      ...withDuplicates,
+      proposedChanges: [create(1, [viewOnly])],
+    });
+    renderReviewPage();
 
     const toggle = await screen.findByRole('switch', { name: 'Add as a note there instead' });
     expect(toggle).toBeDisabled();
@@ -516,7 +730,7 @@ describe('Review voice changes: likely duplicates', () => {
 
   it('left off, applying creates the task as usual', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 201, json: async () => ({ id: 'new' }) });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Apply and next' }));
     await screen.findByText('Order inverter brackets');
     expect(fetchMock.mock.calls[0][0]).toBe(`${API}/projects`);
@@ -524,7 +738,7 @@ describe('Review voice changes: likely duplicates', () => {
 
   it('switched on, applying adds a note and the links to that task instead of creating', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 201, json: async () => ({ id: 'x' }) });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('switch', { name: 'Add as a note there instead' }));
 
     expect(screen.getByText('Add a note')).toBeInTheDocument();
@@ -565,7 +779,7 @@ describe('Review voice changes: likely duplicates', () => {
         status: 503,
         json: async () => ({ error: 'Temporary link failure' }),
       });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('switch', { name: 'Add as a note there instead' }));
     fireEvent.click(screen.getByRole('button', { name: 'Apply and next' }));
 
@@ -586,12 +800,18 @@ describe('Review voice changes: likely duplicates', () => {
       })
     );
     expect(screen.getByText('Change 2 of 2')).toBeInTheDocument();
+    expect(invalidateBoardCaches).toHaveBeenCalledTimes(1);
+    expect(invalidateBoardCaches).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ accountId: 'test-user-id' }),
+      'task-offer'
+    );
     expect(screen.queryByText('Add a note')).not.toBeInTheDocument();
   });
 
   it('with several matches, the note can go to another one', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 201, json: async () => ({ id: 'x' }) });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('switch', { name: 'Add as a note there instead' }));
     fireEvent.click(screen.getByRole('radio', { name: '#task-cop Offer page copy (Acme Solar)' }));
     expect(screen.getByTestId('voice-note-preview')).toHaveTextContent(
@@ -604,7 +824,7 @@ describe('Review voice changes: likely duplicates', () => {
 
   it('switching off again goes back to creating the task', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 201, json: async () => ({ id: 'x' }) });
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     const toggle = await screen.findByRole('switch', { name: 'Add as a note there instead' });
     fireEvent.click(toggle);
     fireEvent.click(toggle);
@@ -616,7 +836,7 @@ describe('Review voice changes: likely duplicates', () => {
   });
 
   it('a skipped change with the switch on writes nothing', async () => {
-    render(<ReviewChangesPage />);
+    renderReviewPage();
     fireEvent.click(await screen.findByRole('switch', { name: 'Add as a note there instead' }));
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
     await screen.findByText('Order inverter brackets');

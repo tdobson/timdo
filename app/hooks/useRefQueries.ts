@@ -3,7 +3,14 @@ import { useSession } from 'next-auth/react';
 import { canonicalRef, normaliseRole, parseRef } from '../../workers/src/lib/refs';
 import { ApiError, apiFetch } from '../lib/apiClient';
 import { getWorkerApiBaseUrl } from '../lib/apiConfig';
-import type { Project, RefInput, RefRole, RefView } from '../types/project.types';
+import {
+  captureTaskCacheScope,
+  invalidateBoardCaches,
+  isTaskCacheScopeCurrent,
+  patchTaskViews,
+  type TaskCacheScope,
+} from '../lib/taskCache';
+import type { RefInput, RefRole, RefView } from '../types/project.types';
 import { notifyError } from './useProjectMutations';
 import { projectKeys } from './useProjectQueries';
 
@@ -91,46 +98,50 @@ async function deleteRef(taskId: string, refId: string, token: string): Promise<
   }
 }
 
-type Snapshot = Array<[readonly unknown[], unknown]>;
+type RefChange = (refs: RefView[]) => RefView[];
 
-/**
- * Apply `change` to the refs of one task wherever it is cached (the task list and its detail
- * entry). Returns a snapshot for rollback.
- */
+/** Apply one idempotent ref change to TaskViews in legacy and board caches. */
 async function patchRefs(
   queryClient: QueryClient,
   taskId: string,
-  change: (refs: RefView[]) => RefView[]
-): Promise<Snapshot> {
-  await queryClient.cancelQueries({ queryKey: projectKeys.all });
-  const snapshot: Snapshot = queryClient.getQueriesData({ queryKey: projectKeys.all });
-
-  const patchOne = (task: Project) =>
-    task.id === taskId ? { ...task, refs: sortRefs(change(task.refs || [])) } : task;
-  queryClient.setQueriesData({ queryKey: projectKeys.all }, (old: unknown) => {
-    if (Array.isArray(old)) {
-      return (old as Project[]).map(patchOne);
-    }
-    if (old && typeof old === 'object' && (old as Project).id === taskId) {
-      return patchOne(old as Project);
-    }
-    return old;
-  });
-  return snapshot;
+  change: RefChange,
+  cacheScope: TaskCacheScope
+): Promise<void> {
+  if (!isTaskCacheScopeCurrent(queryClient, cacheScope)) {
+    return;
+  }
+  await Promise.all([
+    queryClient.cancelQueries({ queryKey: projectKeys.all }),
+    queryClient.cancelQueries({ queryKey: ['board-summary'] }),
+    queryClient.cancelQueries({ queryKey: ['board-done-history'] }),
+    queryClient.cancelQueries({ queryKey: ['board-full'] }),
+  ]);
+  if (!isTaskCacheScopeCurrent(queryClient, cacheScope)) {
+    return;
+  }
+  patchTaskViews(
+    queryClient,
+    taskId,
+    (task) => ({
+      ...task,
+      refs: sortRefs(change(task.refs || [])),
+    }),
+    cacheScope
+  );
 }
 
-function rollback(queryClient: QueryClient, snapshot?: Snapshot) {
-  snapshot?.forEach(([key, data]) => queryClient.setQueryData(key, data));
-}
-
-function settle(queryClient: QueryClient) {
-  // Only the last of several quick changes refetches, so earlier answers can't undo later ones
+function settle(queryClient: QueryClient, cacheScope: TaskCacheScope) {
+  if (!isTaskCacheScopeCurrent(queryClient, cacheScope)) {
+    return;
+  }
+  // Only the last of several quick changes refetches, so earlier answers cannot undo later ones.
   if (queryClient.isMutating({ mutationKey: refMutationKey }) > 1) {
     return;
   }
   queryClient.invalidateQueries({ queryKey: projectKeys.all });
   queryClient.invalidateQueries({ queryKey: ['activity'] });
   queryClient.invalidateQueries({ queryKey: ['task-search'] });
+  void invalidateBoardCaches(queryClient, cacheScope);
 }
 
 /**
@@ -141,6 +152,7 @@ function settle(queryClient: QueryClient) {
 export function useAddRef() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
 
   return useMutation({
     mutationKey: refMutationKey,
@@ -151,11 +163,12 @@ export function useAddRef() {
       return postRef(taskId, input, session.accessToken);
     },
     onMutate: async ({ taskId, input }) => {
+      const cacheScope = captureTaskCacheScope(queryClient, accountId);
       const parsed = parseRef(input.ref, input.kind);
       const role = normaliseRole(input.role);
       if (!parsed.ok || !role) {
         // The API will say what is wrong; nothing to show in the meantime
-        return { snapshot: undefined, tempId: null };
+        return { tempId: null, cacheScope };
       }
       const tempId = `${PENDING_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const { kind, ref, url, label } = parsed.value;
@@ -175,24 +188,56 @@ export function useAddRef() {
         createdAt: new Date().toISOString(),
         canDelete: true,
       };
-      const snapshot = await patchRefs(queryClient, taskId, (refs) =>
-        // Adding the same thing twice is a no-op on the server, so show it once
-        refs.some((r) => r.role === role && r.canonical === canonical) ? refs : [...refs, pending]
+      await patchRefs(
+        queryClient,
+        taskId,
+        (refs) =>
+          refs.some((ref) => ref.role === role && ref.canonical === canonical)
+            ? refs
+            : [...refs, pending],
+        cacheScope
       );
-      return { snapshot, tempId };
+      return { tempId, cacheScope };
     },
-    onSuccess: (added, { taskId }, context) => {
+    onSuccess: async (added, { taskId }, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       const view: RefView = { ...added };
       delete (view as Partial<AddedRef>).existing;
-      void patchRefs(queryClient, taskId, (refs) => {
-        const others = refs.filter((r) => r.id !== context?.tempId && r.id !== view.id);
-        return [...others, view];
-      });
+      await patchRefs(
+        queryClient,
+        taskId,
+        (refs) => {
+          const others = refs.filter(
+            (ref) =>
+              ref.id !== context?.tempId &&
+              ref.id !== view.id &&
+              !(ref.role === view.role && ref.canonical === view.canonical)
+          );
+          return [...others, view];
+        },
+        context.cacheScope
+      );
     },
-    onError: (_error, _variables, context) => {
-      rollback(queryClient, context?.snapshot);
+    onError: async (_error, { taskId }, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      if (context?.tempId) {
+        await patchRefs(
+          queryClient,
+          taskId,
+          (refs) => refs.filter((ref) => ref.id !== context.tempId),
+          context.cacheScope
+        );
+      }
     },
-    onSettled: () => settle(queryClient),
+    onSettled: (_data, _error, _variables, context) => {
+      if (context) {
+        settle(queryClient, context.cacheScope);
+      }
+    },
   });
 }
 
@@ -200,6 +245,7 @@ export function useAddRef() {
 export function useRemoveRef() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
 
   return useMutation({
     mutationKey: refMutationKey,
@@ -210,15 +256,41 @@ export function useRemoveRef() {
       return deleteRef(taskId, refId, session.accessToken);
     },
     onMutate: async ({ taskId, refId }) => {
-      const snapshot = await patchRefs(queryClient, taskId, (refs) =>
-        refs.filter((r) => r.id !== refId)
+      const cacheScope = captureTaskCacheScope(queryClient, accountId);
+      const removedRefs: RefView[] = [];
+      await patchRefs(
+        queryClient,
+        taskId,
+        (refs) => {
+          const removed = refs.find((ref) => ref.id === refId);
+          if (removed && !removedRefs.some((ref) => ref.id === removed.id)) {
+            removedRefs.push(removed);
+          }
+          return refs.filter((ref) => ref.id !== refId);
+        },
+        cacheScope
       );
-      return { snapshot };
+      return { removedRef: removedRefs[0] || null, cacheScope };
     },
-    onError: (error, _variables, context) => {
-      rollback(queryClient, context?.snapshot);
+    onError: async (error, _variables, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      if (context?.removedRef) {
+        const removedRef = context.removedRef;
+        await patchRefs(
+          queryClient,
+          removedRef.taskId,
+          (refs) => (refs.some((ref) => ref.id === removedRef.id) ? refs : [...refs, removedRef]),
+          context.cacheScope
+        );
+      }
       notifyError('Could not remove link', error);
     },
-    onSettled: () => settle(queryClient),
+    onSettled: (_data, _error, _variables, context) => {
+      if (context) {
+        settle(queryClient, context.cacheScope);
+      }
+    },
   });
 }

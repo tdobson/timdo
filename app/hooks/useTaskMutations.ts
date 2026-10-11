@@ -2,6 +2,14 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import { useSession } from 'next-auth/react';
 import { notifications } from '@mantine/notifications';
 import { assignTask, fetchTasks, linkTaskGoal, type TaskFiltersClient } from '../lib/apiClient';
+import {
+  applyOptimisticTaskPatch,
+  captureTaskCacheScope,
+  invalidateBoardCaches,
+  isTaskCacheScopeCurrent,
+  patchTaskCaches,
+  type TaskCacheScope,
+} from '../lib/taskCache';
 import type { Project } from '../types/project.types';
 import { useCurrentUser } from './useCurrentUser';
 import { projectKeys } from './useProjectQueries';
@@ -31,50 +39,38 @@ export function useTasks(filters?: TaskFiltersClient) {
   });
 }
 
-type Snapshot = Array<[readonly unknown[], unknown]>;
-
-/**
- * Optimistically set a task's assignee in the task list, the single-task cache and the
- * collaborative task lists. Returns a snapshot for rollback.
- */
+/** Optimistically update only TaskView caches and return an overlap-safe rollback. */
 async function applyAssignee(
   queryClient: QueryClient,
   taskId: string,
-  patch: Pick<Project, 'assigneeId' | 'assigneeName' | 'isMine'>
-): Promise<Snapshot> {
-  await queryClient.cancelQueries({ queryKey: projectKeys.all });
-  await queryClient.cancelQueries({ queryKey: taskKeys.all });
-  const snapshot: Snapshot = [
-    ...queryClient.getQueriesData({ queryKey: projectKeys.all }),
-    ...queryClient.getQueriesData({ queryKey: taskKeys.all }),
-  ];
-
-  const patchOne = (task: Project) => (task.id === taskId ? { ...task, ...patch } : task);
-  const patchAny = (old: unknown) => {
-    if (Array.isArray(old)) {
-      return (old as Project[]).map(patchOne);
-    }
-    if (old && typeof old === 'object' && (old as Project).id === taskId) {
-      return patchOne(old as Project);
-    }
-    return old;
-  };
-  queryClient.setQueriesData({ queryKey: projectKeys.all }, patchAny);
-  queryClient.setQueriesData({ queryKey: taskKeys.all }, patchAny);
-  return snapshot;
+  patch: Pick<Project, 'assigneeId' | 'assigneeName' | 'isMine'>,
+  cacheScope: TaskCacheScope
+): Promise<() => void> {
+  await Promise.all([
+    queryClient.cancelQueries({ queryKey: projectKeys.all }),
+    queryClient.cancelQueries({ queryKey: taskKeys.all }),
+    queryClient.cancelQueries({ queryKey: ['board-summary'] }),
+    queryClient.cancelQueries({ queryKey: ['board-done-history'] }),
+    queryClient.cancelQueries({ queryKey: ['board-full'] }),
+  ]);
+  return applyOptimisticTaskPatch(queryClient, taskId, patch, cacheScope);
 }
 
-function rollback(queryClient: QueryClient, snapshot?: Snapshot) {
-  snapshot?.forEach(([key, data]) => queryClient.setQueryData(key, data));
-}
-
-function settle(queryClient: QueryClient, updated?: Project) {
+function settle(
+  queryClient: QueryClient,
+  updated: Project | undefined,
+  cacheScope: TaskCacheScope
+) {
+  if (!isTaskCacheScopeCurrent(queryClient, cacheScope)) {
+    return;
+  }
   if (updated) {
-    queryClient.setQueryData(projectKeys.detail(updated.id), updated);
+    patchTaskCaches(queryClient, updated, cacheScope);
   }
   queryClient.invalidateQueries({ queryKey: projectKeys.all });
   queryClient.invalidateQueries({ queryKey: taskKeys.all });
   queryClient.invalidateQueries({ queryKey: ['activity'] });
+  void invalidateBoardCaches(queryClient, cacheScope, updated?.id);
 }
 
 /**
@@ -83,6 +79,7 @@ function settle(queryClient: QueryClient, updated?: Project) {
 export function useClaimTask() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
   const { user } = useCurrentUser();
 
   return useMutation({
@@ -93,23 +90,36 @@ export function useClaimTask() {
       return assignTask(taskId, user.id, session.accessToken);
     },
     onMutate: async (taskId: string) => {
-      const snapshot = await applyAssignee(queryClient, taskId, {
-        assigneeId: user?.id ?? null,
-        assigneeName: user?.name || 'You',
-        isMine: true,
-      });
-      return { snapshot };
+      const cacheScope = captureTaskCacheScope(queryClient, accountId);
+      const rollback = await applyAssignee(
+        queryClient,
+        taskId,
+        {
+          assigneeId: user?.id ?? null,
+          assigneeName: user?.name || 'You',
+          isMine: true,
+        },
+        cacheScope
+      );
+      return { rollback, cacheScope };
     },
     onError: (err, _taskId, context) => {
-      rollback(queryClient, context?.snapshot);
+      if (context && !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      context?.rollback?.();
+      void invalidateBoardCaches(queryClient, context?.cacheScope ?? accountId);
       notifications.show({
         title: 'Could not assign',
         message: err.message || 'Could not assign the task to you',
         color: 'red',
       });
     },
-    onSuccess: (updatedTask) => {
-      settle(queryClient, updatedTask);
+    onSuccess: (updatedTask, _variables, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      settle(queryClient, updatedTask, context.cacheScope);
       notifications.show({
         title: 'Assigned to you',
         message: `"${updatedTask.title || updatedTask.project || 'Task'}" is now yours`,
@@ -126,6 +136,7 @@ export function useClaimTask() {
 export function useAssignTask() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
   const { userId } = useCurrentUser();
 
   return useMutation({
@@ -143,23 +154,36 @@ export function useAssignTask() {
       return assignTask(taskId, assigneeId, session.accessToken);
     },
     onMutate: async ({ taskId, assigneeId, assigneeName }) => {
-      const snapshot = await applyAssignee(queryClient, taskId, {
-        assigneeId,
-        assigneeName: assigneeId ? (assigneeName ?? null) : null,
-        isMine: !!assigneeId && assigneeId === userId,
-      });
-      return { snapshot };
+      const cacheScope = captureTaskCacheScope(queryClient, accountId);
+      const rollback = await applyAssignee(
+        queryClient,
+        taskId,
+        {
+          assigneeId,
+          assigneeName: assigneeId ? (assigneeName ?? null) : null,
+          isMine: !!assigneeId && assigneeId === userId,
+        },
+        cacheScope
+      );
+      return { rollback, cacheScope };
     },
     onError: (err, _variables, context) => {
-      rollback(queryClient, context?.snapshot);
+      if (context && !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      context?.rollback?.();
+      void invalidateBoardCaches(queryClient, context?.cacheScope ?? accountId);
       notifications.show({
         title: 'Could not reassign',
         message: err.message || 'Failed to reassign task',
         color: 'red',
       });
     },
-    onSuccess: (updatedTask) => {
-      settle(queryClient, updatedTask);
+    onSuccess: (updatedTask, _variables, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      settle(queryClient, updatedTask, context.cacheScope);
       notifications.show({
         title: 'Assignee updated',
         message: updatedTask.assigneeId
@@ -179,6 +203,7 @@ export function useAssignTask() {
 export function useLinkTaskGoal() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
 
   return useMutation({
     mutationFn: ({ taskId, goalId }: { taskId: string; goalId: string }) => {
@@ -187,15 +212,24 @@ export function useLinkTaskGoal() {
       }
       return linkTaskGoal(taskId, goalId, session.accessToken);
     },
-    onSuccess: () => {
+    onMutate: () => ({ cacheScope: captureTaskCacheScope(queryClient, accountId) }),
+    onSuccess: (_data, _variables, context) => {
+      if (!isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: projectKeys.all });
       queryClient.invalidateQueries({ queryKey: taskKeys.all });
+      void invalidateBoardCaches(queryClient, context.cacheScope);
       notifications.show({
         title: 'Goal Linked',
         message: 'Personal life goal successfully linked to task',
         color: 'green',
       });
     },
-    onError: (err: Error) => {
+    onError: (err: Error, _variables, context) => {
+      if (context && !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       notifications.show({
         title: 'Link Failed',
         message: err.message || 'Failed to link personal goal',

@@ -43,6 +43,11 @@ export const meKeys = {
 const SHARED_KEYS = [
   ['organisations'],
   ['projects'],
+  ['project-updates'],
+  ['board-summary'],
+  ['board-counts'],
+  ['board-done-history'],
+  ['board-full'],
   ['epics'],
   ['tasks'],
   ['customers'],
@@ -52,18 +57,14 @@ const SHARED_KEYS = [
 
 export function invalidateAfterSharingChange(
   queryClient: QueryClient,
-  scope: 'people' | 'projects' = 'projects'
+  _scope: 'people' | 'projects' = 'projects'
 ) {
-  queryClient.invalidateQueries({ queryKey: sharingKeys.all });
-  queryClient.invalidateQueries({ queryKey: activityKeys.all });
-  // Membership changes alter who can be assigned and which tasks are visible, so refresh
-  // the shared lists either way; project moves also change workspace names on tasks.
+  // Membership and workspace moves can revoke access. Clear cached payloads before active
+  // queries refetch so a failed authorization check cannot leave old task bodies on screen.
   for (const key of SHARED_KEYS) {
-    if (scope === 'people' && key[0] === 'poster') {
-      continue;
-    }
-    queryClient.invalidateQueries({ queryKey: [...key] });
+    void queryClient.resetQueries({ queryKey: [...key] });
   }
+  void queryClient.resetQueries({ queryKey: activityKeys.all });
 }
 
 function useToken() {

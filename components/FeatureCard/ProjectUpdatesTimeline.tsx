@@ -20,6 +20,12 @@ import {
 import { notifications } from '@mantine/notifications';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { addProjectUpdate, deleteProjectUpdate, getProjectUpdates } from '../../app/lib/apiClient';
+import {
+  captureTaskCacheScope,
+  invalidateBoardCaches,
+  isTaskCacheScopeCurrent,
+  updateTaskNoteSummary,
+} from '../../app/lib/taskCache';
 import type { ProjectUpdate } from '../../app/types/project.types';
 import { absoluteTime, personLabel, relativeTime, TeamAvatar } from '../Team';
 
@@ -36,6 +42,7 @@ export function ProjectUpdatesTimeline({
   canEdit = true,
 }: ProjectUpdatesTimelineProps) {
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
   const queryClient = useQueryClient();
   const { userId } = useCurrentUser();
 
@@ -68,10 +75,21 @@ export function ProjectUpdatesTimeline({
       }
       return addProjectUpdate(projectId, data, session.accessToken);
     },
-    onSuccess: (newUpdate) => {
+    onMutate: () => ({ cacheScope: captureTaskCacheScope(queryClient, accountId) }),
+    onSuccess: (newUpdate, _variables, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       queryClient.setQueryData<ProjectUpdate[]>(queryKey, (old) =>
         old ? [...old, newUpdate] : [newUpdate]
       );
+      updateTaskNoteSummary(
+        queryClient,
+        projectId,
+        { type: 'added', update: newUpdate },
+        context.cacheScope
+      );
+      void invalidateBoardCaches(queryClient, context.cacheScope, projectId);
       setNote('');
       setGmailThreadId('');
       setShowAddForm(false);
@@ -82,7 +100,10 @@ export function ProjectUpdatesTimeline({
         color: 'green',
       });
     },
-    onError: (err: Error) => {
+    onError: (err: Error, _variables, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       notifications.show({
         title: 'Could not add note',
         message: err.message || 'Failed to add update.',
@@ -98,10 +119,23 @@ export function ProjectUpdatesTimeline({
       }
       return deleteProjectUpdate(projectId, updateId, session.accessToken);
     },
-    onSuccess: (_data, updateId) => {
-      queryClient.setQueryData<ProjectUpdate[]>(queryKey, (old) =>
-        old ? old.filter((u) => u.id !== updateId) : []
+    onMutate: () => ({ cacheScope: captureTaskCacheScope(queryClient, accountId) }),
+    onSuccess: (_data, updateId, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      let remainingUpdates: ProjectUpdate[] | undefined;
+      queryClient.setQueryData<ProjectUpdate[]>(queryKey, (old) => {
+        remainingUpdates = old ? old.filter((update) => update.id !== updateId) : undefined;
+        return remainingUpdates || old;
+      });
+      updateTaskNoteSummary(
+        queryClient,
+        projectId,
+        { type: 'deleted', remaining: remainingUpdates },
+        context.cacheScope
       );
+      void invalidateBoardCaches(queryClient, context.cacheScope, projectId);
       queryClient.invalidateQueries({ queryKey: ['activity'] });
       notifications.show({
         title: 'Note deleted',
@@ -109,7 +143,10 @@ export function ProjectUpdatesTimeline({
         color: 'green',
       });
     },
-    onError: (err: Error) => {
+    onError: (err: Error, _updateId, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       notifications.show({
         title: 'Could not delete note',
         message: err.message || 'Failed to delete update.',

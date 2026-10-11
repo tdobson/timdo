@@ -1,8 +1,8 @@
 /**
  * Voice commands in a multi-user TimDo.
  *
- * loadVoiceContext() gathers what the signed-in user can see: their workspaces with role,
- * the projects in each, the people they can assign to, their epics and tasks.
+ * loadVoiceContext() gathers the user's workspaces with role, projects, people, epics and a bounded
+ * task sample. Aggregate counts cover every visible task; full bodies load only for proposed changes.
  * describeContextForPrompt() turns that into compact text for the LLM.
  * resolveProposals() checks the LLM's proposals against the same context: names become
  * ids, view-only and unknown targets are dropped or flagged, and each proposal gains the
@@ -19,8 +19,18 @@ import { canEdit, getAccessibleProjects, type AccessibleProject, type Role } fro
 import { getEpicsForUser } from './epicService';
 import { getGoalsForUser } from './goalService';
 import { getOrganisationMembers } from './organisationService';
-import { getProjectsForUser, type TaskView } from './projectService';
+import { getSelectedTaskSummariesForUser, type TaskView } from './projectService';
 import { findSimilarTasks, type SimilarQuery, type SimilarTask } from './similarService';
+import { getSelectedTaskRows, getTaskAggregateCountsForUser } from './taskListService';
+import {
+  findVoiceSourceHolders,
+  getVoicePromptFields,
+  selectVoiceTaskIds,
+  VOICE_TASK_SAMPLE_CAP,
+  type VoicePromptFields,
+  type VoiceSourceHolder,
+  type VoiceSourceRef,
+} from './voiceTaskSelectionService';
 
 type DB = DrizzleD1Database<typeof schema>;
 
@@ -70,6 +80,20 @@ export interface VoiceContext {
   tasks: VoiceTask[];
   epics: VoiceEpic[];
   goals: VoiceGoal[];
+  /** True SQL totals, independent of the selected task sample. */
+  taskCounts?: import('./taskListService').TaskAggregateCounts;
+  /** The limit applied to the selected task sample. */
+  sampleCap?: number;
+  /** Warnings raised when unusually long transcript searches are bounded. */
+  selectionWarnings?: string[];
+  /** SQL-clipped text used only to build the prompt, never treated as full task bodies. */
+  promptFields?: Map<string, VoicePromptFields>;
+  /** Hydrate bodies only after a selected task is actually targeted by a proposal. */
+  hydrateTaskBodies?: (
+    taskIds: string[]
+  ) => Promise<Map<string, { reason: string | null; notes: string | null }>>;
+  /** Authoritative, targeted source checks, including holders outside the selected sample. */
+  findSourceHolders?: (refs: VoiceSourceRef[]) => Promise<Map<string, VoiceSourceHolder>>;
   /**
    * Open tasks like a title, from the database (set by loadVoiceContext). A context built
    * by hand has none, and its proposals simply carry no duplicate hints.
@@ -80,16 +104,15 @@ export interface VoiceContext {
 /* ------------------------------------------------------------------ loading */
 
 /**
- * Load everything voice needs for this user. The client's cached task list is used when it
- * already carries workspace info (saves a read); otherwise the tasks come from the database.
- * Permissions always come from the database, never from the client.
+ * Load a bounded, permission-checked task sample after transcription. Counts remain aggregates
+ * over every visible task; full bodies are fetched only if a selected task is proposed for change.
  */
 export async function loadVoiceContext(
   db: DB,
   userId: string,
-  clientTasks?: unknown
+  transcript = ''
 ): Promise<VoiceContext> {
-  const [projects, meRow, epicsRaw, goalsRaw] = await Promise.all([
+  const [projects, meRow, epicsRaw, goalsRaw, taskCounts, selection] = await Promise.all([
     getAccessibleProjects(db, userId),
     db
       .select({ id: schema.users.id, name: schema.users.name, email: schema.users.email })
@@ -98,6 +121,8 @@ export async function loadVoiceContext(
       .get(),
     getEpicsForUser(db, userId).catch(() => []),
     getGoalsForUser(db, userId).catch(() => []),
+    getTaskAggregateCountsForUser(db, userId),
+    selectVoiceTaskIds(db, userId, transcript),
   ]);
 
   const orgIds = Array.from(new Set(projects.map((p) => p.orgId)));
@@ -126,13 +151,13 @@ export async function loadVoiceContext(
     (a, b) => Number(b.isPersonal) - Number(a.isPersonal) || a.name.localeCompare(b.name)
   );
 
-  let tasks: VoiceTask[];
-  if (isUsableClientTaskList(clientTasks, projects)) {
-    tasks = clientTasks;
-  } else {
-    tasks = await getProjectsForUser(db, userId);
-  }
-
+  const tasks = await getSelectedTaskSummariesForUser(db, userId, selection.taskIds);
+  const promptFields = await getVoicePromptFields(
+    db,
+    userId,
+    tasks.map((task) => task.id)
+  );
+  const selectedIds = new Set(tasks.map((task) => task.id));
   const email = meRow?.email || '';
   return {
     me: { id: userId, name: meRow?.name || email.split('@')[0] || 'You', email },
@@ -147,28 +172,21 @@ export async function loadVoiceContext(
       status: e.status,
     })),
     goals: (goalsRaw as any[]).map((g) => ({ id: g.id, title: g.title })),
-    // Always the database, never the client's cache: it decides what is offered as a duplicate
+    taskCounts,
+    sampleCap: VOICE_TASK_SAMPLE_CAP,
+    selectionWarnings: selection.warnings,
+    promptFields,
+    hydrateTaskBodies: async (taskIds) => {
+      const requested = Array.from(new Set(taskIds)).filter((id) => selectedIds.has(id));
+      const rows = await getSelectedTaskRows(db, userId, requested, { fields: 'full' });
+      return new Map(
+        rows.map((row) => [row.id, { reason: row.reason ?? null, notes: row.notes ?? null }])
+      );
+    },
+    findSourceHolders: (refs) => findVoiceSourceHolders(db, userId, refs),
+    // Always the database, never the client's cache: duplicate suggestions are authoritative.
     findSimilar: (query) => findSimilarTasks(db, userId, query, projects),
   };
-}
-
-/** The client list is only trusted for task content, and only if it has the new shape. */
-function isUsableClientTaskList(
-  value: unknown,
-  projects: AccessibleProject[]
-): value is VoiceTask[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    return false;
-  }
-  const visible = new Set(projects.map((p) => p.id));
-  return value.every(
-    (t) =>
-      t &&
-      typeof t === 'object' &&
-      typeof (t as any).id === 'string' &&
-      typeof (t as any).projectId === 'string' &&
-      visible.has((t as any).projectId)
-  );
 }
 
 /* ------------------------------------------------------------------ prompt context */
@@ -302,9 +320,7 @@ export function describeRefKinds(ctx: VoiceContext): string {
   return lines.length ? lines.join('\n') : '(none yet)';
 }
 
-/** How many done tasks the model sees (most recently finished first) */
-const DONE_TASK_LIMIT = 100;
-/** Long notes are cut to this many characters */
+/** Long prompt text is capped; production excerpts are clipped in SQL before reaching this layer. */
 const TEXT_LIMIT = 160;
 
 const clip = (text: string | null | undefined) =>
@@ -324,26 +340,17 @@ const compactRefs = (t: VoiceTask) =>
     : {};
 
 /**
- * Tasks in a compact shape: enough to find, update and answer questions about them.
- * Open tasks carry clipped notes; done tasks are trimmed to the most recent ones with just
- * their title, project, assignee and links, which keeps the prompt small for busy accounts.
+ * Tasks in sample order: enough to find, update and answer questions about them. Prompt body
+ * fields come from SQL-clipped excerpts, while the task summaries remain distinct from full bodies.
  */
 export function compactTasks(ctx: VoiceContext) {
   const byId = new Map(ctx.projects.map((p) => [p.id, p]));
   const epicTitles = new Map(ctx.epics.map((e) => [e.id, e.title]));
   const live = ctx.tasks.filter((t) => !t.isDeleted);
-  const open = live.filter((t) => t.status !== 'done');
-  const done = live
-    .filter((t) => t.status === 'done')
-    .sort((a, b) =>
-      String(b.statusLastChangedOn || b.updatedAt || '').localeCompare(
-        String(a.statusLastChangedOn || a.updatedAt || '')
-      )
-    )
-    .slice(0, DONE_TASK_LIMIT);
 
-  return [...open, ...done].map((t) => {
+  return live.map((t) => {
     const project = t.projectId ? byId.get(t.projectId) : undefined;
+    const promptFields = ctx.promptFields?.get(t.id);
     const base = {
       id: t.id,
       project: t.project,
@@ -357,12 +364,14 @@ export function compactTasks(ctx: VoiceContext) {
     if (t.status === 'done') {
       return base;
     }
+    const reason = ctx.promptFields ? promptFields?.reason : clip(t.reason);
+    const notes = ctx.promptFields ? promptFields?.notes : clip(t.notes);
     return {
       ...base,
       priority: t.priority,
       size: t.size,
-      ...(t.reason ? { reason: clip(t.reason) } : {}),
-      ...(t.notes ? { notes: clip(t.notes) } : {}),
+      ...(reason ? { reason } : {}),
+      ...(notes ? { notes } : {}),
       ...(t.awaitUntil ? { awaitUntil: t.awaitUntil } : {}),
       ...(t.epicId && epicTitles.has(t.epicId) ? { epic: epicTitles.get(t.epicId) } : {}),
     };
@@ -1123,7 +1132,9 @@ export function resolveProposals(changes: RawChange[], ctx: VoiceContext): Resol
     if (change.type === 'update' || change.type === 'delete' || change.type === 'claim') {
       before = findTask(ctx, change.projectId, after);
       if (!before) {
-        drop(`I couldn't find the task ${taskLabel(after)}, so I left that change out.`);
+        drop(
+          `I couldn't find the task ${taskLabel(after)} in the selected task sample, so I left that change out. Mention a listed task title or id instead.`
+        );
         continue;
       }
       const current = before.projectId ? projectById.get(before.projectId) : undefined;

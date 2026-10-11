@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
-import { IconLink, IconSearch, IconUsers } from '@tabler/icons-react';
+import { IconLink, IconSearch } from '@tabler/icons-react';
 import {
   Badge,
   Box,
@@ -14,13 +14,10 @@ import {
   Tooltip,
   UnstyledButton,
 } from '@mantine/core';
-import { useCurrentUser } from '../../app/hooks/useCurrentUser';
-import { useProjects } from '../../app/hooks/useProjectQueries';
 import { useTaskSearch } from '../../app/hooks/useSearchQueries';
-import type { Project } from '../../app/types/project.types';
 import { parseRef } from '../../workers/src/lib/refs';
 import { RefKindIcon } from '../TaskDetail/refDisplay';
-import { TaskAssigneeAvatar, workspaceLabel } from '../Team';
+import { workspaceLabel } from '../Team';
 
 /** What a pasted link or kind:id was read as, or null for ordinary words. */
 function readAsRef(query: string) {
@@ -44,14 +41,6 @@ export function QuickSearchModal({ opened, onClose }: QuickSearchModalProps) {
   // Results that carry the pasted link exactly come first, flagged by the API
   const results = data;
   const pastedRef = readAsRef(query);
-  // Search results are bare; borrow project, workspace and assignee from the loaded tasks
-  const { data: tasks } = useProjects();
-  const { userId } = useCurrentUser();
-  const taskById = useMemo(() => {
-    const map = new Map<string, Project>();
-    (tasks || []).forEach((t) => map.set(t.id, t));
-    return map;
-  }, [tasks]);
 
   return (
     <Modal
@@ -105,93 +94,91 @@ export function QuickSearchModal({ opened, onClose }: QuickSearchModalProps) {
             </Text>
           )}
           {results && results.length > 0 ? (
-            results.map((item) => {
-              const task = taskById.get(item.id);
-              return (
-                <UnstyledButton
-                  key={item.id}
-                  component={Link}
-                  href={`/tasks/${item.id}`}
-                  onClick={onClose}
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--mantine-color-default-border)',
-                    backgroundColor: 'var(--mantine-color-body)',
-                  }}
-                >
-                  <Group justify="space-between" mb={4}>
-                    <Group gap="xs">
-                      <Badge size="xs" variant="filled" color="dark">
-                        #{item.shortId}
-                      </Badge>
-                      <Text fw={600} size="sm">
-                        {item.title}
-                      </Text>
-                      {item.matchedRef && (
-                        <Tooltip label="This task carries that link" withArrow openDelay={300}>
-                          <Badge
-                            size="xs"
-                            variant="light"
-                            color="indigo"
-                            leftSection={<IconLink size={10} />}
-                            data-testid="search-matched-ref"
-                          >
-                            Linked
-                          </Badge>
-                        </Tooltip>
-                      )}
-                    </Group>
-                    <Group gap="xs" wrap="nowrap">
-                      {task && <TaskAssigneeAvatar task={task} meId={userId} size={18} />}
-                      {(task?.category || item.projectName) && (
+            results.map((item) => (
+              <UnstyledButton
+                key={item.id}
+                component={Link}
+                href={`/tasks/${item.id}`}
+                onClick={onClose}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--mantine-color-default-border)',
+                  backgroundColor: 'var(--mantine-color-body)',
+                }}
+              >
+                <Group justify="space-between" mb={4}>
+                  <Group gap="xs">
+                    <Badge size="xs" variant="filled" color="dark">
+                      #{item.shortId}
+                    </Badge>
+                    <Text fw={600} size="sm">
+                      {item.title}
+                    </Text>
+                    {item.matchedRef && (
+                      <Tooltip label="This task carries that link" withArrow openDelay={300}>
                         <Badge
                           size="xs"
-                          variant="outline"
-                          color={task?.isShared ? 'grape' : 'blue'}
-                          leftSection={task?.isShared ? <IconUsers size={10} /> : undefined}
-                          style={{ textTransform: 'none' }}
-                          title={
-                            task?.isShared || (!task && item.orgName)
-                              ? `${task?.category || item.projectName}, in ${workspaceLabel({
-                                  name: task?.orgName || item.orgName,
-                                })}`
-                              : task?.category || item.projectName || undefined
-                          }
+                          variant="light"
+                          color="indigo"
+                          leftSection={<IconLink size={10} />}
+                          data-testid="search-matched-ref"
                         >
-                          {task?.category || item.projectName}
+                          Linked
                         </Badge>
-                      )}
-                      {item.customer && (
-                        <Badge size="xs" color="teal">
-                          {item.customer}
-                        </Badge>
-                      )}
-                      <Badge size="xs" variant="light">
-                        {item.status}
-                      </Badge>
-                    </Group>
+                      </Tooltip>
+                    )}
                   </Group>
-                  {item.reason && (
-                    <Text size="xs" c="dimmed" lineClamp={1}>
-                      Why: {item.reason}
-                    </Text>
-                  )}
-                  {item.snippet && (
-                    <Box
-                      mt={4}
-                      p={4}
-                      style={{
-                        fontSize: '11px',
-                        backgroundColor: 'rgba(0,0,0,0.03)',
-                        borderRadius: '4px',
-                      }}
-                      dangerouslySetInnerHTML={{ __html: item.snippet }}
-                    />
-                  )}
-                </UnstyledButton>
-              );
-            })
+                  <Group gap="xs" wrap="nowrap">
+                    {item.assigneeName && (
+                      <Badge size="xs" variant="light" color="gray">
+                        {item.assigneeName}
+                      </Badge>
+                    )}
+                    {item.projectName && (
+                      <Badge
+                        size="xs"
+                        variant="outline"
+                        color="blue"
+                        style={{ textTransform: 'none' }}
+                        title={
+                          item.orgName
+                            ? `${item.projectName}, in ${workspaceLabel({ name: item.orgName })}`
+                            : item.projectName
+                        }
+                      >
+                        {item.projectName}
+                      </Badge>
+                    )}
+                    {item.customer && (
+                      <Badge size="xs" color="teal">
+                        {item.customer}
+                      </Badge>
+                    )}
+                    <Badge size="xs" variant="light">
+                      {item.status}
+                    </Badge>
+                  </Group>
+                </Group>
+                {item.reason && (
+                  <Text size="xs" c="dimmed" lineClamp={1}>
+                    Why: {item.reason}
+                  </Text>
+                )}
+                {item.snippet && (
+                  <Box
+                    mt={4}
+                    p={4}
+                    style={{
+                      fontSize: '11px',
+                      backgroundColor: 'rgba(0,0,0,0.03)',
+                      borderRadius: '4px',
+                    }}
+                    dangerouslySetInnerHTML={{ __html: item.snippet }}
+                  />
+                )}
+              </UnstyledButton>
+            ))
           ) : query.trim().length >= 2 && !isLoading && !isError ? (
             <Text size="sm" c="dimmed" ta="center" py="md">
               No matching tasks found.

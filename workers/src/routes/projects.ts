@@ -4,7 +4,12 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Env } from '../index';
 import { normaliseRole, ROLE_ERROR } from '../lib/refs';
 import * as projectService from '../services/projectService';
-import { conflictWithTask, parseOrThrow } from '../services/refService';
+import {
+  conflictWithTask,
+  parseOrThrow,
+  RefError,
+} from '../services/refService';
+import { parseProjectListQuery, TaskListQueryError } from '../services/taskListService';
 import {
   projectCreateSchema,
   projectMergeSchema,
@@ -15,47 +20,67 @@ import {
 
 const projectsApp = new Hono<{ Bindings: Env }>();
 
+function parseProjectRequest(query: Record<string, string | undefined>, countOnly = false) {
+  const parsed = parseProjectListQuery(query, { countOnly });
+  const ref = query.ref ? parseOrThrow(query.ref) : undefined;
+  const roleQuery = query.role || query.refRole;
+  const refRole = roleQuery ? normaliseRole(roleQuery) : undefined;
+  if (refRole === null) {
+    throw new RefError(ROLE_ERROR, 400);
+  }
+  return {
+    ...parsed,
+    filters: { ...parsed.filters, ref, refRole: refRole ?? undefined },
+  };
+}
+
+function invalidListRequest(c: any, error: unknown) {
+  if (error instanceof TaskListQueryError || error instanceof RefError) {
+    return c.json({ error: error.message }, 400);
+  }
+  throw error;
+}
+
 // The auth middleware is now applied in src/index.ts, so we remove it from here.
 
-// GET all projects for a user (with optional hierarchy filters: category, epicId, goalId)
+// GET all matching tasks. Paging and summary projection are opt-in; legacy calls stay unlimited.
 projectsApp.get('/', async (c) => {
   const userId = c.get('userId');
   const db = c.get('db');
-  const category = c.req.query('category');
-  const epicId = c.req.query('epicId');
-  const goalId = c.req.query('goalId');
-  const customer = c.req.query('customer');
-  const tag = c.req.query('tag');
-  const relatedTo = c.req.query('relatedTo');
-  const assignee = c.req.query('assignee');
-  const orgId = c.req.query('orgId');
-  const projectId = c.req.query('projectId');
-  // ?ref=<url|kind:id>[&role=]: tasks carrying that link, any status. `role` matches
-  // DELETE /tasks/:id/refs; `refRole` is kept as an alias
-  const refQuery = c.req.query('ref');
-  const ref = refQuery ? parseOrThrow(refQuery) : undefined;
-  const roleQuery = c.req.query('role') || c.req.query('refRole');
-  const refRole = roleQuery ? normaliseRole(roleQuery) : undefined;
-  if (refRole === null) {
-    return c.json({ error: ROLE_ERROR }, 400);
+  try {
+    const query = parseProjectRequest(c.req.query());
+    const result = await projectService.getProjectTaskListForUser(db, userId, query.filters, {
+      fields: query.fields,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    c.header('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
+    if (result.total !== undefined) {
+      c.header('X-Total-Count', String(result.total));
+    }
+    if (result.nextCursor) {
+      c.header('X-Next-Cursor', result.nextCursor);
+    }
+    return c.json(result.items);
+  } catch (error) {
+    return invalidListRequest(c, error);
   }
-
-  const projects = await projectService.getProjectsForUser(db, userId, {
-    category,
-    epicId,
-    goalId,
-    customer,
-    tag,
-    relatedTo,
-    assignee,
-    orgId,
-    projectId,
-    ref,
-    refRole,
-  });
-  c.header('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
-  return c.json(projects);
 });
+
+// Register counts before /:id so the static path cannot be mistaken for a task id.
+projectsApp.get('/counts', async (c) => {
+  const userId = c.get('userId');
+  const db = c.get('db');
+  try {
+    const query = parseProjectRequest(c.req.query(), true);
+    const counts = await projectService.getProjectTaskCountsForUser(db, userId, query.filters);
+    c.header('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
+    return c.json(counts);
+  } catch (error) {
+    return invalidListRequest(c, error);
+  }
+});
+
 
 // GET a single task (with sharing and attribution context)
 projectsApp.get('/:id', async (c) => {

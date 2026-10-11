@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   closestCorners,
@@ -16,10 +16,8 @@ import {
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { IconSearch, IconUsers } from '@tabler/icons-react';
-import { useQuery } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import {
-  Accordion,
   ActionIcon,
   Alert,
   Button,
@@ -37,7 +35,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { DoneProjectList } from '../../components/DoneProjectList/DoneProjectList';
-import { ProjectCard } from '../../components/ProjectCard/ProjectCard';
+import { ProjectCardPreview } from '../../components/ProjectCard/ProjectCard';
 import { ProjectSection } from '../../components/ProjectSection/ProjectSection';
 import { QuickSearchModal } from '../../components/SearchModal/QuickSearchModal';
 import { canEditItem, joinNames, workspaceLabel } from '../../components/Team';
@@ -46,71 +44,30 @@ import {
   useAssigneeScope,
   type AssigneeScope,
 } from '../hooks/useAssigneeScope';
+import { useBoardCounts, useBoardDoneHistory, useBoardSummaries } from '../hooks/useBoardQueries';
 import { useCurrentUser } from '../hooks/useCurrentUser';
+import { useEpics } from '../hooks/useEpicQueries';
 import { useOrganisations } from '../hooks/useOrganisationQueries';
 import { useBatchUpdateProjects, useUpdateProject } from '../hooks/useProjectMutations';
 import { useWorkspaceLookup, useWorkspaceMembersMap } from '../hooks/useWorkspaces';
-import { apiFetch, readApiError } from '../lib/apiClient';
-import { getWorkerApiBaseUrl } from '../lib/apiConfig';
+import {
+  canDropBoardTask,
+  groupBoardTasks,
+  resolveBoardGrouping,
+  shouldExpandBoardSection,
+  updateBoardSearchParams,
+  type BoardGroupBy,
+  type BoardTaskGroup,
+} from '../lib/boardState';
 import type {
-  Project,
   ProjectSize,
   ProjectStatus,
+  ProjectSummary,
   ProjectUpdateInput,
 } from '../types/project.types';
 
-async function fetchProjects(accessToken: string): Promise<Project[]> {
-  const res = await apiFetch(`${getWorkerApiBaseUrl()}/projects`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
-
-  if (!res.ok) {
-    throw await readApiError(res, 'Failed to fetch projects');
-  }
-  return res.json();
-}
-
-const sizeToNumber = (size: ProjectSize): number => {
-  switch (size) {
-    case '*':
-      return 1;
-    case '**':
-      return 2;
-    case '***':
-      return 3;
-    case '****':
-      return 4;
-    case '*****':
-      return 5;
-    default:
-      return 0;
-  }
-};
-
-function recalculatePriorities(projects: Project[]): Project[] {
-  const count = projects.length;
-  if (count === 0) {
-    return [];
-  }
-  if (count === 1) {
-    return [{ ...projects[0], priority: 10 }];
-  }
-
-  return projects.map((p, index) => ({
-    ...p,
-    priority: Math.round(10 - (index * 9) / (count - 1)),
-  }));
-}
-
-/** Category pills for one workspace on the board. */
-interface CategoryGroup {
-  orgId: string;
-  label: string;
-  isShared: boolean;
-  categories: string[];
-}
+const STATUSES: ProjectStatus[] = ['do', 'delay', 'awaiting', 'delegate', 'done'];
+const INITIAL_WINDOW = 50;
 
 const SCOPE_EMPTY_COPY: Record<AssigneeScope, string> = {
   mine: "Nothing assigned to you yet. Switch to Everyone to see the whole team's work.",
@@ -118,12 +75,40 @@ const SCOPE_EMPTY_COPY: Record<AssigneeScope, string> = {
   everyone: 'No tasks here yet. Press C or use Quick Add to create one.',
 };
 
+function normalizeCategory(category: string | null | undefined): string {
+  return category?.trim().toLowerCase() ?? '';
+}
+
+function isCategorySelected(selectedCategory: string, category: string): boolean {
+  return (
+    selectedCategory !== 'All' &&
+    normalizeCategory(selectedCategory) === normalizeCategory(category)
+  );
+}
+
+type ExpandedSections = Partial<Record<ProjectStatus, boolean>>;
+type MountedIdsByStatus = Record<ProjectStatus, string[]>;
+
+function sizeToNumber(size: ProjectSize): number {
+  return size.length;
+}
+
+function getDoneCutoff(): string {
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - 14);
+  return cutoff.toISOString().slice(0, 10);
+}
+
+function emptyCounts() {
+  return { do: 0, delay: 0, awaiting: 0, delegate: 0, done: 0 };
+}
+
 function BoardSkeleton() {
   return (
     <Stack gap="sm" role="status" aria-label="Loading projects">
       <Skeleton height={36} width={120} radius="sm" />
-      {[0, 1, 2, 3].map((i) => (
-        <Skeleton key={i} height={64} radius="md" />
+      {[0, 1, 2, 3].map((index) => (
+        <Skeleton key={index} height={64} radius="md" />
       ))}
     </Stack>
   );
@@ -133,273 +118,489 @@ function BoardContent() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const accountId = session?.user?.id || session?.user?.email || null;
   const selectedCategory = searchParams.get('category') || 'All';
-
-  const { data: organisations = [] } = useOrganisations();
-  const { userId } = useCurrentUser();
-  const [selectedOrgId, setSelectedOrgId] = useState<string>('all');
-  const [selectedCustomer, setSelectedCustomer] = useState<string>(
-    searchParams.get('customer') || 'all'
-  );
+  const [doneCutoff] = useState(getDoneCutoff);
+  const [selectedOrgId, setSelectedOrgId] = useState('all');
+  const [selectedCustomer, setSelectedCustomer] = useState(searchParams.get('customer') || 'all');
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [assigneeScope, setAssigneeScope] = useAssigneeScope();
-
-  // Customer badges on cards link to /board?customer=..., so follow the URL when it changes
-  const customerParam = searchParams.get('customer');
-  useEffect(() => {
-    if (customerParam) {
-      setSelectedCustomer(customerParam);
-    }
-  }, [customerParam]);
-
-  const [activeProject, setActiveProject] = useState<Project | null>(null);
-  const [delayExpanded, setDelayExpanded] = useState(true);
-  const [awaitingExpanded, setAwaitingExpanded] = useState(false);
-  const [doneExpanded, setDoneExpanded] = useState(true);
+  const [storedGrouping, setStoredGrouping] = useState<string | null>(null);
+  const [historyView, setHistoryView] = useState({
+    filterSignature: '',
+    open: false,
+    revision: 0,
+  });
+  const [sectionWindows, setSectionWindows] = useState<Record<ProjectStatus, number>>({
+    do: INITIAL_WINDOW,
+    delay: INITIAL_WINDOW,
+    awaiting: INITIAL_WINDOW,
+    delegate: INITIAL_WINDOW,
+    done: INITIAL_WINDOW,
+  });
+  const [manualExpandedCards, setManualExpandedCards] = useState<string[] | null>(null);
+  const [mountedIdsByStatus, setMountedIdsByStatus] = useState<MountedIdsByStatus>({
+    do: [],
+    delay: [],
+    awaiting: [],
+    delegate: [],
+    done: [],
+  });
+  const [sectionPreferences, setSectionPreferences] = useState<{
+    accountId: string | null;
+    values: ExpandedSections;
+  }>({ accountId: null, values: {} });
+  const [activeProject, setActiveProject] = useState<ProjectSummary | null>(null);
   const updateProjectMutation = useUpdateProject();
   const batchUpdateMutation = useBatchUpdateProjects();
+  const handleUpdateProject = (projectId: string, data: ProjectUpdateInput) => {
+    updateProjectMutation.mutate({ projectId, data });
+  };
+  const handleStatusChange = (projectId: string, nextStatus: ProjectStatus) => {
+    updateProjectMutation.mutate({ projectId, data: { status: nextStatus } });
+  };
 
-  const handleCategorySelect = (category: string) => {
-    if (category === 'All') {
-      router.push('/board');
-    } else {
-      router.push(`/board?category=${encodeURIComponent(category)}`);
+  const customerParam = searchParams.get('customer');
+  useEffect(() => {
+    setSelectedCustomer(customerParam || 'all');
+  }, [customerParam]);
+
+  const groupingStorageKey = `timdo:board:group:${accountId || 'anonymous'}`;
+  useEffect(() => {
+    try {
+      setStoredGrouping(window.localStorage.getItem(groupingStorageKey));
+    } catch {
+      setStoredGrouping(null);
     }
-  };
+  }, [groupingStorageKey]);
+  const urlGrouping = searchParams.get('group');
+  const groupBy = resolveBoardGrouping(urlGrouping, storedGrouping);
 
-  const sensors = useSensors(
-    useSensor(MouseSensor, {
-      // Require the mouse to move by 10 pixels before activating
-      activationConstraint: {
-        distance: 10,
-      },
-    }),
-    useSensor(TouchSensor, {
-      // Press delay of 250ms, with tolerance of 5px of movement
-      // This matches the @dnd-kit docs example for better mobile experience
-      activationConstraint: {
-        delay: 250,
-        tolerance: 5,
-      },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
-
-  const {
-    data: projects,
-    isLoading,
-    isError,
-    error,
-  } = useQuery<Project[], Error>({
-    queryKey: ['projects'],
-    queryFn: () => {
-      if (!session?.accessToken) {
-        throw new Error('No access token available');
+  const sectionStorageKey = `timdo:board:sections:${accountId || 'anonymous'}`;
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(sectionStorageKey);
+      const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      const values: ExpandedSections = {};
+      STATUSES.forEach((section) => {
+        if (typeof parsed[section] === 'boolean') {
+          values[section] = parsed[section] as boolean;
+        }
+      });
+      setSectionPreferences({ accountId, values });
+    } catch {
+      setSectionPreferences({ accountId, values: {} });
+    }
+  }, [accountId, sectionStorageKey]);
+  useEffect(() => {
+    if (accountId && sectionPreferences.accountId === accountId) {
+      try {
+        window.localStorage.setItem(sectionStorageKey, JSON.stringify(sectionPreferences.values));
+      } catch {
+        // A private window or disabled storage should not block the board.
       }
-      return fetchProjects(session.accessToken);
-    },
-    enabled: status === 'authenticated' && !!session?.accessToken,
-  });
+    }
+  }, [accountId, sectionPreferences, sectionStorageKey]);
 
-  const handleUpdateProject = (projectId: string, updates: ProjectUpdateInput) => {
-    updateProjectMutation.mutate({
-      projectId,
-      data: updates,
-    });
-  };
-
-  const handleStatusChange = (projectId: string, newStatus: ProjectStatus) => {
-    updateProjectMutation.mutate({ projectId, data: { status: newStatus } });
-  };
-
-  // Anything shared? If not, the board stays exactly as it was for a solo user.
-  const hasSharedTasks = useMemo(() => (projects || []).some((p) => p.isShared), [projects]);
-  // "Unassigned" only means something in shared workspaces
+  const commonFilters = useMemo(
+    () => ({
+      ...(selectedOrgId !== 'all' ? { orgId: selectedOrgId } : {}),
+      ...(selectedCustomer !== 'all' ? { customer: selectedCustomer } : {}),
+    }),
+    [selectedOrgId, selectedCustomer]
+  );
+  const summaryQuery = useBoardSummaries(commonFilters, doneCutoff, status === 'authenticated');
+  const summaries = summaryQuery.data || [];
+  const hasSharedTasks = useMemo(() => summaries.some((project) => project.isShared), [summaries]);
   const scope: AssigneeScope =
     assigneeScope === 'unassigned' && !hasSharedTasks ? 'everyone' : assigneeScope;
-
-  const sharedOrgIds = useMemo(
-    () =>
-      Array.from(
-        new Set((projects || []).filter((p) => p.isShared && p.orgId).map((p) => p.orgId!))
-      ),
-    [projects]
+  const assigneeFilter =
+    scope === 'mine' ? 'me' : scope === 'unassigned' ? 'unassigned' : undefined;
+  const membershipFilters = useMemo(
+    () => ({
+      ...commonFilters,
+      ...(selectedCategory !== 'All' ? { category: selectedCategory } : {}),
+      ...(assigneeFilter ? { assignee: assigneeFilter } : {}),
+    }),
+    [commonFilters, selectedCategory, assigneeFilter]
   );
-  const membersByOrg = useWorkspaceMembersMap(sharedOrgIds);
-  const lookupWorkspace = useWorkspaceLookup();
-  const sharedWithLabel = (orgId: string) =>
-    joinNames(
-      (membersByOrg[orgId] || [])
-        .filter((m) => m.userId !== userId)
-        .map((m) => m.userName || m.userEmail)
+  const filterSignature = JSON.stringify([
+    accountId,
+    selectedOrgId,
+    selectedCategory,
+    selectedCustomer,
+    scope,
+    groupBy,
+  ]);
+  const historyOpen = historyView.filterSignature === filterSignature && historyView.open;
+  const historyRevision = historyView.revision;
+  const countsQuery = useBoardCounts(membershipFilters, status === 'authenticated');
+  const historyQuery = useBoardDoneHistory(
+    membershipFilters,
+    doneCutoff,
+    historyOpen,
+    historyRevision
+  );
+  const { userId } = useCurrentUser();
+  const { data: epics = [] } = useEpics();
+
+  const setGroupBy = (value: string | null) => {
+    const next = (value || 'none') as BoardGroupBy;
+    try {
+      window.localStorage.setItem(groupingStorageKey, next);
+    } catch {
+      // Grouping still works for this view if storage is unavailable.
+    }
+    setStoredGrouping(next);
+    const search = updateBoardSearchParams(searchParams.toString(), 'group', next);
+    router.push(`/board${search}`);
+  };
+
+  const handleCategorySelect = (category: string) => {
+    const search = updateBoardSearchParams(
+      searchParams.toString(),
+      'category',
+      category === 'All' ? null : category
     );
+    router.push(`/board${search}`);
+  };
 
+  useEffect(() => {
+    setSectionWindows({
+      do: INITIAL_WINDOW,
+      delay: INITIAL_WINDOW,
+      awaiting: INITIAL_WINDOW,
+      delegate: INITIAL_WINDOW,
+      done: INITIAL_WINDOW,
+    });
+    setManualExpandedCards(null);
+    setHistoryView((current) =>
+      current.filterSignature === filterSignature
+        ? current
+        : {
+            filterSignature,
+            open: false,
+            revision: current.revision + 1,
+          }
+    );
+  }, [filterSignature]);
+  const showDoneHistory = () =>
+    setHistoryView((current) => ({
+      filterSignature,
+      open: true,
+      revision:
+        current.filterSignature === filterSignature ? current.revision : current.revision + 1,
+    }));
+
+  const epicTitles = useMemo(
+    () => Object.fromEntries(epics.map((epic) => [epic.id, epic.title])),
+    [epics]
+  );
   const filteredProjects = useMemo(() => {
-    if (!projects) {
-      return [];
-    }
-    let result = projects;
-
-    // Filter by workspace if a specific one is chosen
+    let result = summaries;
     if (selectedOrgId !== 'all') {
-      result = result.filter((p) => p.orgId === selectedOrgId);
+      result = result.filter((project) => project.orgId === selectedOrgId);
     }
-
-    // Mine / Everyone / Unassigned
     result = filterByAssigneeScope(result, scope);
-
-    // Filter by dynamic project category pill
     if (selectedCategory !== 'All') {
-      result = result.filter((p) => p.category === selectedCategory);
-    }
-
-    // Filter by Customer
-    if (selectedCustomer !== 'all') {
+      const normalizedCategory = normalizeCategory(selectedCategory);
       result = result.filter(
-        (p) => p.customer && p.customer.toLowerCase() === selectedCustomer.toLowerCase()
+        (project) => normalizeCategory(project.category) === normalizedCategory
       );
     }
-
-    return result;
-  }, [projects, selectedOrgId, selectedCategory, selectedCustomer, scope]);
-
-  // Compute customers dynamically from projects
-  const customerOptions = useMemo(() => {
-    if (!projects) {
-      return [{ value: 'all', label: 'All Customers' }];
+    if (selectedCustomer !== 'all') {
+      result = result.filter(
+        (project) => project.customer?.toLowerCase() === selectedCustomer.toLowerCase()
+      );
     }
-    const set = new Set<string>();
-    projects.forEach((p) => {
-      if (p.customer) {
-        set.add(p.customer.trim());
+    return result;
+  }, [summaries, selectedOrgId, selectedCategory, selectedCustomer, scope]);
+
+  const customerOptions = useMemo(() => {
+    const customers = new Set<string>();
+    summaries.forEach((project) => {
+      if (project.customer) {
+        customers.add(project.customer.trim());
       }
     });
     return [
       { value: 'all', label: 'All Customers' },
-      ...Array.from(set).map((c) => ({ value: c, label: c })),
+      ...Array.from(customers)
+        .sort((a, b) => a.localeCompare(b))
+        .map((customer) => ({
+          value: customer,
+          label: customer,
+        })),
     ];
-  }, [projects]);
+  }, [summaries]);
 
-  // Category (project) pills, grouped by workspace: personal first, then shared ones
-  const categoryGroups = useMemo<CategoryGroup[]>(() => {
+  const { data: organisationsData = [] } = useOrganisations();
+  const orgList = (Array.isArray(organisationsData) ? organisationsData : []).filter(
+    (org) => org && org.id && org.name
+  );
+  const orgOptions = [
+    { value: 'all', label: 'All workspaces' },
+    ...orgList
+      .slice()
+      .sort((a, b) => Number(!a.isPersonal) - Number(!b.isPersonal))
+      .map((org) => ({ value: String(org.id), label: workspaceLabel(org) })),
+  ];
+
+  const lookupWorkspace = useWorkspaceLookup();
+  const sharedOrgIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          summaries
+            .filter((project) => project.isShared && project.orgId)
+            .map((project) => project.orgId!)
+        )
+      ),
+    [summaries]
+  );
+  const membersByOrg = useWorkspaceMembersMap(sharedOrgIds);
+  const sharedWithLabel = (orgId: string) =>
+    joinNames(
+      (membersByOrg[orgId] || [])
+        .filter((member) => member.userId !== userId)
+        .map((member) => member.userName || member.userEmail)
+    );
+
+  const categoryGroups = useMemo(() => {
     const pool =
       selectedOrgId === 'all'
-        ? projects || []
-        : (projects || []).filter((p) => p.orgId === selectedOrgId);
-    const groups = new Map<string, CategoryGroup>();
-    pool.forEach((p) => {
-      if (!p.category) {
+        ? summaries
+        : summaries.filter((project) => project.orgId === selectedOrgId);
+    const groups = new Map<
+      string,
+      { orgId: string; label: string; isShared: boolean; categories: string[] }
+    >();
+    pool.forEach((project) => {
+      if (!project.category) {
         return;
       }
-      const key = p.orgId || 'personal';
+      const key = project.orgId || 'personal';
       const group = groups.get(key) || {
         orgId: key,
-        label: lookupWorkspace(p.orgId, p).label,
-        isShared: !!p.isShared,
+        label: lookupWorkspace(project.orgId, project).label,
+        isShared: !!project.isShared,
         categories: [],
       };
-      if (!group.categories.includes(p.category)) {
-        group.categories.push(p.category);
+      if (!group.categories.includes(project.category)) {
+        group.categories.push(project.category);
       }
       groups.set(key, group);
     });
     return Array.from(groups.values())
-      .map((g) => ({ ...g, categories: g.categories.sort((a, b) => a.localeCompare(b)) }))
+      .map((group) => ({
+        ...group,
+        categories: group.categories.sort((a, b) => a.localeCompare(b)),
+      }))
       .sort((a, b) => Number(a.isShared) - Number(b.isShared) || a.label.localeCompare(b.label));
-  }, [projects, selectedOrgId, lookupWorkspace]);
+  }, [summaries, selectedOrgId, lookupWorkspace]);
 
-  const projectsByStatus = useMemo(() => {
-    const data: Record<ProjectStatus, Project[]> = {
+  const projectsByStatus = useMemo<Record<ProjectStatus, ProjectSummary[]>>(() => {
+    const data: Record<ProjectStatus, ProjectSummary[]> = {
       do: [],
       delay: [],
-      done: [],
-      delegate: [],
       awaiting: [],
+      delegate: [],
+      done: [],
     };
-    filteredProjects.forEach((p) => {
-      if (p.status in data) {
-        data[p.status as ProjectStatus].push(p);
-      }
-    });
+    filteredProjects.forEach((project) => data[project.status].push(project));
     data.do.sort((a, b) => b.priority - a.priority || sizeToNumber(a.size) - sizeToNumber(b.size));
     data.delay.sort(
+      (a, b) => b.priority - a.priority || sizeToNumber(a.size) - sizeToNumber(b.size)
+    );
+    data.delegate.sort(
       (a, b) => b.priority - a.priority || sizeToNumber(a.size) - sizeToNumber(b.size)
     );
     data.awaiting.sort((a, b) => {
       const aDate = a.awaitUntil ? new Date(a.awaitUntil).getTime() : Infinity;
       const bDate = b.awaitUntil ? new Date(b.awaitUntil).getTime() : Infinity;
-      if (aDate !== bDate) {
-        return aDate - bDate;
-      }
-      return b.priority - a.priority;
+      return aDate - bDate || b.priority - a.priority;
     });
     data.done.sort((a, b) => {
       const aDate = a.statusLastChangedOn ? new Date(a.statusLastChangedOn).getTime() : 0;
       const bDate = b.statusLastChangedOn ? new Date(b.statusLastChangedOn).getTime() : 0;
-      if (bDate !== aDate) {
-        return bDate - aDate;
-      }
-      return b.priority - a.priority;
+      return bDate - aDate || b.priority - a.priority;
     });
     return data;
   }, [filteredProjects]);
 
+  const fallbackStatusCounts = useMemo(() => {
+    const fallback = emptyCounts();
+    filteredProjects.forEach((project) => {
+      fallback[project.status] += 1;
+    });
+    return fallback;
+  }, [filteredProjects]);
+  const statusCounts = countsQuery.data?.byStatus || fallbackStatusCounts;
+  const visibleCount = countsQuery.data?.total ?? filteredProjects.length;
+  const hasSharedProjects = summaries.some((project) => project.isShared);
+  const scopeOptions = [
+    { label: 'Everyone', value: 'everyone' },
+    { label: 'Mine', value: 'mine' },
+    ...(hasSharedProjects ? [{ label: 'Unassigned', value: 'unassigned' }] : []),
+  ];
+
+  const sectionCount = (section: ProjectStatus) => statusCounts[section];
+  const isSectionExpanded = (section: ProjectStatus) => {
+    const overrides = sectionPreferences.accountId === accountId ? sectionPreferences.values : {};
+    return overrides[section] ?? shouldExpandBoardSection(sectionCount(section));
+  };
+  const toggleSection = (section: ProjectStatus) => {
+    const nextValue = !isSectionExpanded(section);
+    setSectionPreferences((current) => ({
+      accountId,
+      values: {
+        ...(current.accountId === accountId ? current.values : {}),
+        [section]: nextValue,
+      },
+    }));
+  };
+
+  const defaultExpandedCards = useMemo(
+    () =>
+      STATUSES.filter(
+        (section) => section !== 'done' && sectionCountsValue(statusCounts[section]) <= 15
+      ).flatMap((section) => projectsByStatus[section].map((project) => project.id)),
+    [projectsByStatus, statusCounts]
+  );
+  const expandedCardIds = manualExpandedCards ?? defaultExpandedCards;
+  const setExpandedCardIds = (ids: string[]) => setManualExpandedCards(ids);
+
+  const onShowMore = (section: ProjectStatus) =>
+    setSectionWindows((current) => ({ ...current, [section]: current[section] + 50 }));
+  const reportMountedIds = useCallback((section: ProjectStatus, ids: string[]) => {
+    setMountedIdsByStatus((current) => {
+      const previous = current[section];
+      if (previous.length === ids.length && previous.every((id, index) => id === ids[index])) {
+        return current;
+      }
+      return { ...current, [section]: ids };
+    });
+  }, []);
+  const mountedCallbacks = useMemo(
+    () =>
+      Object.fromEntries(
+        STATUSES.map((section) => [section, (ids: string[]) => reportMountedIds(section, ids)])
+      ) as Record<ProjectStatus, (ids: string[]) => void>,
+    [reportMountedIds]
+  );
+  const mountedIds = useMemo(
+    () => new Set(STATUSES.flatMap((section) => mountedIdsByStatus[section])),
+    [mountedIdsByStatus]
+  );
+  const groupsByStatus = useMemo<
+    Record<ProjectStatus, Array<BoardTaskGroup<ProjectSummary>>>
+  >(() => {
+    const groups: Partial<Record<ProjectStatus, Array<BoardTaskGroup<ProjectSummary>>>> = {};
+    STATUSES.forEach((section) => {
+      groups[section] = groupBoardTasks(projectsByStatus[section], groupBy, epicTitles);
+    });
+    return groups as Record<ProjectStatus, Array<BoardTaskGroup<ProjectSummary>>>;
+  }, [projectsByStatus, groupBy, epicTitles]);
+  const groupIdByTaskId = useMemo(() => {
+    const map = new Map<string, string>();
+    STATUSES.forEach((section) =>
+      groupsByStatus[section].forEach((group) =>
+        group.items.forEach((project) => map.set(project.id, group.id))
+      )
+    );
+    return map;
+  }, [groupsByStatus]);
+
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 10 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
   const handleDragStart = (event: DragStartEvent) => {
-    if (projects) {
-      setActiveProject(projects.find((p) => p.id === event.active.id) || null);
+    if (!mountedIds.has(String(event.active.id))) {
+      return;
     }
+    setActiveProject(summaries.find((project) => project.id === event.active.id) || null);
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveProject(null);
     const { active, over } = event;
-
-    if (!over || !projects || active.id === over.id) {
+    const activeId = String(active.id);
+    if (!over || !mountedIds.has(activeId) || active.id === over.id) {
       return;
     }
 
-    const activeContainer = active.data.current?.sortable.containerId as ProjectStatus;
-    const overContainer = (over.data.current?.sortable.containerId || over.id) as ProjectStatus;
-    const activeId = active.id as string;
-
-    // Block non-awaiting items from being dropped into Awaiting (they have no return date)
-    if (overContainer === 'awaiting' && activeContainer !== 'awaiting') {
+    const activeData = active.data.current as
+      | { sortable?: { containerId?: string }; groupId?: string }
+      | undefined;
+    const overData = over.data.current as
+      | { sortable?: { containerId?: string }; status?: string; groupId?: string }
+      | undefined;
+    const movedProject = summaries.find((project) => project.id === activeId);
+    if (!movedProject) {
       return;
     }
 
-    const movedProject = projects.find((p) => p.id === activeId);
-    if (!movedProject || !canEditItem(movedProject)) {
+    const activeContainer = (activeData?.sortable?.containerId ||
+      movedProject.status) as ProjectStatus;
+    const overContainerValue =
+      overData?.status || overData?.sortable?.containerId || String(over.id);
+    if (!STATUSES.includes(overContainerValue as ProjectStatus)) {
+      return;
+    }
+    const overContainer = overContainerValue as ProjectStatus;
+    const activeGroup = groupIdByTaskId.get(activeId) || activeData?.groupId;
+    const overId = String(over.id);
+    const overGroup = groupIdByTaskId.get(overId) || overData?.groupId;
+    const targetProject =
+      overId === overContainer ? null : summaries.find((project) => project.id === overId) || null;
+    if (
+      !canDropBoardTask({
+        project: movedProject,
+        targetStatus: overContainer,
+        targetProject,
+        sourceGroupId: activeGroup,
+        targetGroupId: overGroup,
+      })
+    ) {
       return;
     }
 
-    // Renumber only what you can see, and only tasks in the dragged task's own workspace, so
-    // reordering your column never rewrites a collaborator's priorities (or theirs, yours).
-    const sameWorkspace = (p: Project) =>
-      p.id !== activeId && p.orgId === movedProject.orgId && canEditItem(p);
+    const isVisibleInSameGroup = (project: ProjectSummary) =>
+      mountedIds.has(project.id) &&
+      (!activeGroup || groupIdByTaskId.get(project.id) === activeGroup);
+    const sameWorkspace = (project: ProjectSummary) =>
+      project.id !== activeId &&
+      project.orgId === movedProject.orgId &&
+      canEditItem(project) &&
+      isVisibleInSameGroup(project);
     const newColumn = projectsByStatus[overContainer].filter(sameWorkspace);
-    const overIndex = newColumn.findIndex((p) => p.id === over.id);
+    const overIndex = newColumn.findIndex((project) => project.id === overId);
     newColumn.splice(overIndex === -1 ? newColumn.length : overIndex, 0, movedProject);
 
-    const changed = (p: Project, priority: number, status: ProjectStatus) =>
-      p.priority !== priority || p.status !== status;
-
+    const changed = (project: ProjectSummary, priority: number, nextStatus: ProjectStatus) =>
+      project.priority !== priority || project.status !== nextStatus;
     const updates = recalculatePriorities(newColumn)
-      .map((p) => ({ id: p.id, priority: p.priority, status: overContainer }))
-      .filter((u) => {
-        const original = projects.find((p) => p.id === u.id);
-        return !original || changed(original, u.priority, u.status);
+      .map((project) => ({ id: project.id, priority: project.priority, status: overContainer }))
+      .filter((update) => {
+        const original = summaries.find((project) => project.id === update.id);
+        return !original || changed(original, update.priority, update.status);
       });
 
     if (activeContainer !== overContainer) {
       const oldColumn = projectsByStatus[activeContainer].filter(sameWorkspace);
       updates.push(
         ...recalculatePriorities(oldColumn)
-          .map((p) => ({ id: p.id, priority: p.priority, status: activeContainer }))
-          .filter((u) => {
-            const original = projects.find((p) => p.id === u.id);
-            return !original || changed(original, u.priority, u.status);
+          .map((project) => ({
+            id: project.id,
+            priority: project.priority,
+            status: activeContainer,
+          }))
+          .filter((update) => {
+            const original = summaries.find((project) => project.id === update.id);
+            return !original || changed(original, update.priority, update.status);
           })
       );
     }
@@ -408,13 +609,8 @@ function BoardContent() {
       return;
     }
     batchUpdateMutation.mutate(updates);
-
-    // When dragging from awaiting to a non-awaiting container, clear the return date
     if (activeContainer === 'awaiting' && overContainer !== 'awaiting') {
-      updateProjectMutation.mutate({
-        projectId: activeId,
-        data: { awaitUntil: null },
-      });
+      updateProjectMutation.mutate({ projectId: activeId, data: { awaitUntil: null } });
     }
   };
 
@@ -422,28 +618,19 @@ function BoardContent() {
     return <Loader role="status" aria-label="Loading session" />;
   }
 
-  const orgList = (Array.isArray(organisations) ? organisations : []).filter(
-    (org) => org && org.id && org.name
+  const isLoading = summaryQuery.isLoading || countsQuery.isLoading;
+  const isError = summaryQuery.isError || countsQuery.isError;
+  const error = summaryQuery.error || countsQuery.error;
+  const showGroupLabels =
+    categoryGroups.length > 1 || categoryGroups.some((group) => group.isShared);
+  const historyItems = Array.from(
+    new Map(
+      (historyQuery.data?.pages.flatMap((page) => page.items) || []).map((project) => [
+        project.id,
+        project,
+      ])
+    ).values()
   );
-  const orgOptions = [
-    { value: 'all', label: 'All workspaces' },
-    ...orgList
-      .slice()
-      .sort((a, b) => Number(!a.isPersonal) - Number(!b.isPersonal))
-      .map((org) => ({
-        value: String(org.id),
-        label: workspaceLabel(org),
-      })),
-  ];
-
-  const scopeOptions = [
-    { label: 'Everyone', value: 'everyone' },
-    { label: 'Mine', value: 'mine' },
-    ...(hasSharedTasks ? [{ label: 'Unassigned', value: 'unassigned' }] : []),
-  ];
-
-  const visibleCount = filteredProjects.length;
-  const showGroupLabels = categoryGroups.length > 1 || categoryGroups.some((g) => g.isShared);
 
   return (
     <Container>
@@ -452,11 +639,11 @@ function BoardContent() {
           <Title order={1}>Your Board</Title>
           {hasSharedTasks && (
             <Text size="sm" c="dimmed">
-              Your tasks and your team&apos;s, across all your workspaces.
+              Your tasks and your team&apos;s tasks, across all your workspaces.
             </Text>
           )}
         </div>
-        <Tooltip label="Search tasks & notes (/)">
+        <Tooltip label="Search tasks & notes (/)" withArrow>
           <ActionIcon
             variant="default"
             size="lg"
@@ -469,7 +656,6 @@ function BoardContent() {
         </Tooltip>
       </Group>
 
-      {/* Collaboration controls: workspace, customer and Mine / Everyone */}
       <Group justify="space-between" align="flex-end" mb="md" wrap="wrap" gap="sm">
         <Group gap="sm" wrap="wrap">
           {orgList.length > 1 && (
@@ -477,7 +663,7 @@ function BoardContent() {
               label="Workspace"
               data={orgOptions}
               value={selectedOrgId}
-              onChange={(val) => setSelectedOrgId(val || 'all')}
+              onChange={(value) => setSelectedOrgId(value || 'all')}
               allowDeselect={false}
               size="sm"
               style={{ width: 200 }}
@@ -487,10 +673,25 @@ function BoardContent() {
             label="Customer"
             data={customerOptions}
             value={selectedCustomer}
-            onChange={(val) => setSelectedCustomer(val || 'all')}
+            onChange={(value) => setSelectedCustomer(value || 'all')}
             allowDeselect={false}
             size="sm"
             style={{ width: 180 }}
+          />
+          <Select
+            label="Group by"
+            data={[
+              { value: 'none', label: 'None' },
+              { value: 'project', label: 'Project' },
+              { value: 'epic', label: 'Epic' },
+              { value: 'assignee', label: 'Assignee' },
+            ]}
+            value={groupBy}
+            onChange={setGroupBy}
+            allowDeselect={false}
+            size="sm"
+            style={{ width: 160 }}
+            aria-label="Group by"
           />
         </Group>
         <Tooltip
@@ -501,13 +702,12 @@ function BoardContent() {
           <SegmentedControl
             aria-label="Whose tasks to show"
             value={scope}
-            onChange={(val) => setAssigneeScope(val as AssigneeScope)}
+            onChange={(value) => setAssigneeScope(value as AssigneeScope)}
             data={scopeOptions}
           />
         </Tooltip>
       </Group>
 
-      {/* Category (project) filter pills, grouped by workspace */}
       <Group gap="xs" mb="lg" align="center">
         <CategoryPill
           label="All"
@@ -535,27 +735,32 @@ function BoardContent() {
                 </Group>
               </Tooltip>
             )}
-            {group.categories.map((cat) => (
+            {group.categories.map((category) => (
               <CategoryPill
-                key={`${group.orgId}-${cat}`}
-                label={cat}
-                active={selectedCategory === cat}
+                key={`${group.orgId}-${category}`}
+                label={category}
+                active={isCategorySelected(selectedCategory, category)}
                 shared={group.isShared}
-                onClick={() => handleCategorySelect(cat)}
+                onClick={() => handleCategorySelect(category)}
               />
             ))}
           </Group>
         ))}
       </Group>
 
-      {isLoading && <BoardSkeleton />}
+      {isLoading && !summaryQuery.data && <BoardSkeleton />}
       {isError && (
-        <Alert title="Error" color="red">
-          There was a problem fetching your projects: {error.message}
+        <Alert title="Error" color="red" mb="md">
+          There was a problem fetching your projects: {error?.message}
+        </Alert>
+      )}
+      {summaryQuery.data && countsQuery.isError && (
+        <Alert title="Counts unavailable" color="yellow" mb="md">
+          Board counts could not be refreshed: {countsQuery.error?.message}
         </Alert>
       )}
 
-      {projects && visibleCount === 0 && (
+      {summaryQuery.data && visibleCount === 0 && (
         <Paper withBorder radius="md" p="xl" mb="lg" data-testid="board-empty">
           <Stack align="center" gap="sm">
             <Text c="dimmed" ta="center">
@@ -572,7 +777,7 @@ function BoardContent() {
         </Paper>
       )}
 
-      {projects && (
+      {summaryQuery.data && (
         <DndContext
           sensors={sensors}
           collisionDetection={closestCorners}
@@ -580,109 +785,60 @@ function BoardContent() {
           onDragEnd={handleDragEnd}
         >
           <Stack>
-            {/* biome-ignore lint/nursery/useUniqueElementIds: ID is static for dnd-kit context */}
-            <ProjectSection
-              id="do"
-              title="Do"
-              projects={projectsByStatus.do}
-              alwaysExpanded
-              onUpdateProject={handleUpdateProject}
-              onStatusChange={handleStatusChange}
+            {STATUSES.filter((section) => section !== 'done').map((section) => (
+              <ProjectSection
+                key={`${accountId || 'anonymous'}:${section}`}
+                id={section}
+                title={
+                  section === 'do'
+                    ? 'Do'
+                    : section === 'delay'
+                      ? 'Delay'
+                      : section === 'awaiting'
+                        ? 'Awaiting'
+                        : 'Delegate'
+                }
+                projects={projectsByStatus[section]}
+                taskCount={sectionCountsValue(statusCounts[section])}
+                sectionExpanded={isSectionExpanded(section)}
+                onToggleSection={() => toggleSection(section)}
+                groupBy={groupBy}
+                groups={groupsByStatus[section]}
+                visibleLimit={sectionWindows[section]}
+                onShowMore={() => onShowMore(section)}
+                expandedTaskIds={expandedCardIds}
+                onExpandedTaskIdsChange={setExpandedCardIds}
+                onMountedIdsChange={mountedCallbacks[section]}
+                onUpdateProject={handleUpdateProject}
+                onStatusChange={handleStatusChange}
+              />
+            ))}
+            <DoneProjectList
+              key={`${accountId || 'anonymous'}:done`}
+              title="Done"
+              projects={projectsByStatus.done}
+              totalCount={statusCounts.done}
+              expanded={isSectionExpanded('done')}
+              onToggle={() => toggleSection('done')}
+              groupBy={groupBy}
+              epicTitles={epicTitles}
+              visibleLimit={sectionWindows.done}
+              onShowMore={() => onShowMore('done')}
+              historyOpen={historyOpen}
+              historyItems={historyItems}
+              historyLoading={
+                historyQuery.isLoading || (historyQuery.isFetching && historyItems.length === 0)
+              }
+              historyLoadingMore={historyQuery.isFetchingNextPage}
+              historyError={historyQuery.isError ? historyQuery.error : null}
+              historyHasNext={!!historyQuery.hasNextPage}
+              onShowOlder={showDoneHistory}
+              onLoadMoreOlder={() => void historyQuery.fetchNextPage()}
+              onRetryOlder={() => void historyQuery.refetch()}
             />
-            {/* biome-ignore lint/nursery/useUniqueElementIds: ID is static for dnd-kit context */}
-            {projectsByStatus.delay.length > 0 && (
-              <Stack component="section" mb="xl" data-testid="section-delay">
-                <Title
-                  order={2}
-                  fz="h1"
-                  c="blue"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setDelayExpanded(!delayExpanded)}
-                >
-                  {delayExpanded ? '▼' : '▶'} Delay ({projectsByStatus.delay.length})
-                </Title>
-                {delayExpanded && (
-                  <ProjectSection
-                    id="delay"
-                    title=""
-                    projects={projectsByStatus.delay}
-                    alwaysExpanded
-                    onUpdateProject={handleUpdateProject}
-                    onStatusChange={handleStatusChange}
-                  />
-                )}
-              </Stack>
-            )}
-            {projectsByStatus.delay.length === 0 && (
-              <ProjectSection
-                id="delay"
-                title="Delay"
-                projects={projectsByStatus.delay}
-                onUpdateProject={handleUpdateProject}
-                onStatusChange={handleStatusChange}
-              />
-            )}
-            {projectsByStatus.awaiting.length > 0 && (
-              <Stack component="section" mb="xl" data-testid="section-awaiting">
-                <Title
-                  order={2}
-                  fz="h1"
-                  c="blue"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setAwaitingExpanded(!awaitingExpanded)}
-                >
-                  {awaitingExpanded ? '▼' : '▶'} ⏳ Awaiting ({projectsByStatus.awaiting.length})
-                </Title>
-                {awaitingExpanded && (
-                  <ProjectSection
-                    id="awaiting"
-                    title=""
-                    projects={projectsByStatus.awaiting}
-                    alwaysExpanded
-                    onUpdateProject={handleUpdateProject}
-                    onStatusChange={handleStatusChange}
-                  />
-                )}
-              </Stack>
-            )}
-            {projectsByStatus.awaiting.length === 0 && (
-              <ProjectSection
-                id="awaiting"
-                title="⏳ Awaiting (0)"
-                projects={projectsByStatus.awaiting}
-                defaultOpen={false}
-                onUpdateProject={handleUpdateProject}
-                onStatusChange={handleStatusChange}
-              />
-            )}
-            {projectsByStatus.done.length > 0 && (
-              <Stack component="section" mb="xl" data-testid="section-done">
-                <Title
-                  order={2}
-                  fz="h1"
-                  c="blue"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setDoneExpanded(!doneExpanded)}
-                >
-                  {doneExpanded ? '▼' : '▶'} Done ({projectsByStatus.done.length})
-                </Title>
-                {doneExpanded && <DoneProjectList title="" projects={projectsByStatus.done} />}
-              </Stack>
-            )}
-            {projectsByStatus.done.length === 0 && (
-              <DoneProjectList title="Done" projects={projectsByStatus.done} />
-            )}
           </Stack>
           <DragOverlay>
-            {activeProject ? (
-              <Accordion variant="separated" defaultValue={activeProject.id}>
-                <ProjectCard
-                  project={activeProject}
-                  onUpdate={() => {}}
-                  onStatusChange={() => {}}
-                />
-              </Accordion>
-            ) : null}
+            {activeProject ? <ProjectCardPreview project={activeProject} /> : null}
           </DragOverlay>
         </DndContext>
       )}
@@ -690,6 +846,23 @@ function BoardContent() {
       <QuickSearchModal opened={searchModalOpen} onClose={() => setSearchModalOpen(false)} />
     </Container>
   );
+}
+
+function sectionCountsValue(count: number): number {
+  return Number.isFinite(count) ? count : 0;
+}
+
+function recalculatePriorities(projects: ProjectSummary[]): ProjectSummary[] {
+  if (projects.length === 0) {
+    return [];
+  }
+  if (projects.length === 1) {
+    return [{ ...projects[0], priority: 10 }];
+  }
+  return projects.map((project, index) => ({
+    ...project,
+    priority: Math.round(10 - (index * 9) / (projects.length - 1)),
+  }));
 }
 
 function CategoryPill({
@@ -719,9 +892,9 @@ function CategoryPill({
         border: '1px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4))',
       }}
       onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
           onClick();
         }
       }}

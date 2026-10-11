@@ -1,12 +1,14 @@
 import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
 import type { Env } from '../index';
+import { normaliseRole, ROLE_ERROR } from '../lib/refs';
 import { AccessError } from '../services/accessService';
 import * as refService from '../services/refService';
 import * as searchService from '../services/searchService';
 import { findSimilarTasks, MAX_LIMIT, MAX_TITLE_LENGTH } from '../services/similarService';
 import * as taskRelationService from '../services/taskRelationService';
 import * as taskService from '../services/taskService';
+import { TaskListQueryError, type TaskListFilters } from '../services/taskListService';
 import { refInputSchema, sentenceOnError } from '../validators/refValidators';
 import {
   taskAssignSchema,
@@ -19,35 +21,68 @@ import {
 
 const tasksApp = new Hono<{ Bindings: Env }>();
 
-// GET /api/v2/tasks - list tasks with filters
+function parseBooleanFilter(value: string | undefined, name: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  throw new TaskListQueryError(`${name} must be true or false`);
+}
+
+// GET /api/v2/tasks - raw, unlimited Tasks rows with SQL-scoped membership filters
 tasksApp.get('/', async (c) => {
   const userId = c.get('userId');
   const db = c.get('db');
-
-  const orgId = c.req.query('orgId');
-  const projectId = c.req.query('projectId');
-  const assigneeId = c.req.query('assigneeId');
-  const status = c.req.query('status');
-  const customer = c.req.query('customer');
-  const tag = c.req.query('tag');
-  const relatedTo = c.req.query('relatedTo');
-  const mineOnly = c.req.query('mine') === 'true';
-  const unassignedOnly = c.req.query('unassigned') === 'true';
-
-  const tasks = await taskService.getTasksForUser(db, userId, {
-    orgId,
-    projectId,
-    assigneeId,
-    status,
-    customer,
-    tag,
-    relatedTo,
-    mineOnly,
-    unassignedOnly,
-  });
-
-  c.header('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
-  return c.json(tasks);
+  const query = c.req.query();
+  try {
+    const unlinked = query.unlinked;
+    if (unlinked !== undefined && !['any', 'epic', 'goal', 'category'].includes(unlinked)) {
+      throw new TaskListQueryError('unlinked must be any, epic, goal or category');
+    }
+    const refQuery = query.ref;
+    const ref = refQuery ? refService.parseOrThrow(refQuery) : undefined;
+    const roleQuery = query.role || query.refRole;
+    const refRole = roleQuery ? normaliseRole(roleQuery) : undefined;
+    if (refRole === null) {
+      return c.json({ error: ROLE_ERROR }, 400);
+    }
+    const tasks = await taskService.getTasksForUser(db, userId, {
+      orgId: query.orgId,
+      projectId: query.projectId,
+      category: query.category,
+      assignee: query.assignee || undefined,
+      assigneeId: query.assigneeId,
+      status: query.status,
+      epicId: query.epicId,
+      goalId: query.goalId,
+      customer: query.customer,
+      tag: query.tag,
+      relatedTo: query.relatedTo,
+      mineOnly: query.mine === 'true',
+      unassignedOnly: query.unassigned === 'true',
+      ref,
+      refRole: refRole ?? undefined,
+      shared: parseBooleanFilter(query.shared, 'shared'),
+      noEpic: parseBooleanFilter(query.noEpic, 'noEpic'),
+      noGoal: parseBooleanFilter(query.noGoal, 'noGoal'),
+      noCategory: parseBooleanFilter(query.noCategory, 'noCategory'),
+      unlinked: unlinked as TaskListFilters['unlinked'],
+      doneSince: query.doneSince,
+      doneBefore: query.doneBefore,
+    });
+    c.header('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
+    return c.json(tasks);
+  } catch (error) {
+    if (error instanceof TaskListQueryError || error instanceof refService.RefError) {
+      return c.json({ error: error.message }, 400);
+    }
+    throw error;
+  }
 });
 
 // GET /api/v2/tasks/search - FTS5 free text search

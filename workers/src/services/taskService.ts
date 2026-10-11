@@ -1,24 +1,16 @@
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
 import type { TaskCreatePayload, TaskUpdatePayload } from '../validators/taskValidators';
 import { getAccessibleProjects, getUserNames } from './accessService';
 import * as projectService from './projectService';
+import * as taskListService from './taskListService';
+import type { TaskListFilters } from './taskListService';
 
 type DB = DrizzleD1Database<typeof schema>;
 
-export interface TaskFilters {
-  orgId?: string;
-  projectId?: string;
-  assigneeId?: string;
-  status?: string;
-  mineOnly?: boolean;
-  unassignedOnly?: boolean;
-  customer?: string;
-  tag?: string;
-  relatedTo?: string;
-}
+export interface TaskFilters extends TaskListFilters {}
 
 /**
  * Resolve a full id or an id prefix to a task the user can see.
@@ -28,28 +20,7 @@ export async function resolveTaskIdForUser(
   userId: string,
   identifier: string
 ): Promise<string | null> {
-  if (!identifier) {
-    return null;
-  }
-  const projectIds = await getUserAccessibleProjectIds(db, userId);
-  if (projectIds.length === 0) {
-    return null;
-  }
-
-  const match = await db
-    .select({ id: schema.tasks.id })
-    .from(schema.tasks)
-    .where(
-      and(
-        sql`lower(${schema.tasks.id}) LIKE lower(${`${identifier}%`})`,
-        eq(schema.tasks.isDeleted, false),
-        inArray(schema.tasks.projectId, projectIds)
-      )
-    )
-    .orderBy(sql`${schema.tasks.id} = ${identifier} desc`)
-    .get();
-
-  return match?.id ?? null;
+  return taskListService.resolveVisibleTaskId(db, userId, identifier);
 }
 
 export async function getUserAccessibleProjectIds(db: DB, userId: string): Promise<string[]> {
@@ -65,96 +36,7 @@ export async function isProjectAccessible(
 }
 
 export async function getTasksForUser(db: DB, userId: string, filters?: TaskFilters) {
-  let accessibleProjectIds = await getUserAccessibleProjectIds(db, userId);
-
-  if (filters?.orgId) {
-    // Narrow accessible projects to the specified org
-    const orgProjects = await db
-      .select({ id: schema.projects.id })
-      .from(schema.projects)
-      .where(
-        and(
-          eq(schema.projects.orgId, filters.orgId),
-          inArray(
-            schema.projects.id,
-            accessibleProjectIds.length > 0 ? accessibleProjectIds : ['none']
-          )
-        )
-      );
-    accessibleProjectIds = orgProjects.map((p) => p.id);
-  }
-
-  if (accessibleProjectIds.length === 0) {
-    return [];
-  }
-
-  const conditions = [
-    inArray(schema.tasks.projectId, accessibleProjectIds),
-    eq(schema.tasks.isDeleted, false),
-  ];
-
-  if (filters?.projectId) {
-    if (!accessibleProjectIds.includes(filters.projectId)) {
-      return [];
-    }
-    conditions.push(eq(schema.tasks.projectId, filters.projectId));
-  }
-
-  if (filters?.mineOnly) {
-    conditions.push(eq(schema.tasks.assigneeId, userId));
-  } else if (filters?.unassignedOnly) {
-    conditions.push(isNull(schema.tasks.assigneeId));
-  } else if (filters?.assigneeId !== undefined) {
-    if (filters.assigneeId === null || filters.assigneeId === '') {
-      conditions.push(isNull(schema.tasks.assigneeId));
-    } else {
-      conditions.push(eq(schema.tasks.assigneeId, filters.assigneeId));
-    }
-  }
-
-  if (filters?.status) {
-    conditions.push(eq(schema.tasks.status, filters.status as any));
-  }
-
-  if (filters?.customer) {
-    conditions.push(sql`lower(${schema.tasks.customer}) = lower(${filters.customer.trim()})`);
-  }
-
-  if (filters?.tag) {
-    const cleanTag = filters.tag.trim().toLowerCase();
-    conditions.push(sql`lower(coalesce(${schema.tasks.tags}, '')) LIKE lower(${`%${cleanTag}%`})`);
-  }
-
-  if (filters?.relatedTo) {
-    const resolvedTargetId = await resolveTaskIdForUser(db, userId, filters.relatedTo);
-    if (!resolvedTargetId) {
-      return [];
-    }
-    const relatedLinks = await db
-      .select({
-        sourceId: schema.taskRelations.sourceTaskId,
-        targetId: schema.taskRelations.targetTaskId,
-      })
-      .from(schema.taskRelations)
-      .where(
-        sql`${schema.taskRelations.sourceTaskId} = ${resolvedTargetId} or ${schema.taskRelations.targetTaskId} = ${resolvedTargetId}`
-      );
-
-    const relatedIds = relatedLinks.map((l) =>
-      l.sourceId === resolvedTargetId ? l.targetId : l.sourceId
-    );
-
-    if (relatedIds.length === 0) {
-      return [];
-    }
-
-    conditions.push(inArray(schema.tasks.id, relatedIds));
-  }
-
-  return db
-    .select()
-    .from(schema.tasks)
-    .where(and(...conditions));
+  return taskListService.getRawTasksForUser(db, userId, filters ?? {});
 }
 
 export async function getTaskById(db: DB, userId: string, taskId: string) {

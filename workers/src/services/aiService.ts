@@ -12,6 +12,7 @@ import {
   resolveProposals,
   type RawChange,
   type VoiceContext,
+  type VoiceTask,
 } from './voiceContextService';
 
 interface ProcessVoiceCommandArgs {
@@ -20,11 +21,11 @@ interface ProcessVoiceCommandArgs {
   projects?: Project[];
   groqApiKey: string;
   /**
-   * What the signed-in user can see and who they work with, from loadVoiceContext().
-   * When present, proposals are checked and resolved to ids before they're returned, and new
-   * tasks that look like open ones carry them as `similar`.
+   * Bounded task context. Production callers load it with `loadContext` after transcription;
+   * tests and older integrations may still provide an already-built context.
    */
   context?: VoiceContext;
+  loadContext?: (transcript: string) => Promise<VoiceContext>;
 }
 
 // Zod schema for a project/task or entity
@@ -48,7 +49,9 @@ const projectSchema = z.object({
     .string()
     .nullable()
     .optional()
-    .describe('The high-level category/project area, e.g. "Acme Solar", "Northstar Workshop", "Personal".'),
+    .describe(
+      'The high-level category/project area, e.g. "Acme Solar", "Northstar Workshop", "Personal".'
+    ),
   projectId: z
     .string()
     .nullable()
@@ -184,7 +187,10 @@ EPICS:
 LINKS ALREADY IN USE (kinds of outside link per workspace, with GitHub repositories or an example id):
 {refKinds}
 
-You will be given the user's transcript and a JSON array of the tasks they can see. Each task shows its category (project), workspace and assignee.
+TASK SAMPLE AND TRUE COUNTS:
+{taskSample}
+
+You will be given the user's transcript and a JSON array of selected tasks. Each task shows its category (project), workspace and assignee. The array is a bounded sample, not a complete task list. Only propose changes to a task that appears in the array. Never guess an id or silently substitute an unseen task when a target is absent or ambiguous. If you cannot identify a listed task, leave that change out and explain why.
 
 Your instructions are:
 1.  Analyze the transcript to understand the user's intent. The user might want to create, update, or delete one or more tasks, create a new epic, create a new project, assign a task to someone, claim a task, or ask a question about the tasks.
@@ -252,6 +258,46 @@ const NO_CONTEXT = {
   refKinds: '(not provided)',
 };
 
+function describeTaskSample(context: VoiceContext | undefined, sampleSize: number): string {
+  if (!context?.taskCounts) {
+    return [
+      `Selected task sample: ${sampleSize} task${sampleSize === 1 ? '' : 's'}; the true visible total was not calculated.`,
+      'The task list may be incomplete. Do not guess a task that is not listed.',
+    ].join('\n');
+  }
+
+  const counts = context.taskCounts;
+  const statuses = [
+    `Do ${counts.byStatus.do}`,
+    `Delay ${counts.byStatus.delay}`,
+    `Awaiting ${counts.byStatus.awaiting}`,
+    `Delegate ${counts.byStatus.delegate}`,
+    `Done ${counts.byStatus.done}`,
+  ].join(', ');
+  const people = new Map(
+    context.workspaces.flatMap((workspace) =>
+      workspace.members.map((member) => [member.userId, member.name] as const)
+    )
+  );
+  const assignees = new Map<string, number>();
+  for (const row of counts.byAssignee) {
+    const label = row.assigneeId
+      ? (people.get(row.assigneeId) ?? 'Other workspace member')
+      : 'Unassigned';
+    assignees.set(label, (assignees.get(label) ?? 0) + row.count);
+  }
+  const assigneeTotals = Array.from(assignees.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, count]) => `${name} ${count}`)
+    .join(', ');
+  return [
+    `True visible task total: ${counts.total}. Selected sample: ${sampleSize} of ${counts.total}, with a cap of ${context.sampleCap ?? 150}.`,
+    `Status totals across all visible tasks: ${statuses}.`,
+    `Assignee totals across all visible tasks: ${assigneeTotals || 'none'}.`,
+    'The sample is not exhaustive. Do not guess a task id, title or match for an absent or ambiguous target.',
+  ].join('\n');
+}
+
 async function getProjectUpdates(
   transcript: string,
   projects: unknown[],
@@ -275,8 +321,12 @@ async function getProjectUpdates(
         workspaces: describeWorkspaces(context),
         epics: describeEpics(context),
         refKinds: describeRefKinds(context),
+        taskSample: describeTaskSample(context, projects.length),
       }
-    : NO_CONTEXT;
+    : {
+        ...NO_CONTEXT,
+        taskSample: describeTaskSample(undefined, projects.length),
+      };
 
   const result = await chain.invoke({
     transcript,
@@ -291,11 +341,137 @@ async function getProjectUpdates(
 /** Exposed for tests: the full prompt template the model sees. */
 export const VOICE_PROMPT_TEMPLATE = VOICE_PROMPT;
 
+async function resolveProposalSourceHolders(
+  proposals: ReturnType<typeof resolveProposals>['proposals'],
+  context: VoiceContext
+): Promise<string[]> {
+  const sourceValue = (ref: { kind: string; ref: string }) =>
+    ref.ref.startsWith(`${ref.kind}:`) ? ref.ref.slice(ref.kind.length + 1) : ref.ref;
+  const refs = proposals.flatMap((proposal) =>
+    (proposal.refs ?? [])
+      .filter((ref) => ref.role === 'source' && !!proposal.orgId)
+      .map((ref) => ({ orgId: proposal.orgId!, kind: ref.kind, ref: sourceValue(ref) }))
+  );
+  let holders = new Map<string, { taskId: string; title: string; isDeleted: boolean }>();
+  let lookupFailed = false;
+  if (refs.length && context.findSourceHolders) {
+    try {
+      holders = await context.findSourceHolders(refs);
+    } catch {
+      lookupFailed = true;
+    }
+  }
+
+  const warnings: string[] = [];
+  const planned = new Map<string, string>();
+  for (const proposal of proposals) {
+    for (const ref of proposal.refs ?? []) {
+      if (ref.role !== 'source') {
+        continue;
+      }
+      const orgId = proposal.orgId;
+      const value = sourceValue(ref);
+      const key = `${orgId ?? ''}\u0000${ref.kind}\u0000${value}`;
+      const previousProposal = planned.get(key);
+      const holder = orgId ? holders.get(key) : undefined;
+      let warning: string | null = null;
+
+      if (!orgId) {
+        warning = `I couldn't identify a workspace for ${ref.ref}, so it's added as a plain link instead.`;
+      } else if (lookupFailed) {
+        warning = `I couldn't check whether ${ref.ref} is already a source, so it's added as a plain link instead.`;
+      } else if (holder && !holder.isDeleted && holder.taskId !== proposal.taskId) {
+        warning = `${ref.ref} is already the source of "${holder.title}", so it's added as a plain link instead.`;
+      } else if (previousProposal) {
+        warning = `${ref.ref} is already proposed as the source of "${previousProposal}", so this one is added as a plain link instead.`;
+      }
+
+      if (warning) {
+        ref.role = 'link';
+        proposal.warnings = Array.from(new Set([...proposal.warnings, warning]));
+        warnings.push(warning);
+      } else {
+        planned.set(
+          key,
+          String(proposal.after?.project || proposal.before?.project || 'that task')
+        );
+      }
+    }
+  }
+  return warnings;
+}
+
+async function hydrateProposalBodies(
+  context: VoiceContext,
+  proposals: ReturnType<typeof resolveProposals>['proposals']
+): Promise<string[]> {
+  const targeted = proposals.filter((proposal) => proposal.taskId && proposal.before);
+  const ids = Array.from(new Set(targeted.map((proposal) => proposal.taskId!)));
+  if (ids.length === 0 || !context.hydrateTaskBodies) {
+    return [];
+  }
+
+  let bodies: Map<string, { reason: string | null; notes: string | null }>;
+  try {
+    bodies = await context.hydrateTaskBodies(ids);
+  } catch {
+    bodies = new Map();
+  }
+
+  const warnings: string[] = [];
+  for (let index = proposals.length - 1; index >= 0; index -= 1) {
+    const proposal = proposals[index];
+    if (!proposal.taskId || !proposal.before) {
+      continue;
+    }
+    const body = bodies.get(proposal.taskId);
+    if (!body) {
+      const message = `I couldn't load the complete task details for "${proposal.before.project}", so I left that change out.`;
+      warnings.push(message);
+      proposal.warnings = Array.from(new Set([...proposal.warnings, message]));
+      proposals.splice(index, 1);
+      continue;
+    }
+
+    const before = proposal.before as VoiceTask & Record<string, unknown>;
+    for (const field of ['notes', 'reason'] as const) {
+      const excerpt = context.promptFields?.get(proposal.taskId)?.[field];
+      const proposed = proposal.after?.[field];
+      const full = body[field];
+      const echoedExcerpt =
+        typeof proposed === 'string' &&
+        typeof full === 'string' &&
+        typeof excerpt === 'string' &&
+        (proposed === excerpt ||
+          (proposed.endsWith('...') && full.startsWith(proposed.slice(0, -3))));
+      if (echoedExcerpt) {
+        proposal.after![field] = full;
+      } else if (
+        typeof proposed === 'string' &&
+        typeof full === 'string' &&
+        typeof excerpt === 'string' &&
+        excerpt !== full &&
+        proposed !== full
+      ) {
+        // A replacement based on a clipped prompt excerpt would discard the unseen tail.
+        // Keep the full body in the proposal so review/apply cannot write the excerpt back.
+        proposal.after![field] = full;
+        const message = `I couldn't safely change the task ${field} for "${proposal.before.project}" because the voice model only saw an excerpt, so I left the full text unchanged.`;
+        warnings.push(message);
+        proposal.warnings = Array.from(new Set([...proposal.warnings, message]));
+      }
+      before[field] = full;
+    }
+  }
+  return warnings;
+}
+
 export async function processVoiceCommand({
   audioFile,
   projects = [],
   groqApiKey,
-  context,
+  context: suppliedContext,
+  loadContext,
 }: ProcessVoiceCommandArgs) {
   const groq = new Groq({ apiKey: groqApiKey });
 
@@ -307,11 +483,13 @@ export async function processVoiceCommand({
       summary: 'No speech detected.',
       answer: null,
       warnings: [] as string[],
-      me: context ? { id: context.me.id, name: context.me.name } : null,
+      me: suppliedContext ? { id: suppliedContext.me.id, name: suppliedContext.me.name } : null,
       proposedChanges: [],
     };
   }
 
+  // Production passes a lazy loader so even the first task query follows transcription.
+  const context = suppliedContext ?? (loadContext ? await loadContext(transcript) : undefined);
   const taskList = context ? compactTasks(context) : projects;
   const {
     summary,
@@ -322,13 +500,23 @@ export async function processVoiceCommand({
 
   if (context) {
     const { proposals, warnings } = resolveProposals((changes || []) as RawChange[], context);
+    const sourceWarnings = await resolveProposalSourceHolders(proposals, context);
+    const bodyWarnings = await hydrateProposalBodies(context, proposals);
     // New tasks that look like open ones get a "Looks like an existing task" hint
     await addSimilarTasks(proposals, context);
     return {
       transcript,
       summary,
       answer: answer || null,
-      warnings: Array.from(new Set([...(modelWarnings || []), ...warnings])),
+      warnings: Array.from(
+        new Set([
+          ...(modelWarnings || []),
+          ...warnings,
+          ...(context.selectionWarnings || []),
+          ...sourceWarnings,
+          ...bodyWarnings,
+        ])
+      ),
       me: { id: context.me.id, name: context.me.name },
       proposedChanges: proposals,
     };

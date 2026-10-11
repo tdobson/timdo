@@ -2,9 +2,22 @@ import React from 'react';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Accordion } from '@mantine/core';
-import type { Project, RefView } from '../../app/types/project.types';
+import { useBoardProjectDetail } from '../../app/hooks/useBoardQueries';
+import type { Project, ProjectSummary, RefView } from '../../app/types/project.types';
 import { TestWrapper } from '../../test-utils/render';
-import { ProjectCard } from './ProjectCard';
+import { ProjectCard, ProjectCardPreview } from './ProjectCard';
+import classes from './ProjectCard.module.css';
+
+jest.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams('category=Old&customer=Old&group=epic&tab=updates'),
+}));
+
+jest.mock('../../app/hooks/useBoardQueries', () => ({
+  ...jest.requireActual('../../app/hooks/useBoardQueries'),
+  useBoardProjectDetail: jest.fn(),
+}));
+
+const useBoardProjectDetailMock = useBoardProjectDetail as jest.Mock;
 
 const mockProject: Project = {
   id: '1',
@@ -22,6 +35,53 @@ const mockProject: Project = {
 };
 
 describe('ProjectCard', () => {
+  it.each([0, 1, 3])('uses the right note label for %i in cards and previews', (noteCount) => {
+    const project = { ...mockProject, noteCount };
+    render(
+      <TestWrapper>
+        <Accordion transitionDuration={0}>
+          <ProjectCard
+            project={project}
+            expanded={false}
+            onUpdate={jest.fn()}
+            onStatusChange={jest.fn()}
+          />
+        </Accordion>
+        <ProjectCardPreview project={project} />
+      </TestWrapper>
+    );
+
+    expect(screen.getAllByText(`${noteCount} ${noteCount === 1 ? 'note' : 'notes'}`)).toHaveLength(
+      2
+    );
+  });
+
+  it('identifies the task title for a narrow responsive header', () => {
+    const sharedTask: Project = {
+      ...mockProject,
+      id: 'responsive-header-task',
+      isShared: true,
+      canEdit: true,
+      assigneeId: null,
+      assigneeName: null,
+      customer: 'Fictional customer',
+      category: 'Fictional project',
+    };
+
+    render(
+      <TestWrapper>
+        <Accordion transitionDuration={0}>
+          <ProjectCard project={sharedTask} onUpdate={jest.fn()} onStatusChange={jest.fn()} />
+        </Accordion>
+      </TestWrapper>
+    );
+
+    expect(screen.getByText(sharedTask.project)).toHaveClass(classes.taskTitle);
+    expect(screen.getByTestId('claim-task-btn')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Fictional customer' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Fictional project' })).toBeInTheDocument();
+  });
+
   it('renders in view mode by default and shows buttons when expanded', async () => {
     // Arrange
     const user = userEvent.setup();
@@ -261,6 +321,152 @@ describe('ProjectCard', () => {
     expect(screen.getByRole('button', { name: /delete/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /mark as done/i })).toBeDisabled();
     expect(screen.getAllByTestId('view-only-wrapper').length).toBeGreaterThan(0);
+  });
+
+  it('preserves a long full body through editing and saving', async () => {
+    const fullBody = Array.from(
+      { length: 18 },
+      (_, index) => `Long body section ${index + 1}`
+    ).join('\n');
+    const onUpdate = jest.fn();
+    const user = userEvent.setup();
+    render(
+      <TestWrapper>
+        <Accordion transitionDuration={0}>
+          <ProjectCard
+            project={{ ...mockProject, notes: fullBody }}
+            onUpdate={onUpdate}
+            onStatusChange={jest.fn()}
+          />
+        </Accordion>
+      </TestWrapper>
+    );
+
+    await user.click(screen.getByTestId(`project-card-control-${mockProject.id}`));
+    await user.click(await screen.findByRole('button', { name: /^edit$/i }));
+    const bodyInput = screen.getByPlaceholderText(
+      'Additional details, checklists, specifications...'
+    );
+    expect(bodyInput).toHaveValue(fullBody);
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(onUpdate).toHaveBeenCalledWith(
+      mockProject.id,
+      expect.objectContaining({ notes: fullBody })
+    );
+  });
+
+  it('keeps hydrated summary bodies intact when the user edits and saves them', async () => {
+    const fullBody = Array.from(
+      { length: 18 },
+      (_, index) => `Hydrated body section ${index + 1}`
+    ).join('\n');
+    const { notes: _notes, ...summaryFields } = mockProject;
+    const boardSummary: ProjectSummary = {
+      ...summaryFields,
+      id: 'summary-task',
+      noteCount: 3,
+      lastNoteAt: '2026-10-02T00:00:00.000Z',
+    };
+    useBoardProjectDetailMock.mockReturnValue({
+      data: { ...mockProject, id: boardSummary.id, notes: fullBody },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      refetch: jest.fn(),
+    });
+    const onUpdate = jest.fn();
+    const user = userEvent.setup();
+
+    render(
+      <TestWrapper>
+        <Accordion multiple value={[boardSummary.id]} onChange={() => {}} transitionDuration={0}>
+          <ProjectCard
+            project={boardSummary}
+            expanded
+            onUpdate={onUpdate}
+            onStatusChange={jest.fn()}
+          />
+        </Accordion>
+      </TestWrapper>
+    );
+
+    expect(boardSummary).not.toHaveProperty('notes');
+    expect(useBoardProjectDetailMock).toHaveBeenCalledWith(boardSummary.id, true);
+    expect(await screen.findByRole('button', { name: /^edit$/i })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+    const bodyInput = screen.getByPlaceholderText(
+      'Additional details, checklists, specifications...'
+    );
+    expect(bodyInput).toHaveValue(fullBody);
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(onUpdate).toHaveBeenCalledWith(
+      boardSummary.id,
+      expect.objectContaining({ notes: fullBody })
+    );
+  });
+
+  it('keeps the editor closed and offers Retry when detail hydration fails', async () => {
+    const { notes: _notes, ...summaryFields } = mockProject;
+    const boardSummary: ProjectSummary = {
+      ...summaryFields,
+      id: 'summary-error',
+      noteCount: 2,
+      lastNoteAt: null,
+    };
+    const refetch = jest.fn();
+    useBoardProjectDetailMock.mockReturnValue({
+      data: null,
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+      refetch,
+    });
+    const user = userEvent.setup();
+
+    render(
+      <TestWrapper>
+        <Accordion multiple value={[boardSummary.id]} onChange={() => {}} transitionDuration={0}>
+          <ProjectCard
+            project={boardSummary}
+            expanded
+            onUpdate={jest.fn()}
+            onStatusChange={jest.fn()}
+          />
+        </Accordion>
+      </TestWrapper>
+    );
+
+    expect(await screen.findByText('Retry to load the task before editing.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(refetch).toHaveBeenCalled();
+  });
+
+  it('preserves unrelated board filters when following customer and category badges', () => {
+    const filteredTask: Project = {
+      ...mockProject,
+      customer: 'Northstar Workshop',
+      category: 'Acme Solar',
+    };
+
+    render(
+      <TestWrapper>
+        <Accordion transitionDuration={0}>
+          <ProjectCard project={filteredTask} onUpdate={jest.fn()} onStatusChange={jest.fn()} />
+        </Accordion>
+      </TestWrapper>
+    );
+
+    expect(screen.getByRole('link', { name: 'Northstar Workshop' })).toHaveAttribute(
+      'href',
+      '/board?category=Old&customer=Northstar+Workshop&group=epic&tab=updates'
+    );
+    expect(screen.getByRole('link', { name: 'Acme Solar' })).toHaveAttribute(
+      'href',
+      '/board?category=Acme+Solar&customer=Old&group=epic&tab=updates'
+    );
   });
 
   describe('saving the Gmail thread', () => {

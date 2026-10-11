@@ -22,7 +22,7 @@ export function useAssigneeScope() {
  * Client-side filter for the scope. "Mine" uses the API's `isMine` (assigned to me, or
  * unassigned and created by me). Older responses without `isMine` count as mine.
  */
-export function filterByAssigneeScope(tasks: Project[], scope: AssigneeScope): Project[] {
+export function filterByAssigneeScope<T extends Project>(tasks: T[], scope: AssigneeScope): T[] {
   if (scope === 'mine') {
     return tasks.filter((t) => t.isMine !== false);
   }

@@ -162,11 +162,42 @@ export function buildFindByRefArgs({ ref, role } = {}) {
   return args;
 }
 
-/**
- * Build CLI arguments for task listing.
- * With ref and no status, every status is listed, so a done task carrying the ref still shows.
- */
-export function buildListTasksArgs({
+const TASK_GROUPS = ['project', 'epic', 'assignee'];
+const TASK_FIELDS = ['summary', 'full'];
+const TASK_STATUSES = ['do', 'delay', 'awaiting', 'delegate', 'done'];
+
+function taskStatusArg(value, fallback) {
+  const selected = value === undefined || value === null ? fallback : value;
+  if (typeof selected !== 'string' || selected.length === 0) {
+    throw new Error('status must be all or a comma-separated list of do, delay, awaiting, delegate and done.');
+  }
+  if (selected === 'all') return 'all';
+  const statuses = selected.split(',');
+  if (statuses.some((status) => !TASK_STATUSES.includes(status))) {
+    throw new Error('status must be all or a comma-separated list of do, delay, awaiting, delegate and done.');
+  }
+  return statuses.join(',');
+}
+
+function pageLimitArg(value) {
+  const text = String(value);
+  if (!/^\d+$/.test(text)) throw new Error('limit must be a whole number from 1 to 200.');
+  const limit = Number(text);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+    throw new Error('limit must be a whole number from 1 to 200.');
+  }
+  return String(limit);
+}
+
+function cursorArg(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error('cursor must be a URL-safe page cursor of at most 4096 characters.');
+  }
+  return value;
+}
+
+/** Build CLI arguments for membership filters shared by lists and counts. */
+function taskListFilterArgs({
   status,
   category,
   epic,
@@ -186,7 +217,10 @@ export function buildListTasksArgs({
   shared,
   ref,
 } = {}) {
-  const args = ['list', status || (ref ? 'all' : 'do')];
+  const selectedStatus = taskStatusArg(status, ref ? 'all' : 'do');
+  const args = [];
+  if (selectedStatus.includes(',')) args.push('--status', selectedStatus);
+  else args.push(selectedStatus);
   if (category) args.push('-p', category);
   if (epic) args.push('-e', epic);
   if (goal) args.push('-g', goal);
@@ -205,6 +239,35 @@ export function buildListTasksArgs({
   if (shared) args.push('--shared');
   if (ref) args.push('--ref', notAFlag(ref));
   return args;
+}
+
+/**
+ * Build CLI arguments for task listing. Pagination is opt-in so existing CLI callers
+ * keep the unlimited full-body response unless they request otherwise.
+ */
+export function buildListTasksArgs({ limit, cursor, groupBy, fields, ...filters } = {}) {
+  const args = ['list', ...taskListFilterArgs(filters)];
+  if (limit !== undefined && limit !== null) args.push('--limit', pageLimitArg(limit));
+  if (cursor !== undefined && cursor !== null) {
+    if (limit === undefined || limit === null) throw new Error('cursor requires limit.');
+    args.push('--cursor', cursorArg(cursor));
+  }
+  if (groupBy !== undefined && groupBy !== null) {
+    if (!TASK_GROUPS.includes(groupBy)) throw new Error('groupBy must be project, epic or assignee.');
+    args.push('--group-by', groupBy);
+  }
+  if (fields !== undefined && fields !== null) {
+    if (!TASK_FIELDS.includes(fields)) throw new Error('fields must be summary or full.');
+    args.push('--fields', fields);
+  }
+  return args;
+}
+
+/** Build CLI arguments for aggregate counts with the task-list membership filters. */
+export function buildCountsArgs(filters = {}) {
+  const status = filters.status === undefined || filters.status === null ? 'all' : filters.status;
+  const args = taskListFilterArgs({ ...filters, status });
+  return ['counts', ...args];
 }
 
 /**

@@ -3,6 +3,12 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { useSession } from 'next-auth/react';
 import { notifications } from '@mantine/notifications';
 import { addProjectUpdate, findSimilarTasks } from '../lib/apiClient';
+import {
+  captureTaskCacheScope,
+  invalidateBoardCaches,
+  isTaskCacheScopeCurrent,
+  updateTaskNoteSummary,
+} from '../lib/taskCache';
 import { notifyError } from './useProjectMutations';
 import { projectKeys } from './useProjectQueries';
 
@@ -125,6 +131,7 @@ export function useSimilarTasks(
 export function useAddNoteInstead() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
 
   return useMutation({
     mutationFn: ({ task, note }: { task: SimilarTask; note: string }) => {
@@ -133,9 +140,15 @@ export function useAddNoteInstead() {
       }
       return addProjectUpdate(task.id, { note }, session.accessToken);
     },
-    onSuccess: (_update, { task }) => {
+    onMutate: () => ({ cacheScope: captureTaskCacheScope(queryClient, accountId) }),
+    onSuccess: (update, { task }, context) => {
+      if (!isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['project-updates', task.id] });
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      updateTaskNoteSummary(queryClient, task.id, { type: 'added', update }, context.cacheScope);
+      void invalidateBoardCaches(queryClient, context.cacheScope, task.id);
       queryClient.invalidateQueries({ queryKey: ['activity'] });
       queryClient.invalidateQueries({ queryKey: similarKeys.all });
       notifications.show({
@@ -144,6 +157,11 @@ export function useAddNoteInstead() {
         color: 'green',
       });
     },
-    onError: (error) => notifyError('Could not add note', error),
+    onError: (error, _variables, context) => {
+      if (context && !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      notifyError('Could not add note', error);
+    },
   });
 }

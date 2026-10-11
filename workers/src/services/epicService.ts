@@ -3,7 +3,7 @@
  * members and above can change them. An epic with no project is private to its creator.
  * The life goal on an epic is personal to whoever created it, so it's hidden from others.
  */
-import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
@@ -90,46 +90,63 @@ function toView(
   };
 }
 
-async function visibleEpics(db: DB, userId: string, projects: AccessibleProject[]) {
-  const projectIds = projects.map((p) => p.id);
+async function visibleEpics(db: DB, userId: string, _projects: AccessibleProject[]) {
   return db
     .select()
     .from(schema.epics)
     .where(
       or(
-        projectIds.length ? inArray(schema.epics.projectId, projectIds) : undefined,
+        sql`exists (
+          select 1 from Projects visible_epic_project
+          inner join OrganisationMembers visible_epic_member
+            on visible_epic_member.org_id = visible_epic_project.org_id
+          where visible_epic_project.id = Epics.project_id
+            and visible_epic_member.user_id = ${userId}
+        )`,
         and(isNull(schema.epics.projectId), eq(schema.epics.userId, userId))
       )
     )
     .orderBy(asc(schema.epics.createdAt));
 }
 
-/** Progress counts only tasks the viewer can see, so the numbers match the list. */
-async function statsFor(db: DB, epicIds: string[], visibleProjectIds: string[]) {
+/** Progress counts only tasks the viewer can see, using aggregate SQL rather than task rows. */
+async function statsFor(db: DB, userId: string, epicIds: string[]) {
   const stats = new Map<string, { totalTasks: number; doneTasks: number }>();
-  if (epicIds.length === 0 || visibleProjectIds.length === 0) {
-    return stats;
-  }
-  const rows = await db
-    .select({ epicId: schema.tasks.epicId, status: schema.tasks.status })
-    .from(schema.tasks)
-    .where(
-      and(
-        eq(schema.tasks.isDeleted, false),
-        inArray(schema.tasks.epicId, epicIds),
-        inArray(schema.tasks.projectId, visibleProjectIds)
+  for (let index = 0; index < epicIds.length; index += 90) {
+    const chunk = epicIds.slice(index, index + 90);
+    const rows = await db
+      .select({
+        epicId: schema.tasks.epicId,
+        status: schema.tasks.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(schema.tasks)
+      .where(
+        and(
+          eq(schema.tasks.isDeleted, false),
+          inArray(schema.tasks.epicId, chunk),
+          sql`exists (
+            select 1 from Projects visible_epic_project
+            inner join OrganisationMembers visible_epic_member
+              on visible_epic_member.org_id = visible_epic_project.org_id
+            where visible_epic_project.id = Tasks.project_id
+              and visible_epic_member.user_id = ${userId}
+          )`
+        )
       )
-    );
-  for (const r of rows) {
-    if (!r.epicId) {
-      continue;
+      .groupBy(schema.tasks.epicId, schema.tasks.status);
+    for (const row of rows) {
+      if (!row.epicId) {
+        continue;
+      }
+      const count = Number(row.count || 0);
+      const current = stats.get(row.epicId) || { totalTasks: 0, doneTasks: 0 };
+      current.totalTasks += count;
+      if (row.status === 'done') {
+        current.doneTasks += count;
+      }
+      stats.set(row.epicId, current);
     }
-    const s = stats.get(r.epicId) || { totalTasks: 0, doneTasks: 0 };
-    s.totalTasks += 1;
-    if (r.status === 'done') {
-      s.doneTasks += 1;
-    }
-    stats.set(r.epicId, s);
   }
   return stats;
 }
@@ -155,8 +172,8 @@ export async function getEpicsForUser(
   for (let i = 0; i < epics.length; i += 90) {
     const chunk = await statsFor(
       db,
-      epics.slice(i, i + 90).map((e) => e.id),
-      projects.map((p) => p.id)
+      userId,
+      epics.slice(i, i + 90).map((epic) => epic.id)
     );
     chunk.forEach((v, k) => stats.set(k, v));
   }
@@ -191,11 +208,7 @@ export async function getEpicForUser(
     return null;
   }
   const [stats, names] = await Promise.all([
-    statsFor(
-      db,
-      [epic.id],
-      projects.map((p) => p.id)
-    ),
+    statsFor(db, userId, [epic.id]),
     getUserNames(db, [epic.userId, epic.updatedBy]),
   ]);
   return toView(

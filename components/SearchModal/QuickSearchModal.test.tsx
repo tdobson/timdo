@@ -1,6 +1,7 @@
 import React from 'react';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useProjects } from '../../app/hooks/useProjectQueries';
 import { useTaskSearch } from '../../app/hooks/useSearchQueries';
 import { render } from '../../test-utils/render';
 import { QuickSearchModal } from './QuickSearchModal';
@@ -9,7 +10,7 @@ jest.mock('../../app/hooks/useSearchQueries', () => ({
   useTaskSearch: jest.fn(),
 }));
 jest.mock('../../app/hooks/useProjectQueries', () => ({
-  useProjects: () => ({ data: [] }),
+  useProjects: jest.fn(() => ({ data: [] })),
 }));
 jest.mock('../../app/hooks/useCurrentUser', () => ({
   useCurrentUser: () => ({ userId: 'user-1' }),
@@ -34,6 +35,12 @@ describe('QuickSearchModal', () => {
       isError: false,
       error: null,
     });
+  });
+
+  it('does not subscribe to the full task list while closed', () => {
+    render(<QuickSearchModal opened={false} onClose={jest.fn()} />);
+
+    expect(useProjects).not.toHaveBeenCalled();
   });
 
   it('says that pasting a link finds the tasks carrying it', () => {

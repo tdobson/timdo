@@ -46,6 +46,10 @@ while [[ $# -gt 0 ]]; do
       fi
       TIMDO_AS="$2"; shift ;;
     --as=*) TIMDO_AS="${1#--as=}" ;;
+    --limit|--cursor|--group-by|--fields|--status)
+      _args+=("$1")
+      if [[ $# -gt 1 ]]; then _args+=("$2"); shift; fi
+      ;;
     --) shift; _args+=("$@"); break ;;
     *) _args+=("$1") ;;
   esac
@@ -207,6 +211,14 @@ def task_line($w):
     + "  " + ($aw | paint("yellow")) + ($ro | paint("red"))
     + (if $why == "" then "" else ("- " + $why | paint("dim")) end))
   | sub(" +$"; "");
+def task_group_key($by):
+  if $by == "project" then (.projectId // .projectName // .category // "")
+  elif $by == "epic" then (.epicId // "")
+  else (.assigneeId // "") end | tostring;
+def task_group_label($by):
+  if $by == "project" then (where | if . == "" then "No project" else . end)
+  elif $by == "epic" then (if .epicId then (.epicTitle // .epicName // ("Epic " + (.epicId[0:8]))) else "No epic" end)
+  else (if .assigneeId == null then "Unassigned" else (.assigneeName // .assigneeId) end) end | tostring | gsub("[\\p{Cc}]+"; " ");
 def activity_line($aw):
   "  " + ((.createdAt | short_dt) | pad(12) | paint("dim"))
   + "  " + ((.actorName // "Someone") | pad($aw) | paint("bold"))
@@ -322,6 +334,35 @@ api_error() {
   die "$prefix: $soft$who_note${hint:+. $hint}"
 }
 
+# Extract list metadata from the final HTTP response block. curl's -D output can contain
+# interim/proxy blocks; header names and line endings are deliberately normalised here.
+response_headers_json() {
+  local file="$1" line name value total="" cursor=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    if [[ "$line" == HTTP/* ]]; then
+      total=""
+      cursor=""
+      continue
+    fi
+    [[ "$line" == *:* ]] || continue
+    name="${line%%:*}"
+    value="${line#*:}"
+    name="${name,,}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    case "$name" in
+      x-total-count) total="$value" ;;
+      x-next-cursor) cursor="$value" ;;
+    esac
+  done < "$file"
+  jq -cn --arg total "$total" --arg cursor "$cursor" '{totalCount:(if $total == "" then null else $total end), nextCursor:(if $cursor == "" then null else $cursor end)}'
+}
+
+# api_response returns body and final headers together, so command substitutions cannot lose them.
+api_response() {
+  API_CAPTURE_RESPONSE=1 api "$@"
+}
+
 # api METHOD PATH [curl args...]: prints the response body, or exits non-zero with the API error
 api() {
   local method="$1" path="$2"
@@ -337,16 +378,26 @@ api() {
   fi
   local headers=(-H "Content-Type: application/json")
   [[ -n "$TIMDO_AS" ]] && headers+=(-H "X-Timdo-User: $TIMDO_AS")
-  local out err code
+  local out err code header_file="" dump_header=()
   out=$(mktemp "$TMPD/resp.XXXXXX")
   err="$out.err"
-  if ! code=$(curl -sS -K - -o "$out" -w '%{http_code}' -X "$method" "${headers[@]}" "$@" "${TIMDO_API}${path}" 2>"$err" <<<"header = \"$auth_header\""); then
+  if [[ "${API_CAPTURE_RESPONSE:-}" == "1" ]]; then
+    header_file="$out.headers"
+    dump_header=(-D "$header_file")
+  fi
+  if ! code=$(printf 'header = "%s"\n' "$auth_header" | curl -sS -K - -o "$out" "${dump_header[@]}" -w '%{http_code}' -X "$method" "${headers[@]}" "$@" "${TIMDO_API}${path}" 2>"$err"); then
     die "Error: could not reach the TimDo API at $TIMDO_API ($(head -c 200 "$err" | tr '\n' ' '))"
   fi
   if [[ "$code" -ge 400 ]]; then
     api_error "$code" "$out"
   fi
-  cat "$out"
+  if [[ "${API_CAPTURE_RESPONSE:-}" == "1" ]]; then
+    local response_headers
+    response_headers=$(response_headers_json "$header_file")
+    jq -cn --rawfile body "$out" --argjson headers "$response_headers" '{body:(try ($body | fromjson) catch $body), headers:$headers}'
+  else
+    cat "$out"
+  fi
 }
 
 # Cached GET for the lifetime of one command (each command makes few distinct reads)
@@ -766,14 +817,14 @@ cmd_ref() {
 usage_find() {
   cat <<'EOF'
 Usage: timdo find <url|kind:id> [--role link|source|reported_by|about] [list options]
-       (list options such as -w <workspace> or --mine can go before or after the ref)
+       (filters and --limit/--cursor/--group-by/--fields can go before or after the ref)
 
 Tasks carrying that ref, in every workspace you can see, any status (done included).
 Same as: timdo list all --ref <url|kind:id> [--ref-role <role>]
 
 Examples:
-  timdo find https://github.com/acme/widgets/issues/12
-  timdo find forum.post:4411 --role source
+  timdo find https://github.com/acme/widgets/issues/12 --limit 50
+  timdo find forum.post:4411 --role source --cursor <cursor> --limit 50
   timdo --json find acme.member:123456 --role reported_by
 EOF
 }
@@ -785,7 +836,7 @@ cmd_find() {
       -h|--help) usage_find; exit 0 ;;
       --role|-r|--ref-role) role="${2:-}"; [[ -z "$role" ]] && usage_die "Error: --role needs a value: link, source, reported_by or about."; shift 2 ;;
       # List options that take a value keep it, so it is never mistaken for the ref
-      -p|--category|--project|--project-category|--project-id|-w|--workspace|--org|-e|--epic|-g|--goal|--customer|--tag|--related-to|--assignee|--unlinked)
+      -p|--category|--project|--project-category|--project-id|-w|--workspace|--org|-e|--epic|-g|--goal|--customer|--tag|--related-to|--assignee|--unlinked|--limit|--cursor|--group-by|--fields|--status)
         need_value "$1" "${2:-}"; rest+=("$1" "$2"); shift 2 ;;
       -*) rest+=("$1"); shift ;;
       *) if [[ -z "$what" ]]; then what="$1"; else rest+=("$1"); fi; shift ;;
@@ -903,7 +954,7 @@ Usage: timdo list [all|do|delay|done|delegate|awaiting] [options]
 Lists the tasks you can see in every workspace you belong to. Shared tasks
 show their workspace/project and who they are assigned to.
 
-Filters (applied by the server):
+Filters (applied by the server before counts or paging):
   -p, --project <name>        Project (category) name, e.g. Acme Solar
   --project-id <id|KEY>       One project by id or key (e.g. ASX)
   -w, --workspace <name>      One workspace, e.g. "Northstar Workshop" or personal
@@ -915,119 +966,292 @@ Filters (applied by the server):
   --mine                      Assigned to you (or unassigned and created by you)
   --unassigned                Nobody is assigned
   --assignee <who>            me, unassigned, mine_or_unassigned, a name or an email
-  --ref <url|kind:id>         Tasks carrying that ref, e.g. github.issue:acme/widgets#12
-  --ref-role <role>           With --ref: only as link, source, reported_by or about
-Filters (applied locally):
   --shared                    Only tasks in shared workspaces
   --no-epic, --no-goal, --no-category
   --unlinked <epic|goal|category|any>
+  --ref <url|kind:id>         Tasks carrying that ref, e.g. github.issue:acme/widgets#12
+  --ref-role <role>           With --ref: only as link, source, reported_by or about
+
+Page and presentation options:
+  --limit <1-200>             Page size; omitted means the full legacy list
+  --cursor <cursor>           Continue a page; requires --limit
+  --fields <summary|full>     Choose body projection; omitted means full
+  --group-by <project|epic|assignee>
+                               Group the current page in text output only
+  --status <status,...>       Filter one or more statuses when a comma-separated list is needed
+
+Counts:
+  timdo counts [status] [same membership filters]
+  Counts returns all five status totals for the matching tasks.
 
 Examples:
   timdo list do --mine
-  timdo list do -w "Northstar Workshop" --assignee robin
+  timdo list do -w "Northstar Workshop" --assignee robin --limit 50 --fields summary
   timdo list all --ref https://github.com/acme/widgets/issues/12
+  timdo list --status do,delay
+  timdo counts --shared --no-epic
   timdo --json list awaiting
 EOF
 }
 
-cmd_list() {
-  local filter="all" category="" project_id="" workspace="" epic="" goal="" customer="" tag=""
-  local related_to="" assignee="" shared=false no_epic=false no_goal=false no_category=false unlinked=""
-  local ref="" ref_role=""
+TASK_LIST_FILTER="all"
+TASK_LIST_CATEGORY=""
+TASK_LIST_PROJECT_ID=""
+TASK_LIST_WORKSPACE=""
+TASK_LIST_EPIC=""
+TASK_LIST_GOAL=""
+TASK_LIST_CUSTOMER=""
+TASK_LIST_TAG=""
+TASK_LIST_RELATED_TO=""
+TASK_LIST_ASSIGNEE=""
+TASK_LIST_SHARED=false
+TASK_LIST_NO_EPIC=false
+TASK_LIST_NO_GOAL=false
+TASK_LIST_NO_CATEGORY=false
+TASK_LIST_UNLINKED=""
+TASK_LIST_REF=""
+TASK_LIST_REF_ROLE=""
+TASK_LIST_LIMIT=""
+TASK_LIST_LIMIT_SET=false
+TASK_LIST_CURSOR=""
+TASK_LIST_CURSOR_SET=false
+TASK_LIST_GROUP_BY=""
+TASK_LIST_GROUP_BY_SET=false
+TASK_LIST_FIELDS=""
+TASK_LIST_FIELDS_SET=false
+
+validate_task_status_filter() {
+  local value="$1" item
+  [[ -n "$value" ]] || usage_die "Error: status needs one or more of do, delay, awaiting, delegate or done."
+  [[ "$value" == "all" ]] && return 0
+  local -a statuses=()
+  IFS=',' read -r -a statuses <<< "$value"
+  for item in "${statuses[@]}"; do
+    case "$item" in
+      do|delay|awaiting|delegate|done) ;;
+      *) usage_die "Error: invalid status '$item'. Use: do, delay, awaiting, delegate, done or all." ;;
+    esac
+  done
+}
+
+parse_task_list_args() {
+  local mode="$1"
+  shift
+  TASK_LIST_FILTER="all"
+  TASK_LIST_CATEGORY="" TASK_LIST_PROJECT_ID="" TASK_LIST_WORKSPACE=""
+  TASK_LIST_EPIC="" TASK_LIST_GOAL="" TASK_LIST_CUSTOMER="" TASK_LIST_TAG=""
+  TASK_LIST_RELATED_TO="" TASK_LIST_ASSIGNEE="" TASK_LIST_SHARED=false
+  TASK_LIST_NO_EPIC=false TASK_LIST_NO_GOAL=false TASK_LIST_NO_CATEGORY=false TASK_LIST_UNLINKED=""
+  TASK_LIST_REF="" TASK_LIST_REF_ROLE="" TASK_LIST_LIMIT="" TASK_LIST_LIMIT_SET=false
+  TASK_LIST_CURSOR="" TASK_LIST_CURSOR_SET=false TASK_LIST_GROUP_BY="" TASK_LIST_GROUP_BY_SET=false
+  TASK_LIST_FIELDS="" TASK_LIST_FIELDS_SET=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -h|--help) usage_list; exit 0 ;;
-      -p|--category|--project|--project-category) category="$2"; shift 2 ;;
-      --project-id) project_id="$2"; shift 2 ;;
-      -w|--workspace|--org) workspace="$2"; shift 2 ;;
-      -e|--epic) epic="$2"; shift 2 ;;
-      -g|--goal) goal="$2"; shift 2 ;;
-      --customer) customer="$2"; shift 2 ;;
-      --tag) tag="$2"; shift 2 ;;
-      --related-to) related_to="$2"; shift 2 ;;
-      --mine) assignee="me"; shift ;;
-      --unassigned) assignee="unassigned"; shift ;;
-      --assignee) assignee="$2"; shift 2 ;;
-      --shared) shared=true; shift ;;
-      --no-epic) no_epic=true; shift ;;
-      --no-goal) no_goal=true; shift ;;
-      --no-category|--no-cat) no_category=true; shift ;;
-      --unlinked) unlinked="$2"; shift 2 ;;
-      --ref) ref="${2:-}"; [[ -z "$ref" ]] && usage_die "Error: --ref needs a URL or kind:id, e.g. --ref forum.post:4411"; shift 2 ;;
-      --ref-role) need_value "$1" "${2:-}"; ref_role=$(normalise_role "$2"); shift 2 ;;
-      do|delay|done|delegate|awaiting|all) filter="$1"; shift ;;
-      *) usage_die "Unknown option for list: $1 (see: timdo list --help)" ;;
+      -h|--help)
+        if [[ "$mode" == "counts" ]]; then usage_counts; else usage_list; fi
+        exit 0 ;;
+      -p|--category|--project|--project-category)
+        need_value "$1" "${2:-}"; TASK_LIST_CATEGORY="$2"; shift 2 ;;
+      --project-id)
+        need_value "$1" "${2:-}"; TASK_LIST_PROJECT_ID="$2"; shift 2 ;;
+      -w|--workspace|--org)
+        need_value "$1" "${2:-}"; TASK_LIST_WORKSPACE="$2"; shift 2 ;;
+      -e|--epic)
+        need_value "$1" "${2:-}"; TASK_LIST_EPIC="$2"; shift 2 ;;
+      -g|--goal)
+        need_value "$1" "${2:-}"; TASK_LIST_GOAL="$2"; shift 2 ;;
+      --customer)
+        need_value "$1" "${2:-}"; TASK_LIST_CUSTOMER="$2"; shift 2 ;;
+      --tag)
+        need_value "$1" "${2:-}"; TASK_LIST_TAG="$2"; shift 2 ;;
+      --related-to)
+        need_value "$1" "${2:-}"; TASK_LIST_RELATED_TO="$2"; shift 2 ;;
+      --mine) TASK_LIST_ASSIGNEE="me"; shift ;;
+      --unassigned) TASK_LIST_ASSIGNEE="unassigned"; shift ;;
+      --assignee)
+        need_value "$1" "${2:-}"; TASK_LIST_ASSIGNEE="$2"; shift 2 ;;
+      --shared) TASK_LIST_SHARED=true; shift ;;
+      --no-epic) TASK_LIST_NO_EPIC=true; shift ;;
+      --no-goal) TASK_LIST_NO_GOAL=true; shift ;;
+      --no-category|--no-cat) TASK_LIST_NO_CATEGORY=true; shift ;;
+      --unlinked)
+        need_value "$1" "${2:-}"; TASK_LIST_UNLINKED="$2"; shift 2 ;;
+      --ref)
+        need_value "$1" "${2:-}"; TASK_LIST_REF="$2"; shift 2 ;;
+      --ref-role)
+        need_value "$1" "${2:-}"; TASK_LIST_REF_ROLE=$(normalise_role "$2"); shift 2 ;;
+      --status)
+        need_value "$1" "${2:-}"; TASK_LIST_FILTER="$2"; shift 2 ;;
+      --status=*) TASK_LIST_FILTER="${1#*=}"; shift ;;
+      --limit)
+        [[ "$mode" == "list" ]] || usage_die "Error: --limit does not apply to counts."
+        need_value "$1" "${2:-}"; TASK_LIST_LIMIT="$2"; TASK_LIST_LIMIT_SET=true; shift 2 ;;
+      --limit=*)
+        [[ "$mode" == "list" ]] || usage_die "Error: --limit does not apply to counts."
+        TASK_LIST_LIMIT="${1#*=}"; TASK_LIST_LIMIT_SET=true; shift ;;
+      --cursor)
+        [[ "$mode" == "list" ]] || usage_die "Error: --cursor does not apply to counts."
+        need_value "$1" "${2:-}"; TASK_LIST_CURSOR="$2"; TASK_LIST_CURSOR_SET=true; shift 2 ;;
+      --cursor=*)
+        [[ "$mode" == "list" ]] || usage_die "Error: --cursor does not apply to counts."
+        TASK_LIST_CURSOR="${1#*=}"; TASK_LIST_CURSOR_SET=true; shift ;;
+      --group-by)
+        [[ "$mode" == "list" ]] || usage_die "Error: --group-by does not apply to counts."
+        need_value "$1" "${2:-}"; TASK_LIST_GROUP_BY="$2"; TASK_LIST_GROUP_BY_SET=true; shift 2 ;;
+      --group-by=*)
+        [[ "$mode" == "list" ]] || usage_die "Error: --group-by does not apply to counts."
+        TASK_LIST_GROUP_BY="${1#*=}"; TASK_LIST_GROUP_BY_SET=true; shift ;;
+      --fields)
+        [[ "$mode" == "list" ]] || usage_die "Error: --fields does not apply to counts."
+        need_value "$1" "${2:-}"; TASK_LIST_FIELDS="$2"; TASK_LIST_FIELDS_SET=true; shift 2 ;;
+      --fields=*)
+        [[ "$mode" == "list" ]] || usage_die "Error: --fields does not apply to counts."
+        TASK_LIST_FIELDS="${1#*=}"; TASK_LIST_FIELDS_SET=true; shift ;;
+      do|delay|done|delegate|awaiting|all)
+        TASK_LIST_FILTER="$1"; shift ;;
+      *) usage_die "Unknown option for $mode: $1 (see: timdo $mode --help)" ;;
     esac
   done
 
+  validate_task_status_filter "$TASK_LIST_FILTER"
+  if [[ "$TASK_LIST_LIMIT_SET" == true ]]; then
+    [[ "$TASK_LIST_LIMIT" =~ ^[0-9]{1,3}$ ]] || usage_die "Error: --limit must be a whole number from 1 to 200."
+    local page_limit=$((10#$TASK_LIST_LIMIT))
+    (( page_limit >= 1 && page_limit <= 200 )) || usage_die "Error: --limit must be a whole number from 1 to 200."
+    TASK_LIST_LIMIT="$page_limit"
+  fi
+  if [[ "$TASK_LIST_CURSOR_SET" == true ]]; then
+    [[ "$TASK_LIST_LIMIT_SET" == true ]] || usage_die "Error: --cursor requires --limit."
+    if [[ -z "$TASK_LIST_CURSOR" || ${#TASK_LIST_CURSOR} -gt 4096 || ! "$TASK_LIST_CURSOR" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      usage_die "Error: --cursor must be a URL-safe cursor of at most 4096 characters."
+    fi
+  fi
+  if [[ "$TASK_LIST_GROUP_BY_SET" == true ]]; then
+    case "$TASK_LIST_GROUP_BY" in project|epic|assignee) ;; *) usage_die "Error: --group-by must be project, epic or assignee." ;; esac
+  fi
+  if [[ "$TASK_LIST_FIELDS_SET" == true ]]; then
+    case "$TASK_LIST_FIELDS" in summary|full) ;; *) usage_die "Error: --fields must be summary or full." ;; esac
+  fi
+  if [[ -n "$TASK_LIST_REF_ROLE" && -z "$TASK_LIST_REF" ]]; then
+    usage_die "Error: --ref-role only works with --ref <url|kind:id>."
+  fi
+}
+
+build_task_list_path() {
+  local endpoint="$1"
   local params=()
-  [[ -n "$category" ]] && params+=("category=$(urlencode "$category")")
-  if [[ -n "$project_id" ]]; then
-    params+=("projectId=$(urlencode "$(resolve_project "$project_id" | jq -r '.id')")")
+  [[ "$TASK_LIST_FILTER" != "all" ]] && params+=("status=$(urlencode "$TASK_LIST_FILTER")")
+  [[ -n "$TASK_LIST_CATEGORY" ]] && params+=("category=$(urlencode "$TASK_LIST_CATEGORY")")
+  if [[ -n "$TASK_LIST_PROJECT_ID" ]]; then
+    params+=("projectId=$(urlencode "$(resolve_project "$TASK_LIST_PROJECT_ID" | jq -r '.id')")")
   fi
-  if [[ -n "$workspace" ]]; then
-    params+=("orgId=$(urlencode "$(resolve_org "$workspace" | jq -r '.id')")")
+  if [[ -n "$TASK_LIST_WORKSPACE" ]]; then
+    params+=("orgId=$(urlencode "$(resolve_org "$TASK_LIST_WORKSPACE" | jq -r '.id')")")
   fi
-  [[ -n "$epic" ]] && params+=("epicId=$(urlencode "$(resolve_epic_id "$epic")")")
-  [[ -n "$goal" ]] && params+=("goalId=$(urlencode "$(resolve_goal_id "$goal")")")
-  [[ -n "$customer" ]] && params+=("customer=$(urlencode "$customer")")
-  [[ -n "$tag" ]] && params+=("tag=$(urlencode "$tag")")
-  [[ -n "$related_to" ]] && params+=("relatedTo=$(urlencode "$related_to")")
-  if [[ -n "$assignee" ]]; then
-    params+=("assignee=$(urlencode "$(resolve_user_anywhere "$assignee")")")
+  [[ -n "$TASK_LIST_EPIC" ]] && params+=("epicId=$(urlencode "$(resolve_epic_id "$TASK_LIST_EPIC")")")
+  [[ -n "$TASK_LIST_GOAL" ]] && params+=("goalId=$(urlencode "$(resolve_goal_id "$TASK_LIST_GOAL")")")
+  [[ -n "$TASK_LIST_CUSTOMER" ]] && params+=("customer=$(urlencode "$TASK_LIST_CUSTOMER")")
+  [[ -n "$TASK_LIST_TAG" ]] && params+=("tag=$(urlencode "$TASK_LIST_TAG")")
+  [[ -n "$TASK_LIST_RELATED_TO" ]] && params+=("relatedTo=$(urlencode "$TASK_LIST_RELATED_TO")")
+  [[ -n "$TASK_LIST_ASSIGNEE" ]] && params+=("assignee=$(urlencode "$(resolve_user_anywhere "$TASK_LIST_ASSIGNEE")")")
+  [[ -n "$TASK_LIST_REF" ]] && params+=("ref=$(urlencode "$TASK_LIST_REF")")
+  [[ -n "$TASK_LIST_REF_ROLE" ]] && params+=("role=$(urlencode "$TASK_LIST_REF_ROLE")")
+  [[ "$TASK_LIST_SHARED" == true ]] && params+=("shared=true")
+  [[ "$TASK_LIST_NO_EPIC" == true ]] && params+=("noEpic=true")
+  [[ "$TASK_LIST_NO_GOAL" == true ]] && params+=("noGoal=true")
+  [[ "$TASK_LIST_NO_CATEGORY" == true ]] && params+=("noCategory=true")
+  [[ -n "$TASK_LIST_UNLINKED" ]] && params+=("unlinked=$(urlencode "$TASK_LIST_UNLINKED")")
+  if [[ "$endpoint" == "/projects" ]]; then
+    [[ "$TASK_LIST_LIMIT_SET" == true ]] && params+=("limit=$TASK_LIST_LIMIT")
+    [[ "$TASK_LIST_CURSOR_SET" == true ]] && params+=("cursor=$(urlencode "$TASK_LIST_CURSOR")")
+    [[ -n "$TASK_LIST_FIELDS" ]] && params+=("fields=$(urlencode "$TASK_LIST_FIELDS")")
   fi
-  [[ -n "$ref_role" && -z "$ref" ]] && usage_die "Error: --ref-role only works with --ref <url|kind:id>."
-  [[ -n "$ref" ]] && params+=("ref=$(urlencode "$ref")")
-  [[ -n "$ref_role" ]] && params+=("role=$(urlencode "$ref_role")")
-
-  local path="/projects"
-  if [[ ${#params[@]} -gt 0 ]]; then
-    path="$path?$(IFS='&'; echo "${params[*]}")"
+  if [[ ${#params[@]} -eq 0 ]]; then
+    printf '%s' "$endpoint"
+  else
+    printf '%s?%s' "$endpoint" "$(IFS='&'; printf '%s' "${params[*]}")"
   fi
+}
 
-  local raw
-  raw=$(api GET "$path")
-
-  case "$filter" in
-    do|delay|done|delegate|awaiting|all) ;;
-    *) usage_die "Unknown filter: $filter. Use: all, do, delay, done, delegate, awaiting" ;;
-  esac
-
-  local selected
-  selected=$(echo "$raw" | jq --arg f "$filter" \
-    --argjson shared "$shared" --argjson noEpic "$no_epic" --argjson noGoal "$no_goal" \
-    --argjson noCat "$no_category" --arg unlinked "$unlinked" '
+filter_unpaged_tasks() {
+  jq --arg filter "$TASK_LIST_FILTER" \
+    --argjson shared "$TASK_LIST_SHARED" --argjson noEpic "$TASK_LIST_NO_EPIC" \
+    --argjson noGoal "$TASK_LIST_NO_GOAL" --argjson noCategory "$TASK_LIST_NO_CATEGORY" \
+    --arg unlinked "$TASK_LIST_UNLINKED" '
     def blank: . == null or . == "";
-    [.[]
-      | select(.isDeleted != true)
-      | select($f == "all" or .status == $f)
-      | select(($shared | not) or .isShared == true)
-      | select((($noEpic or $unlinked == "epic") | not) or (.epicId | blank))
-      | select((($noGoal or $unlinked == "goal") | not) or (.goalId | blank))
-      | select((($noCat or $unlinked == "category") | not) or (.category | blank))
-      | select($unlinked != "any" or (.epicId | blank) or (.goalId | blank) or (.category | blank))
-    ]
-    | if $f == "awaiting" then sort_by(.awaitUntil // "9999") else sort_by(-.priority) end')
+    ($filter | split(",")) as $statuses
+    | [ .[]
+        | select(.isDeleted != true)
+        | select($filter == "all" or (.status as $status | $statuses | index($status) != null))
+        | select(($shared | not) or .isShared == true)
+        | select((($noEpic or $unlinked == "epic") | not) or (.epicId | blank))
+        | select((($noGoal or $unlinked == "goal") | not) or (.goalId | blank))
+        | select((($noCategory or $unlinked == "category") | not) or (.category | blank))
+        | select($unlinked != "any" or (.epicId | blank) or (.goalId | blank) or (.category | blank))
+      ]
+    | if $filter == "awaiting" then sort_by(.awaitUntil // "9999") else sort_by(-.priority) end'
+}
+
+cmd_list() {
+  parse_task_list_args list "$@"
+  local path response raw selected total="" next_cursor="" count
+  path=$(build_task_list_path /projects)
+  if [[ "$TASK_LIST_LIMIT_SET" == true ]]; then
+    response=$(api_response GET "$path")
+    raw=$(jq -c '.body' <<< "$response")
+    total=$(jq -r '.headers.totalCount // empty' <<< "$response")
+    next_cursor=$(jq -r '.headers.nextCursor // empty' <<< "$response")
+  else
+    raw=$(api GET "$path")
+  fi
+  jq -e 'type == "array"' >/dev/null <<< "$raw" || die "Error: the task list response was not an array."
+  selected="$raw"
+  if [[ "$TASK_LIST_LIMIT_SET" == false ]]; then
+    selected=$(filter_unpaged_tasks <<< "$raw")
+  fi
+  count=$(jq 'length' <<< "$selected")
 
   if ! is_text; then
-    echo "$selected"
+    if [[ "$TASK_LIST_LIMIT_SET" == true ]]; then
+      jq -c --arg total "$total" --arg cursor "$next_cursor" '{items:., nextCursor:(if $cursor == "" then null else $cursor end), total:(try ($total | tonumber) catch null)}' <<< "$selected"
+    else
+      jq '.' <<< "$selected"
+    fi
     return
   fi
 
-  if [[ "$(echo "$selected" | jq 'length')" -eq 0 ]]; then
-    if [[ -n "$ref" ]]; then
+  if [[ "$TASK_LIST_LIMIT_SET" == true ]]; then
+    printf 'Page: %s task(s)' "$count"
+    [[ -n "$total" ]] && printf ' of %s total' "$total"
+    printf '.\n'
+    [[ -n "$next_cursor" ]] && printf 'Next cursor: %s\n' "$next_cursor"
+  fi
+  if [[ "$TASK_LIST_LIMIT_SET" == false && -t 1 && "$count" -gt 200 ]]; then
+    echo "Tip: this is the full list. Narrow it with status and other filters, or use --limit 50 to page through results." >&2
+  fi
+  if [[ "$count" -eq 0 ]]; then
+    if [[ -n "$TASK_LIST_REF" ]]; then
       local note=""
-      [[ -n "$ref_role" ]] && note=" as $ref_role"
-      [[ "$filter" != all ]] && note="$note with status $filter"
-      echo "No task you can see carries $ref$note."
+      [[ -n "$TASK_LIST_REF_ROLE" ]] && note=" as $TASK_LIST_REF_ROLE"
+      [[ "$TASK_LIST_FILTER" != all ]] && note="$note with status $TASK_LIST_FILTER"
+      echo "No task you can see carries $TASK_LIST_REF$note."
     else
       echo "No tasks found."
     fi
     return
   fi
 
-  if [[ "$filter" == "all" ]]; then
+  if [[ -n "$TASK_LIST_GROUP_BY" ]]; then
+    echo "$selected" | jqt '
+      task_widths as $w
+      | map(. + {_groupKey: task_group_key($by), _groupLabel: task_group_label($by)})
+      | group_by(._groupKey)
+      | sort_by([if .[0]._groupKey == "" then 1 else 0 end, (.[0]._groupLabel | ascii_downcase)])
+      | .[]
+      | ("", ((.[0]._groupLabel | safe) + " (\(length))" | paint("bold"))),
+        (sort_by(-.priority) | .[] | task_line($w))' --arg by "$TASK_LIST_GROUP_BY"
+  elif [[ "$TASK_LIST_FILTER" == "all" ]]; then
     echo "$selected" | jqt '
       task_widths as $w
       | group_by(.status) | sort_by(.[0].status | status_order) | .[]
@@ -1036,6 +1260,38 @@ cmd_list() {
   else
     echo "$selected" | jqt 'task_widths as $w | .[] | task_line($w)'
   fi
+}
+
+usage_counts() {
+  cat <<'EOF'
+Usage: timdo counts [all|do|delay|done|delegate|awaiting] [membership filters]
+
+Show SQL-aggregated task totals for the same filters as `timdo list`. All five
+status keys are returned, including zeroes. Paging and presentation options do
+not apply to counts.
+
+Examples:
+  timdo counts
+  timdo counts do --mine
+  timdo counts --shared --no-epic --customer "Fictional Workshop"
+EOF
+}
+
+cmd_counts() {
+  parse_task_list_args counts "$@"
+  local path raw
+  path=$(build_task_list_path /projects/counts)
+  raw=$(api GET "$path")
+  if ! is_text; then
+    jq '.' <<< "$raw"
+    return
+  fi
+  jq -e 'type == "object" and (.byStatus | type == "object") and (.total | type == "number")' >/dev/null <<< "$raw" \
+    || die "Error: the task counts response was not valid."
+  echo "$raw" | jqt '
+    ("Matching tasks: \(.total)" | paint("bold")),
+    (["do", "delay", "awaiting", "delegate", "done"][] as $status
+      | "  " + ($status | ascii_upcase | pad(9)) + " " + ((.byStatus[$status] // 0) | tostring))'
 }
 
 # ---------------------------------------------------------------------------
@@ -2842,8 +3098,10 @@ ENVIRONMENT:
   If both a token and the secret are set, the token wins.
 
 TASKS:
-  list [status] [opts]         List tasks (all, do, delay, done, delegate, awaiting)
-                               --mine --unassigned --assignee <who> -w <workspace> -p <project>
+  list [status] [opts]         List tasks; --limit 1-200 and --cursor page through results
+                               --fields summary|full, --group-by project|epic|assignee
+                               Filters include --mine, --assignee, --ref, --shared, --unlinked
+  counts [status] [filters]    SQL counts for all five statuses, with membership filters
   get <id>                     Task with workspace, project, people, notes and recent activity
   add "title" -p <project>     Create a task (--title for a dash-leading title, --assign, --project-id, ...)
                                A terminal checks similar open tasks and offers to add a note instead;
@@ -2915,6 +3173,7 @@ HELP
 
 case "${1:-help}" in
   list|ls)             shift; cmd_list "$@" ;;
+  counts)               shift; cmd_counts "$@" ;;
   add)                 shift; cmd_add "$@" ;;
   update)              shift; cmd_update "$@" ;;
   workspace|workspaces|ws|org|orgs) shift; cmd_workspace "$@" ;;

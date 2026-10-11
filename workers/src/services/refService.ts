@@ -160,36 +160,27 @@ const byRoleThenAge = (a: RefRow, b: RefRow) =>
 /* ---------------------------------------------------------------- loading for views */
 
 /**
- * Ref rows for a set of tasks. One query either way: by task for a single task, otherwise by
- * workspace (orgs are few, tasks may be hundreds, and D1 caps bound parameters at 100) and
- * filtered in memory.
+ * Ref rows for selected tasks, queried by task id in chunks below D1's 100-bind ceiling. A small
+ * page never reads every ref in a workspace, and legacy full lists remain complete.
  */
 export async function fetchRefRows(
   db: DB,
-  orgIds: string[],
+  _orgIds: string[],
   taskIds: Set<string>
 ): Promise<Map<string, RefRow[]>> {
   const byTask = new Map<string, RefRow[]>();
-  if (taskIds.size === 0 || orgIds.length === 0) {
-    return byTask;
-  }
-  const rows =
-    taskIds.size === 1
-      ? await db
-          .select()
-          .from(schema.taskRefs)
-          .where(eq(schema.taskRefs.taskId, Array.from(taskIds)[0]))
-      : await db
-          .select()
-          .from(schema.taskRefs)
-          .where(inArray(schema.taskRefs.orgId, Array.from(new Set(orgIds))));
-  for (const row of rows) {
-    if (!taskIds.has(row.taskId)) {
-      continue;
+  const ids = Array.from(taskIds);
+  for (let index = 0; index < ids.length; index += 90) {
+    const chunk = ids.slice(index, index + 90);
+    const rows = await db
+      .select()
+      .from(schema.taskRefs)
+      .where(inArray(schema.taskRefs.taskId, chunk));
+    for (const row of rows) {
+      const list = byTask.get(row.taskId) ?? [];
+      list.push(row);
+      byTask.set(row.taskId, list);
     }
-    const list = byTask.get(row.taskId) ?? [];
-    list.push(row);
-    byTask.set(row.taskId, list);
   }
   return byTask;
 }

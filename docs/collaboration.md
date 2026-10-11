@@ -38,9 +38,11 @@ Permission failures come back as `403 { error }` (not allowed) or `404 { error }
 - `GET /users/me` returns `{ id, email, name }`.
 
 ### Tasks (original shape, now shared)
-- `GET /projects?category=&epicId=&goalId=&customer=&tag=&relatedTo=&assignee=&orgId=&projectId=&ref=&role=`
+- `GET /projects?category=&epicId=&goalId=&customer=&tag=&relatedTo=&assignee=&orgId=&projectId=&ref=&role=&status=&fields=&limit=&cursor=&sort=&doneSince=&doneBefore=` returns visible, non-deleted tasks. The no-option call remains unlimited and includes full bodies. `fields=summary` omits `notes` and adds note-count metadata without selecting the body.
   - `assignee`: `me` (assigned to me, or unassigned and created by me), `unassigned`, `mine_or_unassigned`, or a user id.
   - `ref`: a URL or `kind:id`; only tasks carrying it (see Refs below). `role` narrows it to one role, as on `DELETE /tasks/:id/refs` (`refRole` still works as an alias).
+- `GET /projects/counts?...` accepts the same membership filters and returns totals by status. It always includes `do`, `delay`, `awaiting`, `delegate`, and `done`.
+- `GET /tasks` remains an unlimited list of raw task rows with full bodies. Its `mine=true` filter means assigned to the caller.
 - `GET /projects/:id` returns one task.
 - `POST /projects` takes `{ project, reason?, status, priority, size, notes?, awaitUntil?, gmailThreadId?, category?, projectId?, assigneeId?, customer?, tags?, epicId?, goalId?, refs?, onDuplicate? }`. `refs` is up to 20 `RefInput`s, added with the task (see Refs). A new task is `201` with `created: true` and `similar` (see No duplicates below); `onDuplicate` decides what happens when a `source` ref in `refs` is already tracked.
 - `PUT /projects/:id` takes any of the above except `refs`, plus `isDeleted`. Sending `refs` or `removeRefs` on a PUT (here or on `PUT /tasks/:id`) is a 400 pointing at the refs endpoints, rather than a silent 200.
@@ -62,8 +64,12 @@ reporterId, reporterName
 assigneeId, assigneeName
 updatedById, updatedByName
 isMine          assigned to me, or unassigned and created by me
+noteCount       number of task update notes
+lastNoteAt      latest task update timestamp, or null
 refs            [RefView], links to things outside TimDo, Source first ([] when none)
 ```
+
+`fields=summary` omits `notes` from the SQL projection and result. List filters, counts, paging headers, date rules and cursors are documented in [`docs/task-list-api.md`](task-list-api.md).
 
 ### Refs (links to things outside TimDo)
 A task can point at any number of outside things: a GitHub issue, a forum post, a Gmail thread, a member of another system, any URL. Each ref is written `kind:id` (the canonical form), e.g. `github.issue:acme/widgets#12`, `forum.post:4411`, `acme.member:123456`. Kinds are lowercase dotted slugs; unknown kinds are fine, so a bot can name its own system. Record people by their id in the other system, not by name or email.

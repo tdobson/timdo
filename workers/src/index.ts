@@ -1,5 +1,4 @@
-import type { DrizzleD1Database } from 'drizzle-orm/d1';
-import { drizzle } from 'drizzle-orm/d1';
+import { drizzle, type DrizzleD1Database } from 'drizzle-orm/d1';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import * as schema from './db/schema';
@@ -56,6 +55,7 @@ app.use(
     origin: ['http://localhost:3000', 'https://timdo.tdobson.net'],
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'X-Internal-Secret', 'X-Timdo-User'],
+    exposeHeaders: ['X-Total-Count', 'X-Next-Cursor'],
   })
 );
 

@@ -104,30 +104,108 @@ export interface VoiceCommandResult {
 }
 
 const STORAGE_KEY = 'timdo:voice-review';
+const REVIEW_VERSION = 1;
 
-/** Hand a result to the review screen. Session storage keeps long change lists out of the URL. */
-export function saveVoiceReview(result: VoiceCommandResult) {
+export interface VoiceReviewEnvelope {
+  version: typeof REVIEW_VERSION;
+  reviewId: string;
+  accountId: string;
+  result: VoiceCommandResult;
+}
+
+export type VoiceReviewLoadResult =
+  | { status: 'loaded'; review: VoiceReviewEnvelope }
+  | { status: 'missing' | 'unowned' | 'different-account' };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isVoiceReviewEnvelope(value: unknown): value is VoiceReviewEnvelope {
+  if (!isRecord(value) || !isRecord(value.result)) {
+    return false;
+  }
+  return (
+    value.version === REVIEW_VERSION &&
+    typeof value.reviewId === 'string' &&
+    value.reviewId.length > 0 &&
+    typeof value.accountId === 'string' &&
+    value.accountId.length > 0 &&
+    Array.isArray(value.result.proposedChanges)
+  );
+}
+
+function createReviewId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Classify stored or URL review data without assigning legacy/unowned data to the current user. */
+export function readVoiceReview(value: unknown, accountId: string): VoiceReviewLoadResult {
+  if (!isVoiceReviewEnvelope(value)) {
+    return { status: 'unowned' };
+  }
+  if (value.accountId !== accountId) {
+    return { status: 'different-account' };
+  }
+  return { status: 'loaded', review: value };
+}
+
+/** Bind a generated review to its account before storing it in this tab. */
+export function createVoiceReview(
+  result: VoiceCommandResult,
+  accountId: string
+): VoiceReviewEnvelope | null {
+  if (!accountId) {
+    return null;
+  }
+  return {
+    version: REVIEW_VERSION,
+    reviewId: createReviewId(),
+    accountId,
+    result,
+  };
+}
+
+/** Store a review in session storage; session storage keeps long change lists out of the URL. */
+export function saveVoiceReview(review: VoiceReviewEnvelope): boolean {
   try {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(result));
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(review));
     return true;
   } catch {
     return false;
   }
 }
 
-export function loadVoiceReview(): VoiceCommandResult | null {
+export function loadVoiceReview(accountId: string): VoiceReviewLoadResult {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as VoiceCommandResult) : null;
+    return raw ? readVoiceReview(JSON.parse(raw) as unknown, accountId) : { status: 'missing' };
   } catch {
-    return null;
+    return { status: 'missing' };
   }
 }
 
-export function clearVoiceReview() {
+/** Clear only the review this flow owns; a later review in the same tab is left intact. */
+export function clearVoiceReview(expected: { accountId: string; reviewId: string }): boolean {
   try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return false;
+    }
+    const value = JSON.parse(raw) as unknown;
+    if (
+      !isVoiceReviewEnvelope(value) ||
+      value.accountId !== expected.accountId ||
+      value.reviewId !== expected.reviewId
+    ) {
+      return false;
+    }
     sessionStorage.removeItem(STORAGE_KEY);
+    return true;
   } catch {
-    // Storage can be unavailable (private mode); nothing to clear then
+    return false;
   }
 }

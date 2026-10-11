@@ -120,6 +120,9 @@ export interface Project {
   goalId?: string | null;
   customer?: string | null;
   tags?: string[] | string | null;
+  /** Number and latest timestamp of task update notes, when returned by the list API. */
+  noteCount?: number;
+  lastNoteAt?: string | null;
   linkedTasks?: Array<{
     id: string;
     shortId: string;
@@ -138,7 +141,58 @@ export interface Project {
 }
 
 /**
- * Persisted project update/note record – matches D1 `ProjectUpdates` table shape.
+ * Lightweight list row for collapsed board cards. The body is deliberately absent, not empty.
+ */
+export type ProjectSummary = Omit<Project, 'notes'> & {
+  noteCount: number;
+  lastNoteAt: string | null;
+};
+
+/** Authoritative task response used before mounting editors or markdown viewers. */
+export type ProjectDetail = Project & { notes: string };
+
+export type ProjectListFields = 'summary' | 'full';
+
+export interface ProjectListFilters {
+  category?: string;
+  orgId?: string;
+  projectId?: string;
+  status?: string | string[];
+  epicId?: string;
+  goalId?: string;
+  customer?: string;
+  tag?: string;
+  relatedTo?: string;
+  assignee?: string;
+  ref?: string;
+  role?: RefRole;
+  refRole?: RefRole;
+  shared?: boolean;
+  noEpic?: boolean;
+  noGoal?: boolean;
+  noCategory?: boolean;
+  unlinked?: 'any' | 'epic' | 'goal' | 'category';
+  doneSince?: string;
+  doneBefore?: string;
+  fields?: ProjectListFields;
+  sort?: 'default' | 'completed';
+  limit?: number;
+  cursor?: string;
+}
+
+export interface ProjectListPage<T = ProjectSummary> {
+  items: T[];
+  total?: number;
+  nextCursor?: string;
+}
+
+export type ProjectCounts = {
+  byStatus: Record<ProjectStatus, number>;
+  total: number;
+};
+
+/**
+ * Persisted project update/note record. Matches D1 `ProjectUpdates` table shape.
  */
 export interface ProjectUpdate {
   id: string;

@@ -11,35 +11,21 @@ aiApp.post('/voice-command', async (c) => {
   try {
     const formData = await c.req.formData();
     const audioFile = formData.get('audio');
-    const projectsJson = formData.get('projects');
-
     if (!audioFile || typeof audioFile === 'string') {
       return c.json({ error: 'Audio file is required' }, 400);
     }
 
-    // The client's cached task list is optional now: it saves a database read when it is
-    // current, but permissions, workspaces and people always come from the database.
-    let clientTasks: unknown;
-    if (typeof projectsJson === 'string' && projectsJson.trim()) {
-      try {
-        clientTasks = JSON.parse(projectsJson);
-      } catch {
-        return c.json({ error: 'Projects JSON is not valid' }, 400);
-      }
-    }
-
+    // Older clients may still send `projects`; it is ignored as task authority.
     const groqApiKey = c.env.GROQ_API_KEY;
 
     if (!groqApiKey) {
       return c.json({ error: 'Server configuration error: Missing Groq API key' }, 500);
     }
 
-    const context = await loadVoiceContext(c.get('db'), c.get('userId'), clientTasks);
-
     const result = await processVoiceCommand({
       audioFile,
       groqApiKey,
-      context,
+      loadContext: (transcript) => loadVoiceContext(c.get('db'), c.get('userId'), transcript),
     });
 
     return c.json(result);

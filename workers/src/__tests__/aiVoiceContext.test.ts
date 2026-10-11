@@ -119,7 +119,7 @@ describe('voice commands in shared workspaces', () => {
     });
   });
 
-  const ctx = () => loadVoiceContext(db, TIM);
+  const ctx = (transcript = '') => loadVoiceContext(db, TIM, transcript);
 
   describe('loadVoiceContext', () => {
     it('loads workspaces with roles, people, projects, tasks, epics and goals', async () => {
@@ -156,7 +156,7 @@ describe('voice commands in shared workspaces', () => {
       ]);
     });
 
-    it('uses the client task list when it has workspace info, and ignores it otherwise', async () => {
+    it('selects task content from the database rather than accepting a client task list', async () => {
       const fromClient = [
         {
           id: uuid(9),
@@ -167,14 +167,16 @@ describe('voice commands in shared workspaces', () => {
           projectId: 'proj-acme-solar',
         },
       ];
-      expect((await loadVoiceContext(db, TIM, fromClient)).tasks.map((t) => t.project)).toEqual([
-        'Client copy',
-      ]);
-      // Old cached shape without projectId, or a project the user can't see: load from the DB
-      const stale = [{ id: uuid(9), project: 'Old shape', status: 'do', priority: 5, size: '*' }];
-      expect((await loadVoiceContext(db, TIM, stale)).tasks).toHaveLength(4);
-      const foreign = [{ ...fromClient[0], projectId: 'proj-stranger' }];
-      expect((await loadVoiceContext(db, TIM, foreign)).tasks).toHaveLength(4);
+      const context = await loadVoiceContext(db, TIM, 'Client copy');
+      expect(context.tasks.map((task) => task.project)).not.toContain(fromClient[0].project);
+      expect(context.tasks.map((task) => task.project)).toEqual(
+        expect.arrayContaining([
+          'Acme Solar onboarding',
+          'Check inverter datasheet',
+          'Count the ropes',
+          'Renew passport',
+        ])
+      );
     });
   });
 
@@ -588,7 +590,7 @@ describe('voice commands in shared workspaces', () => {
       );
       expect(proposals).toEqual([]);
       expect(warnings).toEqual([
-        `I couldn't find the task "Ghost task", so I left that change out.`,
+        `I couldn't find the task "Ghost task" in the selected task sample, so I left that change out. Mention a listed task title or id instead.`,
       ]);
     });
 
@@ -661,7 +663,7 @@ describe('voice commands in shared workspaces', () => {
   });
 
   describe('prompt size', () => {
-    it('clips long notes, trims done tasks, and restores clipped notes the model echoes back', async () => {
+    it('SQL-clips prompt bodies and includes matching Done tasks within the bounded sample', async () => {
       const long = 'x'.repeat(400);
       await projectService.updateProject(db, TIM, uuid(1), { notes: long });
       for (let i = 0; i < 105; i++) {
@@ -675,20 +677,17 @@ describe('voice commands in shared workspaces', () => {
           notes: 'long done notes',
         });
       }
-      const c = await ctx();
-      await processVoiceCommand({ audioFile: audio(), groqApiKey: 'k', context: c });
+      const context = await ctx('Acme Solar onboarding old');
+      await processVoiceCommand({ audioFile: audio(), groqApiKey: 'k', context });
       const tasks = JSON.parse(lastInvokeArgs.projects);
-      const onboarding = tasks.find((t: any) => t.id === uuid(1));
+      const onboarding = tasks.find((task: any) => task.id === uuid(1));
+      const done = tasks.filter((task: any) => task.status === 'done');
+      expect(context.tasks.length).toBeLessThanOrEqual(150);
+      expect(tasks.length).toBeLessThanOrEqual(150);
       expect(onboarding.notes).toHaveLength(163);
-      const done = tasks.filter((t: any) => t.status === 'done');
-      expect(done).toHaveLength(100);
+      expect(done).toHaveLength(105);
       expect(done[0].notes).toBeUndefined();
-
-      const { proposals } = resolveProposals(
-        [{ type: 'update', projectId: uuid(1), after: { ...onboarding, status: 'done' } }],
-        c
-      );
-      expect(proposals[0].after?.notes).toBe(long);
+      expect(lastInvokeArgs.projects).not.toContain(long);
     });
   });
 
@@ -721,7 +720,10 @@ describe('voice commands in shared workspaces', () => {
             projectId: 'new-epic-placeholder-1',
             after: { project: 'Hydrogen pilot', category: 'Acme Solar' },
           },
-          create({ project: 'Call supplier', category: 'Acme Solar', epicTitle: 'Hydrogen pilot' }, 2),
+          create(
+            { project: 'Call supplier', category: 'Acme Solar', epicTitle: 'Hydrogen pilot' },
+            2
+          ),
         ],
         await ctx()
       );
@@ -816,7 +818,12 @@ describe('voice commands in shared workspaces', () => {
 
   describe('matchPerson', () => {
     const people = [
-      { userId: 'a', name: 'Jordan Example', email: 'jordan@example.test', role: 'member' as const },
+      {
+        userId: 'a',
+        name: 'Jordan Example',
+        email: 'jordan@example.test',
+        role: 'member' as const,
+      },
       { userId: 'b', name: 'Casey Example', email: 'casey@example.test', role: 'owner' as const },
     ];
     it('handles me words, nobody words and unknowns', () => {

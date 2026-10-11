@@ -2,7 +2,7 @@
  * Activity log: who did what, when, across tasks, epics, notes and sharing.
  * Writes never block the action they describe; a failed log write is only reported.
  */
-import { and, desc, eq, inArray, isNull, or, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
@@ -143,19 +143,8 @@ export async function getActivity(
   query: ActivityQuery = {}
 ): Promise<ActivityEntry[]> {
   const projects = await getAccessibleProjects(db, userId);
-  const projectIds = projects.map((p) => p.id);
-  const orgIds = Array.from(new Set(projects.map((p) => p.orgId)));
-  const memberships = await db
-    .select({ orgId: schema.organisationMembers.orgId })
-    .from(schema.organisationMembers)
-    .where(eq(schema.organisationMembers.userId, userId));
-  for (const m of memberships) {
-    if (!orgIds.includes(m.orgId)) {
-      orgIds.push(m.orgId);
-    }
-  }
 
-  // Build the visibility filter from concrete clauses only: an empty list must never widen it
+  // Resolve visibility in SQL so large workspaces do not become oversized bound id lists.
   const clauses: SQL[] = [
     // Personal things with no project or workspace (e.g. an unscoped epic) by this user
     and(
@@ -163,15 +152,23 @@ export async function getActivity(
       isNull(schema.activityLog.orgId),
       eq(schema.activityLog.actorId, userId)
     )!,
+    sql`exists (
+      select 1
+      from Projects visible_project
+      inner join OrganisationMembers visible_member on visible_member.org_id = visible_project.org_id
+      where visible_project.id = ${schema.activityLog.projectId}
+        and visible_member.user_id = ${userId}
+    )`,
+    and(
+      isNull(schema.activityLog.projectId),
+      sql`exists (
+        select 1
+        from OrganisationMembers visible_org_member
+        where visible_org_member.org_id = ${schema.activityLog.orgId}
+          and visible_org_member.user_id = ${userId}
+      )`
+    )!,
   ];
-  if (projectIds.length) {
-    clauses.push(inArray(schema.activityLog.projectId, projectIds));
-  }
-  if (orgIds.length) {
-    clauses.push(
-      and(isNull(schema.activityLog.projectId), inArray(schema.activityLog.orgId, orgIds))!
-    );
-  }
   const visibility = or(...clauses)!;
 
   const conditions = [visibility];

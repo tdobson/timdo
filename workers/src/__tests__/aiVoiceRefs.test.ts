@@ -101,7 +101,7 @@ describe('voice and task refs', () => {
     }
   });
 
-  const ctx = () => loadVoiceContext(db, TIM);
+  const ctx = (transcript = '') => loadVoiceContext(db, TIM, transcript);
   const resolve = async (changes: any[]) => resolveProposals(changes, await ctx());
 
   describe('context', () => {
@@ -139,7 +139,11 @@ describe('voice and task refs', () => {
 
     it('done tasks keep their refs so questions about links can be answered', async () => {
       await projectService.updateProject(db, TIM, uuid(1), { status: 'done' });
-      await processVoiceCommand({ audioFile: audio(), groqApiKey: 'k', context: await ctx() });
+      await processVoiceCommand({
+        audioFile: audio(),
+        groqApiKey: 'k',
+        context: await ctx('Broken offer page'),
+      });
       const done = JSON.parse(lastInvokeArgs.projects).find((t: any) => t.id === uuid(1));
       expect(done.refs).toContain('github.issue:acme/widgets#12');
     });
@@ -167,6 +171,7 @@ describe('voice and task refs', () => {
         'me',
         'projects',
         'refKinds',
+        'taskSample',
         'timestamp',
         'transcript',
         'workspaces',
@@ -245,7 +250,11 @@ describe('voice and task refs', () => {
 
     it('uses the only repository in the workspace when none was named', async () => {
       const { proposals } = await resolve([
-        create({ project: 'Widget bug', category: 'Acme Solar', refs: [{ ref: 'github.issue:#5' }] }),
+        create({
+          project: 'Widget bug',
+          category: 'Acme Solar',
+          refs: [{ ref: 'github.issue:#5' }],
+        }),
       ]);
       expect(proposals[0].refs?.[0].ref).toBe('github.issue:acme/widgets#5');
     });

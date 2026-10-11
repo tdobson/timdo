@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { IconMicrophone, IconPlayerStopFilled } from '@tabler/icons-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -9,9 +9,13 @@ import { ActionIcon, Loader, NavLink } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { apiFetch } from '../../app/lib/apiClient';
 import { getWorkerApiBaseUrl } from '../../app/lib/apiConfig';
-import type { Project } from '../../app/types/project.types';
+import {
+  captureTaskCacheScope,
+  isTaskCacheScopeCurrent,
+  type TaskCacheScope,
+} from '../../app/lib/taskCache';
 import { RecordingToolbar } from './RecordingToolbar';
-import { saveVoiceReview, type VoiceCommandResult } from './voiceTypes';
+import { createVoiceReview, saveVoiceReview, type VoiceCommandResult } from './voiceTypes';
 import classes from './VoiceCommand.module.css';
 
 type RecordingStatus = 'idle' | 'recording' | 'processing';
@@ -23,26 +27,86 @@ interface VoiceCommandProps {
   compact?: boolean;
 }
 
+interface VoiceGeneration {
+  id: number;
+  accountId: string;
+  scope: TaskCacheScope;
+}
+
+interface VoiceMutationVariables {
+  formData: FormData;
+  accessToken: string;
+  generation: VoiceGeneration;
+}
+
 export function VoiceCommand({ compact = false }: VoiceCommandProps) {
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
   const queryClient = useQueryClient();
   const router = useRouter();
+  const accountId = session?.user?.id || session?.user?.email || null;
+  const authRef = useRef({
+    status: sessionStatus,
+    accountId,
+    accessToken: session?.accessToken ?? null,
+  });
+  authRef.current = {
+    status: sessionStatus,
+    accountId,
+    accessToken: session?.accessToken ?? null,
+  };
+
   const [status, setStatus] = useState<RecordingStatus>('idle');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const mimeTypeRef = useRef<string>('audio/webm');
   const streamRef = useRef<MediaStream | null>(null);
+  const generationRef = useRef<VoiceGeneration | null>(null);
+  const generationIdRef = useRef(0);
 
-  const voiceCommandMutation = useMutation({
-    mutationFn: async (formData: FormData) => {
-      if (!session?.accessToken) {
-        throw new Error('Not authenticated');
+  const releaseStream = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
+  const isGenerationCurrent = useCallback(
+    (generation: VoiceGeneration) =>
+      generationRef.current?.id === generation.id &&
+      authRef.current.status === 'authenticated' &&
+      authRef.current.accountId === generation.accountId &&
+      isTaskCacheScopeCurrent(queryClient, generation.scope),
+    [queryClient]
+  );
+
+  useEffect(() => {
+    const generation = generationRef.current;
+    if (!generation || isGenerationCurrent(generation)) {
+      return;
+    }
+
+    generationRef.current = null;
+    if (recordingTimeoutRef.current) {
+      clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = null;
+    }
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+    releaseStream();
+    setStatus('idle');
+  }, [accountId, sessionStatus, isGenerationCurrent, releaseStream]);
+
+  const voiceCommandMutation = useMutation<VoiceCommandResult, Error, VoiceMutationVariables>({
+    mutationFn: async ({ formData, accessToken, generation }) => {
+      if (!isGenerationCurrent(generation)) {
+        throw new Error('The signed-in account changed. Try recording again.');
       }
       const response = await apiFetch(`${getWorkerApiBaseUrl()}/ai/voice-command`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${session.accessToken}`,
+          Authorization: `Bearer ${accessToken}`,
         },
         body: formData,
       });
@@ -55,7 +119,10 @@ export function VoiceCommand({ compact = false }: VoiceCommandProps) {
       }
       return (await response.json()) as VoiceCommandResult;
     },
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
+      if (!isGenerationCurrent(variables.generation)) {
+        return;
+      }
       const { proposedChanges, summary, answer, warnings = [] } = data;
 
       // Questions ("What's Robin working on?") come back as an answer
@@ -86,23 +153,39 @@ export function VoiceCommand({ compact = false }: VoiceCommandProps) {
         return;
       }
 
-      // Hand the full result (warnings, people, workspaces) to the review screen
-      if (saveVoiceReview(data)) {
-        router.push('/board/review-changes');
-      } else {
-        const changesParam = encodeURIComponent(JSON.stringify(proposedChanges));
-        router.push(`/board/review-changes?changes=${changesParam}`);
+      const review = createVoiceReview(data, variables.generation.accountId);
+      if (!review || !isGenerationCurrent(variables.generation)) {
+        return;
       }
+
+      // Keep private review content in this tab, never in browser history or copied URLs.
+      if (!saveVoiceReview(review)) {
+        notifications.show({
+          title: 'Review unavailable',
+          message:
+            'Your browser could not store the review. No task changes were made. Check site storage settings and try again.',
+          color: 'red',
+          autoClose: false,
+        });
+        return;
+      }
+      router.push('/board/review-changes');
     },
-    onError: (error) => {
+    onError: (error, variables) => {
+      if (!isGenerationCurrent(variables.generation)) {
+        return;
+      }
       notifications.show({
         title: 'Voice Command Failed',
         message: error.message,
         color: 'red',
       });
     },
-    onSettled: () => {
-      setStatus('idle');
+    onSettled: (_data, _error, variables) => {
+      if (generationRef.current?.id === variables.generation.id) {
+        generationRef.current = null;
+        setStatus('idle');
+      }
     },
   });
 
@@ -114,10 +197,31 @@ export function VoiceCommand({ compact = false }: VoiceCommandProps) {
   };
 
   const startRecording = async () => {
+    const auth = authRef.current;
+    if (auth.status !== 'authenticated' || !auth.accountId || !auth.accessToken) {
+      notifications.show({
+        title: 'Not signed in',
+        message: 'Sign in and try again.',
+        color: 'red',
+      });
+      return;
+    }
+
+    const generation: VoiceGeneration = {
+      id: ++generationIdRef.current,
+      accountId: auth.accountId,
+      scope: captureTaskCacheScope(queryClient, auth.accountId),
+    };
+    generationRef.current = generation;
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1 }, // Mono audio
       });
+      if (!isGenerationCurrent(generation)) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
 
       streamRef.current = stream;
       // Request mono audio at a lower bitrate to keep file sizes small and uploads fast.
@@ -139,47 +243,54 @@ export function VoiceCommand({ compact = false }: VoiceCommandProps) {
       let currentSize = 0;
 
       mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-          currentSize += event.data.size;
-          // Check for file size limit on each data chunk.
-          if (currentSize > MAX_FILE_SIZE_BYTES) {
-            stopRecording();
-            notifications.show({
-              title: 'Recording Stopped',
-              message: 'Maximum file size of 10MB reached.',
-              color: 'orange',
-            });
-          }
+        if (!isGenerationCurrent(generation) || event.data.size <= 0) {
+          return;
+        }
+        audioChunksRef.current.push(event.data);
+        currentSize += event.data.size;
+        // Check for file size limit on each data chunk.
+        if (currentSize > MAX_FILE_SIZE_BYTES) {
+          mediaRecorderRef.current?.stop();
+          notifications.show({
+            title: 'Recording Stopped',
+            message: 'Maximum file size of 10MB reached.',
+            color: 'orange',
+          });
         }
       };
 
       mediaRecorderRef.current.onstop = () => {
+        if (!isGenerationCurrent(generation)) {
+          return;
+        }
         if (recordingTimeoutRef.current) {
           clearTimeout(recordingTimeoutRef.current);
           recordingTimeoutRef.current = null;
         }
 
         // Stop all tracks to release the microphone
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((track) => track.stop());
-          streamRef.current = null;
+        releaseStream();
+
+        const accessToken = authRef.current.accessToken;
+        if (!accessToken) {
+          generationRef.current = null;
+          setStatus('idle');
+          notifications.show({
+            title: 'Not signed in',
+            message: 'Sign in and try again.',
+            color: 'red',
+          });
+          return;
         }
 
         const audioBlob = new Blob(audioChunksRef.current, {
           type: mimeTypeRef.current,
         });
-        // The cached task list saves the server a read; it loads its own if this is missing
-        const projects = queryClient.getQueryData<Project[]>(['projects']);
-
         const formData = new FormData();
         formData.append('audio', audioBlob, 'recording.webm');
-        if (projects) {
-          formData.append('projects', JSON.stringify(projects));
-        }
 
         setStatus('processing');
-        voiceCommandMutation.mutate(formData);
+        voiceCommandMutation.mutate({ formData, accessToken, generation });
       };
 
       mediaRecorderRef.current.start(1000); // ondataavailable will be called every second
@@ -187,7 +298,10 @@ export function VoiceCommand({ compact = false }: VoiceCommandProps) {
 
       // Recording will automatically stop after 3 minutes.
       recordingTimeoutRef.current = setTimeout(() => {
-        stopRecording();
+        if (!isGenerationCurrent(generation)) {
+          return;
+        }
+        mediaRecorderRef.current?.stop();
         notifications.show({
           title: 'Recording Stopped',
           message: 'Maximum duration of 3 minutes reached.',
@@ -195,11 +309,18 @@ export function VoiceCommand({ compact = false }: VoiceCommandProps) {
         });
       }, MAX_DURATION_MS);
     } catch (_error) {
-      notifications.show({
-        title: 'Microphone Error',
-        message: 'Could not access the microphone. Please check permissions.',
-        color: 'red',
-      });
+      const isCurrent = isGenerationCurrent(generation);
+      if (generationRef.current?.id === generation.id) {
+        generationRef.current = null;
+      }
+      if (isCurrent) {
+        setStatus('idle');
+        notifications.show({
+          title: 'Microphone Error',
+          message: 'Could not access the microphone. Please check permissions.',
+          color: 'red',
+        });
+      }
     }
   };
 

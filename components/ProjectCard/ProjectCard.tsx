@@ -1,5 +1,13 @@
-import { useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
@@ -12,10 +20,12 @@ import {
 } from '@tabler/icons-react';
 import {
   Accordion,
+  Alert,
   Badge,
   Button,
   Grid,
   Group,
+  Loader,
   Select,
   Slider,
   Stack,
@@ -26,14 +36,17 @@ import {
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
+import { useBoardProjectDetail } from '../../app/hooks/useBoardQueries';
 import { useCurrentUser } from '../../app/hooks/useCurrentUser';
 import { useEpics } from '../../app/hooks/useEpicQueries';
 import { useGoals } from '../../app/hooks/useGoalQueries';
 import { useClaimTask } from '../../app/hooks/useTaskMutations';
+import { updateBoardSearchParams } from '../../app/lib/boardState';
 import type {
   Project,
   ProjectSize,
   ProjectStatus,
+  ProjectSummary,
   ProjectUpdateInput,
 } from '../../app/types/project.types';
 import { ProjectUpdatesTimeline } from '../FeatureCard/ProjectUpdatesTimeline';
@@ -70,9 +83,12 @@ interface ProjectEditFormValues {
 }
 
 interface ProjectCardProps {
-  project: Project;
+  project: Project | ProjectSummary;
   onUpdate: (projectId: string, updates: ProjectUpdateInput) => void;
   onStatusChange: (projectId: string, newStatus: ProjectStatus) => void;
+  /** Controlled board expansion; undefined keeps the standalone legacy accordion behaviour. */
+  expanded?: boolean;
+  groupId?: string;
   disableCollapse?: boolean;
 }
 
@@ -84,12 +100,101 @@ const statusOptions: { value: ProjectStatus; label: string }[] = [
   { value: 'awaiting', label: 'Awaiting' },
 ];
 
+function hasFullTaskBody(project: Project | ProjectSummary): project is Project {
+  return 'notes' in project && typeof project.notes === 'string';
+}
+
+function ProjectDetailGate({
+  taskId,
+  onLoaded,
+  showPending,
+}: {
+  taskId: string;
+  onLoaded: (project: Project) => void;
+  showPending: boolean;
+}) {
+  const detail = useBoardProjectDetail(taskId, true);
+
+  useEffect(() => {
+    if (detail.data && typeof detail.data.notes === 'string') {
+      onLoaded(detail.data);
+    }
+  }, [detail.data, onLoaded]);
+
+  if (!showPending) {
+    return null;
+  }
+
+  if (detail.isLoading || (detail.isFetching && !detail.data)) {
+    return (
+      <Group gap="xs" role="status" aria-label="Loading task details">
+        <Loader size="xs" />
+        <Text size="sm" c="dimmed">
+          Loading task details…
+        </Text>
+      </Group>
+    );
+  }
+
+  if (detail.isError || !detail.data || typeof detail.data.notes !== 'string') {
+    return (
+      <Alert color="red" title="Task details could not be loaded">
+        <Group justify="space-between" align="center">
+          <Text size="sm">Retry to load the task before editing.</Text>
+          <Button size="xs" variant="light" onClick={() => void detail.refetch()}>
+            Retry
+          </Button>
+        </Group>
+      </Alert>
+    );
+  }
+
+  return (
+    <Text size="sm" c="dimmed">
+      Loading task details…
+    </Text>
+  );
+}
+
 export function ProjectCard({
-  project,
+  project: inputProject,
   onUpdate,
   onStatusChange,
+  expanded,
+  groupId,
   disableCollapse = false,
 }: ProjectCardProps) {
+  const searchParams = useSearchParams();
+  const { userId, isMe } = useCurrentUser();
+  const [hydratedAccountId, setHydratedAccountId] = useState<string | null>(userId);
+  const [hydratedProject, setHydratedProject] = useState<Project | null>(() =>
+    hasFullTaskBody(inputProject) ? inputProject : null
+  );
+  const onHydrated = useCallback(
+    (details: Project) => {
+      setHydratedProject(details);
+      setHydratedAccountId(userId);
+    },
+    [userId]
+  );
+  useEffect(() => {
+    if (hydratedAccountId !== userId) {
+      setHydratedAccountId(userId);
+      setHydratedProject(hasFullTaskBody(inputProject) ? inputProject : null);
+      return;
+    }
+    if (hasFullTaskBody(inputProject)) {
+      setHydratedProject(inputProject);
+    } else {
+      setHydratedProject((current) =>
+        current ? ({ ...current, ...inputProject, notes: current.notes } as Project) : null
+      );
+    }
+  }, [inputProject, userId, hydratedAccountId]);
+  const currentAccountProject = hydratedAccountId === userId ? hydratedProject : null;
+  const project = currentAccountProject || (inputProject as Project);
+  const needsHydration = !hasFullTaskBody(inputProject) && !currentAccountProject;
+  const observesDetails = !hasFullTaskBody(inputProject);
   const [isEditing, setIsEditing] = useState(false);
   // The Gmail thread when editing began: only an edit of that field sends it, so a form opened
   // before a link changed the thread never puts the old one back
@@ -99,7 +204,6 @@ export function ProjectCard({
   );
   const { data: epics } = useEpics();
   const { data: goals } = useGoals();
-  const { userId, isMe } = useCurrentUser();
   const claimTaskMutation = useClaimTask();
   const linkedEpic = epics?.find((e) => e.id === project.epicId);
   const linkedGoal = goals?.find((g) => g.id === project.goalId);
@@ -120,7 +224,7 @@ export function ProjectCard({
     setActivatorNodeRef,
   } = useSortable({
     id: project.id,
-    data: { type: 'Project', project },
+    data: { type: 'Project', project: inputProject, groupId },
     // View-only tasks can't be reordered or moved between statuses
     disabled: !canEdit,
   });
@@ -152,6 +256,26 @@ export function ProjectCard({
       priority: (value) => (value >= 1 && value <= 10 ? null : 'Priority must be between 1 and 10'),
     },
   });
+
+  useEffect(() => {
+    if (!isEditing) {
+      form.setValues({
+        project: project.project,
+        reason: project.reason || '',
+        notes: project.notes || '',
+        customer: project.customer || '',
+        tags: Array.isArray(project.tags) ? project.tags.join(', ') : project.tags || '',
+        size: project.size,
+        status: project.status,
+        priority: project.priority,
+        projectId: project.projectId || null,
+        epicId: project.epicId || null,
+        goalId: project.goalId || null,
+        awaitUntil: project.awaitUntil || null,
+        gmailThreadId: project.gmailThreadId || null,
+      });
+    }
+  }, [project, isEditing, form.setValues]);
 
   const handleEditClick = (e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
@@ -305,9 +429,9 @@ export function ProjectCard({
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
+            <Group gap="xs" wrap="wrap" style={{ flex: 1, minWidth: 0 }}>
               {/* projectKey is the project's key (e.g. MIG), already shown by the category badge */}
-              <Text fz="lg" fw={500} truncate style={{ flex: 1 }}>
+              <Text fz="lg" fw={500} truncate className={classes.taskTitle}>
                 {project.project}
               </Text>
               {!canEdit && (
@@ -377,7 +501,7 @@ export function ProjectCard({
               {project.customer && (
                 <Badge
                   component={Link}
-                  href={`/board?customer=${encodeURIComponent(project.customer)}`}
+                  href={`/board${updateBoardSearchParams(searchParams?.toString() ?? '', 'customer', project.customer)}`}
                   size="xs"
                   variant="filled"
                   color="teal"
@@ -408,7 +532,7 @@ export function ProjectCard({
                 >
                   <Badge
                     component={Link}
-                    href={`/board?category=${encodeURIComponent(project.category)}`}
+                    href={`/board${updateBoardSearchParams(searchParams?.toString() ?? '', 'category', project.category)}`}
                     size="xs"
                     variant="outline"
                     color={isShared ? 'grape' : 'blue'}
@@ -460,209 +584,272 @@ export function ProjectCard({
         </Group>
         {/* Links to outside things: a second line only when there are some */}
         {!isEditing && <CardRefs refs={project.refs} />}
-      </Accordion.Control>
-      <Accordion.Panel className={classes.panel}>
-        {isEditing ? (
-          <Stack gap="xs">
-            <TextInput
-              label="Reason"
-              placeholder="Why is this project important?"
-              {...form.getInputProps('reason')}
-            />
-            <Grid gutter="xs">
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <Select
-                  label="Status"
-                  data={statusOptions}
-                  {...form.getInputProps('status')}
-                  required
-                />
-              </Grid.Col>
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <TextInput
-                  label="Customer / Client"
-                  placeholder="e.g. Northstar Workshop, Acme Solar"
-                  {...form.getInputProps('customer')}
-                />
-              </Grid.Col>
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <TextInput
-                  label="Tags (comma-separated)"
-                  placeholder="e.g. inverter, warranty"
-                  {...form.getInputProps('tags')}
-                />
-              </Grid.Col>
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <ProjectPicker
-                  value={form.values.projectId}
-                  currentLabel={project.category}
-                  onChange={(val) => form.setFieldValue('projectId', val)}
-                  allowDeselect={false}
-                />
-              </Grid.Col>
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <Select
-                  label="Linked Epic"
-                  placeholder="Select Epic"
-                  data={epicSelectData}
-                  clearable
-                  leftSection={<IconFlag size={14} />}
-                  value={form.values.epicId}
-                  onChange={(val) => form.setFieldValue('epicId', val)}
-                />
-              </Grid.Col>
-              <Grid.Col span={{ base: 12, sm: 6 }}>
-                <Select
-                  label="Linked Life Goal"
-                  description={PRIVATE_GOAL_HINT}
-                  placeholder="Select Goal"
-                  data={goalSelectData}
-                  clearable
-                  leftSection={<IconTarget size={14} />}
-                  value={form.values.goalId}
-                  onChange={(val) => form.setFieldValue('goalId', val)}
-                />
-              </Grid.Col>
-            </Grid>
-            {form.values.status === 'awaiting' && (
-              <DatePickerInput
-                label="Return date"
-                placeholder="Pick a date"
-                valueFormat="D MMM YYYY"
-                minDate={new Date()}
-                clearable={false}
-                value={form.values.awaitUntil ? new Date(form.values.awaitUntil) : null}
-                onChange={(date) => {
-                  form.setFieldValue(
-                    'awaitUntil',
-                    date instanceof Date ? date.toISOString().split('T')[0] : null
-                  );
-                }}
-              />
-            )}
-            <div>
-              <Text size="sm" fw={500} mb="xs">
-                Priority: {form.values.priority}
-              </Text>
-              <Slider
-                min={1}
-                max={10}
-                step={1}
-                marks={[
-                  { value: 1, label: '1' },
-                  { value: 5, label: '5' },
-                  { value: 10, label: '10' },
-                ]}
-                {...form.getInputProps('priority')}
-              />
-            </div>
-            <MarkdownEditor
-              label="Description & Notes (Markdown)"
-              placeholder="Additional details, checklists, specifications..."
-              value={form.values.notes || ''}
-              onChange={(val) => form.setFieldValue('notes', val)}
-              minRows={4}
-              maxRows={12}
-            />
-            <TextInput
-              label="Gmail Thread ID"
-              placeholder="e.g. 18dfa72b3c4d5e6f"
-              leftSection={<IconBrandGmail size={14} />}
-              {...form.getInputProps('gmailThreadId')}
-            />
-            {/* INTERACTIVE stars in the edit form */}
-            <Group>
-              <Text size="sm" fw={500}>
-                Size
-              </Text>
-              <ProjectStars
-                size={form.values.size}
-                onUpdate={(size) => form.setFieldValue('size', size)}
-              />
-            </Group>
-          </Stack>
-        ) : (
-          <Stack gap="xs">
-            {updatedByOther && (
-              <Tooltip label={absoluteTime(project.updatedAt)} withArrow openDelay={300}>
-                <Text size="xs" c="dimmed" w="fit-content" data-testid="updated-by">
-                  Last updated by {project.updatedByName}
-                  {project.updatedAt ? ` · ${relativeTime(project.updatedAt)}` : ''}
+        {typeof project.noteCount === 'number' && (
+          <Group gap="xs" mt={4} data-testid={`task-card-summary-${project.id}`}>
+            <Text size="xs" c="dimmed">
+              {project.noteCount} {project.noteCount === 1 ? 'note' : 'notes'}
+            </Text>
+            {(project.lastNoteAt || project.updatedAt) && (
+              <Tooltip label={absoluteTime(project.lastNoteAt || project.updatedAt)} withArrow>
+                <Text size="xs" c="dimmed">
+                  Updated {relativeTime(project.lastNoteAt || project.updatedAt)}
                 </Text>
               </Tooltip>
             )}
-            {project.reason && (
-              <Text c="dimmed">
-                <Text component="span" fw={700}>
-                  Reason:
-                </Text>{' '}
-                {project.reason}
-              </Text>
-            )}
-            {project.notes && (
-              <div>
-                <Text fw={700} size="sm" mb={4}>
-                  Description:
-                </Text>
-                <MarkdownViewer content={project.notes} />
-              </div>
-            )}
-            {/* The links line above already shows the task's thread, so show it here only when not */}
-            <ProjectUpdatesTimeline
-              projectId={project.id}
-              projectGmailThreadId={gmailThreadInRefs ? null : project.gmailThreadId}
-              canEdit={canEdit}
-            />
-          </Stack>
+          </Group>
         )}
-        <Group justify="flex-end" className={classes.actionButtons}>
-          {isEditing ? (
-            <>
-              <Button variant="default" size="xs" onClick={handleCancelClick}>
-                Cancel
-              </Button>
-              <Button size="xs" onClick={handleSaveClick}>
-                Save
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                component={Link}
-                href={`/tasks/${project.id}`}
-                size="xs"
-                variant="light"
-                color="gray"
-                onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
-              >
-                View Details
-              </Button>
-              {statusButton && (
-                <ViewOnlyTooltip viewOnly={!canEdit}>{statusButton}</ViewOnlyTooltip>
-              )}
-              <ViewOnlyTooltip viewOnly={!canEdit}>
-                <Button size="xs" variant="default" onClick={handleEditClick} disabled={!canEdit}>
-                  Edit
-                </Button>
-              </ViewOnlyTooltip>
-              <ViewOnlyTooltip viewOnly={!canEdit}>
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  color="red"
-                  disabled={!canEdit}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onUpdate(project.id, { isDeleted: true });
-                  }}
-                >
-                  Delete
-                </Button>
-              </ViewOnlyTooltip>
-            </>
-          )}
-        </Group>
+      </Accordion.Control>
+      <Accordion.Panel className={classes.panel}>
+        {expanded !== false && (
+          <>
+            {observesDetails && (
+              <ProjectDetailGate
+                taskId={inputProject.id}
+                onLoaded={onHydrated}
+                showPending={needsHydration}
+              />
+            )}
+            {!needsHydration && (
+              <>
+                {isEditing ? (
+                  <Stack gap="xs">
+                    <TextInput
+                      label="Reason"
+                      placeholder="Why is this project important?"
+                      {...form.getInputProps('reason')}
+                    />
+                    <Grid gutter="xs">
+                      <Grid.Col span={{ base: 12, sm: 6 }}>
+                        <Select
+                          label="Status"
+                          data={statusOptions}
+                          {...form.getInputProps('status')}
+                          required
+                        />
+                      </Grid.Col>
+                      <Grid.Col span={{ base: 12, sm: 6 }}>
+                        <TextInput
+                          label="Customer / Client"
+                          placeholder="e.g. Northstar Workshop, Acme Solar"
+                          {...form.getInputProps('customer')}
+                        />
+                      </Grid.Col>
+                      <Grid.Col span={{ base: 12, sm: 6 }}>
+                        <TextInput
+                          label="Tags (comma-separated)"
+                          placeholder="e.g. inverter, warranty"
+                          {...form.getInputProps('tags')}
+                        />
+                      </Grid.Col>
+                      <Grid.Col span={{ base: 12, sm: 6 }}>
+                        <ProjectPicker
+                          value={form.values.projectId}
+                          currentLabel={project.category}
+                          onChange={(val) => form.setFieldValue('projectId', val)}
+                          allowDeselect={false}
+                        />
+                      </Grid.Col>
+                      <Grid.Col span={{ base: 12, sm: 6 }}>
+                        <Select
+                          label="Linked Epic"
+                          placeholder="Select Epic"
+                          data={epicSelectData}
+                          clearable
+                          leftSection={<IconFlag size={14} />}
+                          value={form.values.epicId}
+                          onChange={(val) => form.setFieldValue('epicId', val)}
+                        />
+                      </Grid.Col>
+                      <Grid.Col span={{ base: 12, sm: 6 }}>
+                        <Select
+                          label="Linked Life Goal"
+                          description={PRIVATE_GOAL_HINT}
+                          placeholder="Select Goal"
+                          data={goalSelectData}
+                          clearable
+                          leftSection={<IconTarget size={14} />}
+                          value={form.values.goalId}
+                          onChange={(val) => form.setFieldValue('goalId', val)}
+                        />
+                      </Grid.Col>
+                    </Grid>
+                    {form.values.status === 'awaiting' && (
+                      <DatePickerInput
+                        label="Return date"
+                        placeholder="Pick a date"
+                        valueFormat="D MMM YYYY"
+                        minDate={new Date()}
+                        clearable={false}
+                        value={form.values.awaitUntil ? new Date(form.values.awaitUntil) : null}
+                        onChange={(date) => {
+                          form.setFieldValue(
+                            'awaitUntil',
+                            date instanceof Date ? date.toISOString().split('T')[0] : null
+                          );
+                        }}
+                      />
+                    )}
+                    <div>
+                      <Text size="sm" fw={500} mb="xs">
+                        Priority: {form.values.priority}
+                      </Text>
+                      <Slider
+                        min={1}
+                        max={10}
+                        step={1}
+                        marks={[
+                          { value: 1, label: '1' },
+                          { value: 5, label: '5' },
+                          { value: 10, label: '10' },
+                        ]}
+                        {...form.getInputProps('priority')}
+                      />
+                    </div>
+                    <MarkdownEditor
+                      label="Description & Notes (Markdown)"
+                      placeholder="Additional details, checklists, specifications..."
+                      value={form.values.notes || ''}
+                      onChange={(val) => form.setFieldValue('notes', val)}
+                      minRows={4}
+                      maxRows={12}
+                    />
+                    <TextInput
+                      label="Gmail Thread ID"
+                      placeholder="e.g. 18dfa72b3c4d5e6f"
+                      leftSection={<IconBrandGmail size={14} />}
+                      {...form.getInputProps('gmailThreadId')}
+                    />
+                    {/* INTERACTIVE stars in the edit form */}
+                    <Group>
+                      <Text size="sm" fw={500}>
+                        Size
+                      </Text>
+                      <ProjectStars
+                        size={form.values.size}
+                        onUpdate={(size) => form.setFieldValue('size', size)}
+                      />
+                    </Group>
+                  </Stack>
+                ) : (
+                  <Stack gap="xs">
+                    {updatedByOther && (
+                      <Tooltip label={absoluteTime(project.updatedAt)} withArrow openDelay={300}>
+                        <Text size="xs" c="dimmed" w="fit-content" data-testid="updated-by">
+                          Last updated by {project.updatedByName}
+                          {project.updatedAt ? ` · ${relativeTime(project.updatedAt)}` : ''}
+                        </Text>
+                      </Tooltip>
+                    )}
+                    {project.reason && (
+                      <Text c="dimmed">
+                        <Text component="span" fw={700}>
+                          Reason:
+                        </Text>{' '}
+                        {project.reason}
+                      </Text>
+                    )}
+                    {project.notes && (
+                      <div>
+                        <Text fw={700} size="sm" mb={4}>
+                          Description:
+                        </Text>
+                        <MarkdownViewer content={project.notes} />
+                      </div>
+                    )}
+                    {/* The links line above already shows the task's thread, so show it here only when not */}
+                    <ProjectUpdatesTimeline
+                      projectId={project.id}
+                      projectGmailThreadId={gmailThreadInRefs ? null : project.gmailThreadId}
+                      canEdit={canEdit}
+                    />
+                  </Stack>
+                )}
+                <Group justify="flex-end" className={classes.actionButtons}>
+                  {isEditing ? (
+                    <>
+                      <Button variant="default" size="xs" onClick={handleCancelClick}>
+                        Cancel
+                      </Button>
+                      <Button size="xs" onClick={handleSaveClick}>
+                        Save
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        component={Link}
+                        href={`/tasks/${project.id}`}
+                        size="xs"
+                        variant="light"
+                        color="gray"
+                        onClick={(e: MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
+                      >
+                        View Details
+                      </Button>
+                      {statusButton && (
+                        <ViewOnlyTooltip viewOnly={!canEdit}>{statusButton}</ViewOnlyTooltip>
+                      )}
+                      <ViewOnlyTooltip viewOnly={!canEdit}>
+                        <Button
+                          size="xs"
+                          variant="default"
+                          onClick={handleEditClick}
+                          disabled={!canEdit}
+                        >
+                          Edit
+                        </Button>
+                      </ViewOnlyTooltip>
+                      <ViewOnlyTooltip viewOnly={!canEdit}>
+                        <Button
+                          size="xs"
+                          variant="subtle"
+                          color="red"
+                          disabled={!canEdit}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onUpdate(project.id, { isDeleted: true });
+                          }}
+                        >
+                          Delete
+                        </Button>
+                      </ViewOnlyTooltip>
+                    </>
+                  )}
+                </Group>
+              </>
+            )}
+          </>
+        )}
       </Accordion.Panel>
     </Accordion.Item>
+  );
+}
+
+/** Read-only drag preview. It has no sortable registration, hydration query or note timeline. */
+export function ProjectCardPreview({ project }: { project: Project | ProjectSummary }) {
+  return (
+    <Accordion variant="separated" value={null}>
+      <Accordion.Item
+        value={project.id}
+        className={classes.card}
+        data-testid="task-drag-preview"
+        style={{ pointerEvents: 'none' }}
+      >
+        <Accordion.Control className={classes.control} chevron={null}>
+          <Group justify="space-between" wrap="nowrap" gap="xs">
+            <Text fz="lg" fw={500} truncate style={{ flex: 1 }}>
+              {project.project}
+            </Text>
+            <ProjectStars size={project.size} />
+          </Group>
+          <CardRefs refs={project.refs} />
+          {typeof project.noteCount === 'number' && (
+            <Text size="xs" c="dimmed" mt={4}>
+              {project.noteCount} {project.noteCount === 1 ? 'note' : 'notes'}
+            </Text>
+          )}
+        </Accordion.Control>
+      </Accordion.Item>
+    </Accordion>
   );
 }

@@ -33,8 +33,8 @@ export function applyMigration(raw: DatabaseSync, file: string) {
 }
 
 /**
- * `migrations` defaults to every pending migration; pass a shorter list to stop early.
- * `stats.queries` counts the statements services send, so tests can check query counts.
+ * `stats.queries` counts statements sent by services. Each statement records its full bind count,
+ * SQL text and result-row count. Result rows are not a measure of rows scanned by SQLite.
  */
 export function createTestDb({ migrations = PENDING_MIGRATIONS } = {}) {
   const raw = new DatabaseSync(':memory:');
@@ -43,23 +43,44 @@ export function createTestDb({ migrations = PENDING_MIGRATIONS } = {}) {
   for (const file of migrations) {
     applyMigration(raw, file);
   }
-  const stats = { queries: 0, maxBindings: 0 };
+  const stats = {
+    queries: 0,
+    maxBindings: 0,
+    rowsReturned: 0,
+    statements: [] as Array<{ sql: string; method: string; parameterCount: number; rowsReturned: number }>,
+    reset() {
+      this.queries = 0;
+      this.maxBindings = 0;
+      this.rowsReturned = 0;
+      this.statements.length = 0;
+    },
+  };
 
   const execute = (query: string, params: any[], method: string) => {
     stats.queries++;
     stats.maxBindings = Math.max(stats.maxBindings, params.length);
+    if (params.length > 100) {
+      throw new Error(`Test database bind ceiling exceeded: ${params.length} parameters`);
+    }
     const stmt = raw.prepare(query);
-    const args = (params as any[]).map((p) => (typeof p === 'boolean' ? Number(p) : p));
+    const args = (params as any[]).map((param) => (typeof param === 'boolean' ? Number(param) : param));
+    let result: any;
     if (method === 'run') {
       stmt.run(...args);
-      return { rows: [] };
+      result = { rows: [] };
+    } else {
+      // Positional rows: joins return duplicate column names that objects would collapse
+      stmt.setReturnArrays(true);
+      if (method === 'get') {
+        result = { rows: stmt.get(...args) } as any;
+      } else {
+        result = { rows: stmt.all(...args) };
+      }
     }
-    // Positional rows: joins return duplicate column names that objects would collapse
-    stmt.setReturnArrays(true);
-    if (method === 'get') {
-      return { rows: stmt.get(...args) } as any;
-    }
-    return { rows: stmt.all(...args) };
+    const rowsReturned = method === 'run' ? 0 : method === 'get' ? Number(!!result.rows) : result.rows.length;
+    stats.rowsReturned += rowsReturned;
+    stats.statements.push({ sql: query, method, parameterCount: params.length, rowsReturned });
+    return result;
   };
 
   const db = drizzle(
@@ -68,16 +89,16 @@ export function createTestDb({ migrations = PENDING_MIGRATIONS } = {}) {
     async (queries) => {
       raw.exec('BEGIN');
       try {
-        const results = queries.map((q) => {
-          const result = execute(q.sql, q.params, q.method);
+        const results = queries.map((query) => {
+          const result = execute(query.sql, query.params, query.method);
           // Batched 'get' results are read as rows[0]
-          return q.method === 'get' ? { rows: [result.rows] } : result;
+          return query.method === 'get' ? { rows: [result.rows] } : result;
         });
         raw.exec('COMMIT');
         return results;
-      } catch (err) {
+      } catch (error) {
         raw.exec('ROLLBACK');
-        throw err;
+        throw error;
       }
     },
     { schema }

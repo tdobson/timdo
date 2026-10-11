@@ -140,17 +140,27 @@ describe('AI routes', () => {
     ]);
   });
 
-  it('rejects missing audio and invalid JSON', async () => {
+  it('rejects a request with missing audio', async () => {
     const noAudio = new FormData();
     noAudio.append('projects', '[]');
-    expect(
-      (await app.request('/api/v2/ai/voice-command', { method: 'POST', body: noAudio }, env)).status
-    ).toBe(400);
+    const res = await app.request(
+      '/api/v2/ai/voice-command',
+      { method: 'POST', body: noAudio },
+      env
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('ignores malformed legacy projects JSON and uses task context from the database', async () => {
     const bad = new FormData();
     bad.append('audio', new File(['x'], 'r.webm'));
     bad.append('projects', '{not json');
     const res = await app.request('/api/v2/ai/voice-command', { method: 'POST', body: bad }, env);
-    expect(res.status).toBe(400);
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(lastInvokeArgs.projects).map((task: any) => task.project)).toEqual([
+      'Check inverter datasheet',
+    ]);
   });
 
   it('needs the Groq key', async () => {

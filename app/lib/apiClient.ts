@@ -10,7 +10,16 @@ import type {
   OrganisationMember,
   ProjectContainer,
 } from '../types/organisation.types';
-import type { CurrentUser, Project, ProjectUpdate } from '../types/project.types';
+import type {
+  CurrentUser,
+  Project,
+  ProjectCounts,
+  ProjectDetail,
+  ProjectListFilters,
+  ProjectListPage,
+  ProjectSummary,
+  ProjectUpdate,
+} from '../types/project.types';
 import { getWorkerApiBaseUrl } from './apiConfig';
 
 /**
@@ -121,10 +130,14 @@ export async function fetchCurrentUser(token?: string): Promise<CurrentUser> {
  * Fetch one task (`GET /projects/:id`). Resolves to null when the task does not exist or is
  * not visible to the caller.
  */
-export async function getProjectById(projectId: string, token?: string): Promise<Project | null> {
+export async function getProjectById(
+  projectId: string,
+  token?: string,
+  signal?: AbortSignal
+): Promise<ProjectDetail | null> {
   const response = await apiFetch(
     `${getWorkerApiBaseUrl()}/projects/${encodeURIComponent(projectId)}`,
-    { headers: authHeaders(token) }
+    { headers: authHeaders(token), signal }
   );
   if (response.status === 404) {
     return null;
@@ -430,6 +443,78 @@ export async function getProjects(token?: string): Promise<Project[]> {
   return apiCall<Project[]>(`${getWorkerApiBaseUrl()}/projects`, {
     headers,
   });
+}
+
+function projectListParams(filters: ProjectListFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return;
+    }
+    if (key === 'status' && Array.isArray(value)) {
+      if (value.length > 0) {
+        params.set(key, value.join(','));
+      }
+      return;
+    }
+    if (typeof value === 'boolean') {
+      params.set(key, String(value));
+      return;
+    }
+    params.set(key, String(value));
+  });
+  return params;
+}
+
+/** Fetch one opt-in task page. The API body remains an array; continuation lives in headers. */
+export async function getProjectPage<T = ProjectSummary>(
+  filters: ProjectListFilters,
+  token?: string,
+  signal?: AbortSignal
+): Promise<ProjectListPage<T>> {
+  const params = projectListParams(filters);
+  const query = params.toString();
+  const response = await apiFetch(`${getWorkerApiBaseUrl()}/projects${query ? `?${query}` : ''}`, {
+    headers: authHeaders(token),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, 'Failed to fetch tasks');
+  }
+  const items = (await response.json()) as T[];
+  const headers = response.headers;
+  const rawTotal = headers?.get?.('X-Total-Count');
+  const rawNextCursor = headers?.get?.('X-Next-Cursor');
+  const total = rawTotal !== null && rawTotal !== undefined ? Number(rawTotal) : undefined;
+  return {
+    items,
+    ...(Number.isFinite(total) ? { total } : {}),
+    ...(rawNextCursor ? { nextCursor: rawNextCursor } : {}),
+  };
+}
+
+/** Fetch list rows without imposing a page size. Existing getProjects remains the full legacy API. */
+export async function getProjectList<T = ProjectSummary>(
+  filters: ProjectListFilters,
+  token?: string,
+  signal?: AbortSignal
+): Promise<T[]> {
+  return (await getProjectPage<T>(filters, token, signal)).items;
+}
+
+/** Aggregate counts for the same server-side membership filters used by the list endpoint. */
+export async function getProjectCounts(
+  filters: ProjectListFilters,
+  token?: string,
+  signal?: AbortSignal
+): Promise<ProjectCounts> {
+  const { fields: _fields, limit: _limit, cursor: _cursor, ...membershipFilters } = filters;
+  const params = projectListParams(membershipFilters);
+  const query = params.toString();
+  return apiCall<ProjectCounts>(
+    `${getWorkerApiBaseUrl()}/projects/counts${query ? `?${query}` : ''}`,
+    { headers: authHeaders(token), signal }
+  );
 }
 
 /**

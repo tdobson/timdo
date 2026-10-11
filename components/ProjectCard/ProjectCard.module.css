@@ -26,6 +26,17 @@
   flex-grow: 1;
 }
 
+.taskTitle {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 40rem) {
+  .taskTitle {
+    flex-basis: 100%;
+  }
+}
+
 .dragHandle {
   cursor: grab;
   touch-action: manipulation; /* Recommended for Touch sensor per @dnd-kit docs */

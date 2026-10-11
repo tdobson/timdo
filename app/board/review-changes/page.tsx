@@ -38,12 +38,20 @@ import { RefKindIcon } from '../../../components/TaskDetail/refDisplay';
 import {
   clearVoiceReview,
   loadVoiceReview,
+  readVoiceReview,
   type VoiceChangeType,
   type VoiceCommandResult,
   type VoiceDraft,
   type VoiceProposal,
+  type VoiceReviewLoadResult,
 } from '../../../components/VoiceCommand/voiceTypes';
 import { ROLE_LABELS } from '../../../workers/src/lib/refs';
+import {
+  captureTaskCacheScope,
+  invalidateBoardCaches,
+  isTaskCacheScopeCurrent,
+  type TaskCacheScope,
+} from '../../lib/taskCache';
 import type { Project, RefRole } from '../../types/project.types';
 import {
   applyAsNote,
@@ -603,25 +611,54 @@ function withoutLeftOut(change: VoiceProposal, leftOut: Set<string>): VoicePropo
   return trimmed;
 }
 
-/** Older links carried the changes in the URL; keep reading them. */
-function readFromUrl(param: string | null): VoiceCommandResult | null {
-  if (!param) {
-    return null;
+/** Read account-bound review links; legacy unowned change lists are intentionally rejected. */
+function readFromUrl(
+  reviewParam: string | null,
+  legacyChangesParam: string | null,
+  accountId: string
+): VoiceReviewLoadResult {
+  if (reviewParam) {
+    try {
+      return readVoiceReview(JSON.parse(reviewParam) as unknown, accountId);
+    } catch {
+      return { status: 'unowned' };
+    }
   }
-  try {
-    const proposedChanges = JSON.parse(decodeURIComponent(param)) as VoiceProposal[];
-    return { transcript: '', summary: '', proposedChanges };
-  } catch {
-    return null;
-  }
+  return legacyChangesParam ? { status: 'unowned' } : { status: 'missing' };
 }
+
+interface ReviewOwner {
+  accountId: string;
+  reviewId: string;
+  scope: TaskCacheScope;
+}
+
+interface LoadedReview {
+  result: VoiceCommandResult;
+  owner: ReviewOwner;
+}
+
+type ReviewLoadIssue = 'unowned' | 'different-account' | 'not-authenticated';
 
 function ReviewChangesContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
-  const { data: session } = useSession();
-  const [result, setResult] = useState<VoiceCommandResult | null>(null);
+  const { data: session, status: sessionStatus } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
+  const authRef = useRef({
+    accountId,
+    status: sessionStatus,
+    accessToken: session?.accessToken ?? null,
+  });
+  authRef.current = {
+    accountId,
+    status: sessionStatus,
+    accessToken: session?.accessToken ?? null,
+  };
+
+  const [loadedReview, setLoadedReview] = useState<LoadedReview | null>(null);
+  const [loadIssue, setLoadIssue] = useState<ReviewLoadIssue | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -633,28 +670,66 @@ function ReviewChangesContent() {
   const counts = useRef({ applied: 0, skipped: 0 });
   const applySession = useRef(newApplySession());
   const finished = useRef(false);
-
   const loadedOnce = useRef(false);
 
   useEffect(() => {
-    // Load once: the result is a snapshot of one voice command
+    if (sessionStatus === 'loading') {
+      return;
+    }
+    if (
+      sessionStatus !== 'authenticated' ||
+      !accountId ||
+      authRef.current.status !== 'authenticated' ||
+      authRef.current.accountId !== accountId
+    ) {
+      setLoadIssue('not-authenticated');
+      return;
+    }
     if (loadedOnce.current) {
       return;
     }
     loadedOnce.current = true;
-    const loaded = loadVoiceReview() ?? readFromUrl(searchParams.get('changes'));
-    if (loaded && loaded.proposedChanges?.length) {
-      setResult(loaded);
-    } else {
-      notifications.show({
-        title: 'Nothing to review',
-        message: 'Record a voice command to suggest some changes.',
-        color: 'yellow',
-      });
-      router.push('/board');
-    }
-  }, [searchParams, router]);
 
+    const fromUrl = readFromUrl(searchParams.get('review'), searchParams.get('changes'), accountId);
+    const fromStorage = loadVoiceReview(accountId);
+    const loaded =
+      fromUrl.status === 'loaded'
+        ? fromUrl
+        : fromStorage.status === 'loaded'
+          ? fromStorage
+          : fromUrl.status !== 'missing'
+            ? fromUrl
+            : fromStorage;
+
+    if (loaded.status === 'loaded' && loaded.review.result.proposedChanges.length > 0) {
+      const owner: ReviewOwner = {
+        accountId: loaded.review.accountId,
+        reviewId: loaded.review.reviewId,
+        scope: captureTaskCacheScope(queryClient, accountId),
+      };
+      setLoadedReview({ result: loaded.review.result, owner });
+      setLoadIssue(null);
+      return;
+    }
+
+    if (loaded.status !== 'loaded' && loaded.status !== 'missing') {
+      setLoadIssue(loaded.status);
+      return;
+    }
+    notifications.show({
+      title: 'Nothing to review',
+      message: 'Record a voice command to suggest some changes.',
+      color: 'yellow',
+    });
+    router.push('/board');
+  }, [accountId, queryClient, router, searchParams, sessionStatus]);
+
+  const isReviewOwnerCurrent = (owner: ReviewOwner) =>
+    authRef.current.status === 'authenticated' &&
+    authRef.current.accountId === owner.accountId &&
+    isTaskCacheScopeCurrent(queryClient, owner.scope);
+
+  const result = loadedReview?.result ?? null;
   const changes = result?.proposedChanges ?? [];
   const currentChange = changes[currentIndex];
   const isLastChange = currentIndex === changes.length - 1;
@@ -663,6 +738,7 @@ function ReviewChangesContent() {
   const noteOn = currentChange
     ? (similarOf(currentChange).find((task) => task.id === noteOnId) ?? null)
     : null;
+  const reviewIsCurrent = !!loadedReview && isReviewOwnerCurrent(loadedReview.owner);
 
   // Warnings that belong to no card: changes that were left out
   const generalWarnings = useMemo(() => {
@@ -670,16 +746,13 @@ function ReviewChangesContent() {
     return (result?.warnings ?? []).filter((w) => !onCards.has(w));
   }, [result, changes]);
 
-  const finish = () => {
-    if (finished.current) {
+  const finish = (owner: ReviewOwner) => {
+    if (!isReviewOwnerCurrent(owner) || finished.current) {
       return;
     }
     finished.current = true;
-    clearVoiceReview();
+    clearVoiceReview({ accountId: owner.accountId, reviewId: owner.reviewId });
     const { applied, skipped } = counts.current;
-    queryClient.invalidateQueries({ queryKey: ['projects'] });
-    queryClient.invalidateQueries({ queryKey: ['epics'] });
-    queryClient.invalidateQueries({ queryKey: ['organisations'] });
     notifications.show({
       title: 'Review complete',
       message: `Applied ${applied} ${applied === 1 ? 'change' : 'changes'}, skipped ${skipped}.`,
@@ -699,23 +772,28 @@ function ReviewChangesContent() {
       return updated;
     });
 
-  const next = () => {
+  const next = (owner: ReviewOwner) => {
+    if (!isReviewOwnerCurrent(owner)) {
+      return;
+    }
     setLastError(null);
     setLastErrorTask(null);
     setLeftOut(new Set());
     setNoteOnId(null);
     if (isLastChange) {
-      finish();
+      finish(owner);
     } else {
       setCurrentIndex((i) => i + 1);
     }
   };
 
   const handleApply = async () => {
-    if (!currentChange) {
+    const owner = loadedReview?.owner;
+    if (!currentChange || !owner || !isReviewOwnerCurrent(owner)) {
       return;
     }
-    if (!session?.accessToken) {
+    const accessToken = authRef.current.accessToken;
+    if (!accessToken) {
       notifications.show({
         title: 'Not signed in',
         message: 'Sign in and try again.',
@@ -723,14 +801,19 @@ function ReviewChangesContent() {
       });
       return;
     }
+
     setIsProcessing(true);
     setLastError(null);
     setLastErrorTask(null);
     try {
       const change = withoutLeftOut(currentChange, leftOut);
       const outcome = noteOn
-        ? await applyAsNote(change, noteOn, session.accessToken)
-        : await applyVoiceChange(change, session.accessToken, applySession.current, meId);
+        ? await applyAsNote(change, noteOn, accessToken)
+        : await applyVoiceChange(change, accessToken, applySession.current, meId);
+      if (!isReviewOwnerCurrent(owner)) {
+        return;
+      }
+
       counts.current.applied += 1;
       notifications.show({ message: outcome.message, color: 'green' });
       if (outcome.problems.length > 0) {
@@ -745,8 +828,30 @@ function ReviewChangesContent() {
           autoClose: false,
         });
       }
-      next();
+
+      const taskId = noteOn?.id || currentChange.taskId || currentChange.before?.id;
+      const invalidations = [
+        queryClient.invalidateQueries({ queryKey: ['projects'] }),
+        queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+        queryClient.invalidateQueries({ queryKey: ['task-search'] }),
+        queryClient.invalidateQueries({ queryKey: ['task-similar'] }),
+        queryClient.invalidateQueries({ queryKey: ['activity'] }),
+        queryClient.invalidateQueries({ queryKey: ['epics'] }),
+        queryClient.invalidateQueries({ queryKey: ['organisations'] }),
+        ...(taskId
+          ? [queryClient.invalidateQueries({ queryKey: ['project-updates', taskId] })]
+          : []),
+        invalidateBoardCaches(queryClient, owner.scope, taskId),
+      ];
+      await Promise.all(invalidations);
+      if (!isReviewOwnerCurrent(owner)) {
+        return;
+      }
+      next(owner);
     } catch (error) {
+      if (!isReviewOwnerCurrent(owner)) {
+        return;
+      }
       const message = error instanceof Error ? error.message : "Couldn't apply this change.";
       const status = error instanceof VoiceApplyError ? error.status : 0;
       setLastError(message);
@@ -764,14 +869,50 @@ function ReviewChangesContent() {
         color: 'red',
       });
     } finally {
-      setIsProcessing(false);
+      if (isReviewOwnerCurrent(owner)) {
+        setIsProcessing(false);
+      }
     }
   };
 
   const handleSkip = () => {
+    const owner = loadedReview?.owner;
+    if (!owner || !isReviewOwnerCurrent(owner)) {
+      return;
+    }
     counts.current.skipped += 1;
-    next();
+    next(owner);
   };
+
+  if (sessionStatus === 'loading') {
+    return (
+      <Container py="xl">
+        <Loader />
+      </Container>
+    );
+  }
+
+  if (!loadedReview || !reviewIsCurrent) {
+    const message = !loadedReview
+      ? loadIssue === 'unowned'
+        ? 'This older voice review cannot be tied to this account. Record a new voice command.'
+        : loadIssue === 'different-account'
+          ? 'This voice review belongs to a different account. Record a new voice command.'
+          : 'Sign in before opening a voice review.'
+      : 'This review belongs to an earlier sign-in session. Record a new voice command.';
+    return (
+      <Container size="lg" py="xl">
+        <Stack gap="md">
+          <Alert color="yellow" title="Review unavailable">
+            {message}
+          </Alert>
+          <Button variant="subtle" color="gray" onClick={() => router.push('/board')}>
+            Back to board
+          </Button>
+        </Stack>
+      </Container>
+    );
+  }
 
   if (!currentChange) {
     return (

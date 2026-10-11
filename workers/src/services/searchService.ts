@@ -1,9 +1,10 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import * as schema from '../db/schema';
 import { parseRef } from '../lib/refs';
 import { getAccessibleProjects, getUserNames } from './accessService';
 import { taskHasRef } from './refService';
+import { taskIsVisibleTo } from './taskListService';
 
 type DB = DrizzleD1Database<typeof schema>;
 
@@ -42,8 +43,7 @@ export async function searchTasksForUser(
 
   const accessible = await getAccessibleProjects(db, userId);
   const projectsById = new Map(accessible.map((p) => [p.id, p]));
-  const accessibleProjectIds = accessible.map((p) => p.id);
-  if (accessibleProjectIds.length === 0) {
+  if (accessible.length === 0) {
     return [];
   }
 
@@ -55,10 +55,7 @@ export async function searchTasksForUser(
     .map((w) => `"${w}"*`)
     .join(' ');
 
-  const baseConditions = [
-    eq(schema.tasks.isDeleted, false),
-    inArray(schema.tasks.projectId, accessibleProjectIds),
-  ];
+  const baseConditions = [eq(schema.tasks.isDeleted, false), taskIsVisibleTo(userId)];
   if (customerFilter) {
     baseConditions.push(sql`lower(${schema.tasks.customer}) = lower(${customerFilter.trim()})`);
   }

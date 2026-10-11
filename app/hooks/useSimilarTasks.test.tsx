@@ -2,6 +2,8 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { notifications } from '@mantine/notifications';
+import { clearOnAccountChange } from '../../components/Providers';
+import type { Project } from '../types/project.types';
 import {
   SIMILAR_DEBOUNCE_MS,
   useAddNoteInstead,
@@ -172,17 +174,28 @@ describe('useSimilarTasks', () => {
 
   it('hides prior suggestions until the current title and project have both resolved', async () => {
     const nextTitleTask = { ...brokenOfferPage, id: 'task-next', shortId: 'next0001' };
-    const nextProjectTask = { ...brokenOfferPage, id: 'task-project', shortId: 'project1', projectId: 'proj-next' };
+    const nextProjectTask = {
+      ...brokenOfferPage,
+      id: 'task-project',
+      shortId: 'project1',
+      projectId: 'proj-next',
+    };
     let resolveTitle: ((value: any) => void) | undefined;
     let resolveProject: ((value: any) => void) | undefined;
     global.fetch = jest
       .fn()
       .mockResolvedValueOnce(jsonResponse(200, [brokenOfferPage]))
       .mockImplementationOnce(
-        () => new Promise((resolve) => { resolveTitle = resolve; })
+        () =>
+          new Promise((resolve) => {
+            resolveTitle = resolve;
+          })
       )
       .mockImplementationOnce(
-        () => new Promise((resolve) => { resolveProject = resolve; })
+        () =>
+          new Promise((resolve) => {
+            resolveProject = resolve;
+          })
       ) as unknown as typeof fetch;
 
     const { result, rerender } = renderHook(
@@ -273,6 +286,63 @@ describe('useAddNoteInstead', () => {
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['project-updates', 'task-3f2a'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['activity'] });
+  });
+
+  it('does not patch another account summary when a note response arrives late', async () => {
+    let resolveFetch: (response: Response) => void = () => {};
+    global.fetch = jest.fn(
+      () => new Promise<Response>((resolve) => (resolveFetch = resolve))
+    ) as unknown as typeof fetch;
+    clearOnAccountChange(queryClient, undefined, 'test-user-id');
+    const taskForAccountA: Project = {
+      id: brokenOfferPage.id,
+      project: brokenOfferPage.title,
+      status: 'do',
+      priority: 5,
+      size: '**',
+      userId: 'account-a',
+      noteCount: 1,
+      lastNoteAt: '2026-10-10T00:00:00.000Z',
+      isDeleted: false,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-10T00:00:00.000Z',
+    };
+    queryClient.setQueryData(['projects'], [taskForAccountA]);
+    const { result } = renderHook(() => useAddNoteInstead(), { wrapper });
+    let mutation: Promise<unknown>;
+
+    act(() => {
+      mutation = result.current.mutateAsync({
+        task: brokenOfferPage,
+        note: 'Fictional private note',
+      });
+    });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+
+    clearOnAccountChange(queryClient, 'test-user-id', 'account-b');
+    queryClient.setQueryData(
+      ['projects'],
+      [{ ...taskForAccountA, noteCount: 1, lastNoteAt: '2026-10-11T00:00:00.000Z' }]
+    );
+
+    await act(async () => {
+      resolveFetch(
+        jsonResponse(201, {
+          id: 'note-a',
+          projectId: brokenOfferPage.id,
+          userId: 'test-user-id',
+          note: 'Fictional private note',
+          createdAt: '2026-10-12T00:00:00.000Z',
+          updatedAt: '2026-10-12T00:00:00.000Z',
+        }) as unknown as Response
+      );
+      await mutation;
+    });
+
+    expect(queryClient.getQueryData<Project[]>(['projects'])?.[0]).toMatchObject({
+      noteCount: 1,
+      lastNoteAt: '2026-10-11T00:00:00.000Z',
+    });
   });
 
   it('toasts the API message when the note is refused', async () => {

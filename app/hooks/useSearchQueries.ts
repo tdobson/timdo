@@ -13,6 +13,9 @@ export interface SearchResult {
   tags?: string | null;
   snippet?: string;
   score: number;
+  projectId?: string | null;
+  orgId?: string | null;
+  assigneeId?: string | null;
   /** Project and workspace the task lives in, and who it's assigned to */
   projectName?: string | null;
   orgName?: string | null;

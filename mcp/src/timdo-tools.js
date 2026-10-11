@@ -9,6 +9,7 @@
 import {
   runTimdoCli,
   buildListTasksArgs,
+  buildCountsArgs,
   buildAddTaskArgs,
   buildUpdateTaskArgs,
   buildListEpicsArgs,
@@ -105,7 +106,7 @@ const AS_USER = {
     'Omit to act as whoever the CLI is signed in as. Only write as someone else when the user asks.',
 };
 
-const STATUS_LIST = ['do', 'awaiting', 'delay', 'done', 'delegate', 'all'];
+const TASK_STATUS_PATTERN = '^(?:all|(?:do|awaiting|delay|done|delegate)(?:,(?:do|awaiting|delay|done|delegate))*)$';
 const RELATIONS = ['relates_to', 'blocks', 'blocked_by', 'duplicates'];
 
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
@@ -123,34 +124,50 @@ function tool(name, description, properties = {}, required = []) {
   };
 }
 
+const TASK_FILTER_PROPERTIES = {
+  status: str(
+    'Task status filter: all, or one or more comma-separated values from do, awaiting, delay, done and delegate (default: do for lists, all for counts)',
+    { pattern: TASK_STATUS_PATTERN }
+  ),
+  category: str('Project (category) name, e.g. Acme Solar, Personal'),
+  projectId: str('One exact project by id, key (e.g. ACME) or "Workspace/Project"'),
+  workspace: str('Only tasks in this workspace, e.g. "Acme" or "personal"'),
+  assignee: str(
+    'Who the task is assigned to: "me" (assigned to me, or unassigned and created by me), "unassigned", "mine_or_unassigned", or a workspace member\'s name or email'
+  ),
+  mine: bool('Shortcut for assignee "me"'),
+  unassigned: bool('Shortcut for assignee "unassigned"'),
+  shared: bool('Only tasks in shared workspaces (more than one member)'),
+  epic: str('Filter by epic title or ID prefix'),
+  goal: str('Filter by one of your life goals (title or ID prefix)'),
+  customer: str('Filter for a customer or company (e.g. Acme Solar)'),
+  tag: str('Filter by tag (e.g. inverter, warranty)'),
+  relatedTo: str('Tasks linked to a given task ID (prefix or UUID)'),
+  noEpic: bool('Only tasks not linked to any epic'),
+  noGoal: bool('Only tasks not linked to any of your life goals'),
+  noCategory: bool('Only tasks with no project'),
+  unlinked: str('Only tasks missing a hierarchy link', { enum: ['epic', 'goal', 'category', 'any'] }),
+  ref: str(
+    'Only tasks carrying this ref (a URL or kind:id, e.g. github.issue:acme/widgets#12). With ref and no status, every status is listed (done included).'
+  ),
+};
+
 export const TIMDO_TOOLS = [
   tool(
     'timdo_list_tasks',
-    `List TimDo tasks you can see across all your workspaces, filtered by status, project, workspace, assignee, epic, goal and more. ${MODEL} ${TASK_FIELDS_NOTE}`,
+    `List TimDo tasks you can see across all your workspaces. Returns up to 50 summary items by default in a page envelope with nextCursor and the full filtered total. Pass cursor with the same filters to continue; narrow membership with status, project, workspace, assignee, epic, goal, customer, tag, refs or missing links. groupBy adds page-local grouping metadata without changing the continuation. ${MODEL} ${TASK_FIELDS_NOTE}`,
     {
-      status: str('Task status filter: do, awaiting, delay, done, delegate, all (default: do)', { enum: STATUS_LIST }),
-      category: str('Project (category) name, e.g. Acme Solar, Personal'),
-      projectId: str('One exact project by id, key (e.g. ACME) or "Workspace/Project"'),
-      workspace: str('Only tasks in this workspace, e.g. "Acme" or "personal"'),
-      assignee: str(
-        'Who the task is assigned to: "me" (assigned to me, or unassigned and created by me), "unassigned", "mine_or_unassigned", or a workspace member\'s name or email'
-      ),
-      mine: bool('Shortcut for assignee "me"'),
-      unassigned: bool('Shortcut for assignee "unassigned"'),
-      shared: bool('Only tasks in shared workspaces (more than one member)'),
-      epic: str('Filter by epic title or ID prefix'),
-      goal: str('Filter by one of your life goals (title or ID prefix)'),
-      customer: str('Filter for a customer or company (e.g. Acme Solar)'),
-      tag: str('Filter by tag (e.g. inverter, warranty)'),
-      relatedTo: str('Tasks linked to a given task ID (prefix or UUID)'),
-      noEpic: bool('Only tasks not linked to any epic'),
-      noGoal: bool('Only tasks not linked to any of your life goals'),
-      noCategory: bool('Only tasks with no project'),
-      unlinked: str('Only tasks missing a hierarchy link', { enum: ['epic', 'goal', 'category', 'any'] }),
-      ref: str(
-        'Only tasks carrying this ref (a URL or kind:id, e.g. github.issue:acme/widgets#12). With ref and no status, every status is listed (done included).'
-      ),
+      ...TASK_FILTER_PROPERTIES,
+      limit: { type: 'number', default: 50, minimum: 1, maximum: 200, description: 'Page size (default 50, maximum 200)' },
+      cursor: str('Opaque continuation cursor from the previous page. Keep all membership filters the same.'),
+      groupBy: str('Add page-local presentation groups by project, epic or assignee.', { enum: ['project', 'epic', 'assignee'] }),
+      fields: str('Task fields: summary omits the full notes body (default); full includes it.', { enum: ['summary', 'full'], default: 'summary' }),
     }
+  ),
+  tool(
+    'timdo_counts',
+    `Get SQL-aggregated task counts for the same visibility and membership filters as timdo_list_tasks. All five statuses are returned, including zeroes. Counts are not estimated from a page. ${MODEL}`,
+    TASK_FILTER_PROPERTIES
   ),
   tool(
     'timdo_get_task',
@@ -474,7 +491,13 @@ const required = (value, message) => {
 
 /** CLI arguments for each tool. Exported for tests. */
 export const TIMDO_ARG_BUILDERS = {
-  timdo_list_tasks: (a) => buildListTasksArgs(a),
+  timdo_list_tasks: (a = {}) =>
+    buildListTasksArgs({
+      ...a,
+      limit: a.limit ?? 50,
+      fields: a.fields ?? 'summary',
+    }),
+  timdo_counts: (a) => buildCountsArgs(a),
   timdo_get_task: (a) => ['get', required(a.id, 'Task id is required.')],
   timdo_add_task: (a) => buildAddTaskArgs(a),
   timdo_update_task: (a) => buildUpdateTaskArgs(a),
@@ -524,6 +547,35 @@ export function toolHints(message) {
     .replace(/--on-duplicate (error|return|report)\b/g, 'call timdo_add_task again with onDuplicate "$1"');
 }
 
+function taskGroup(task, groupBy) {
+  if (groupBy === 'project') {
+    const projectId = task.projectId || task.projectName || task.category || null;
+    const name = task.projectName || task.category || 'No project';
+    const label = task.isShared === true && task.orgName && task.orgName.toLowerCase() !== name.toLowerCase()
+      ? `${task.orgName}/${name}`
+      : name;
+    return { key: projectId, label };
+  }
+  if (groupBy === 'epic') {
+    const key = task.epicId || null;
+    const title = task.epicTitle || task.epicName;
+    return { key, label: key ? title || `Epic ${String(key).slice(0, 8)}` : 'No epic' };
+  }
+  const key = task.assigneeId || null;
+  return { key, label: key ? task.assigneeName || key : 'Unassigned' };
+}
+
+/** Group ids from one MCP page without changing its flat items or continuation cursor. */
+export function groupTaskItems(items, groupBy) {
+  const groups = new Map();
+  for (const task of items) {
+    const { key, label } = taskGroup(task, groupBy);
+    if (!groups.has(key)) groups.set(key, { key, label, taskIds: [] });
+    groups.get(key).taskIds.push(task.id);
+  }
+  return Array.from(groups.values());
+}
+
 /**
  * Handle a timdo_* tool call. Returns an MCP result, or null when the name is not a TimDo tool.
  * Errors (including "View only: ..." from the API) are thrown for the caller to report.
@@ -538,6 +590,14 @@ export async function handleTimdoTool(name, rawArgs = {}, run = runTimdoCli) {
     result = await run(build(args), undefined, options);
   } catch (e) {
     throw new Error(toolHints(e.message || String(e)));
+  }
+
+  if (name === 'timdo_list_tasks' && args.groupBy && Array.isArray(result?.items)) {
+    result = {
+      ...result,
+      groupBy: args.groupBy,
+      groups: groupTaskItems(result.items, args.groupBy),
+    };
   }
 
   // Optional link straight after creating or updating a task. onDuplicate "return" promises no

@@ -1,8 +1,16 @@
-import { useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { notifications } from '@mantine/notifications';
 import { apiFetch, mergeProjects, readApiError } from '../lib/apiClient';
 import { getWorkerApiBaseUrl } from '../lib/apiConfig';
+import {
+  applyOptimisticTaskPatch,
+  captureTaskCacheScope,
+  invalidateBoardCaches,
+  isTaskCacheScopeCurrent,
+  patchTaskCaches,
+  removeTaskCaches,
+} from '../lib/taskCache';
 import type {
   Project,
   ProjectBatchUpdateInput,
@@ -18,13 +26,6 @@ export function notifyError(title: string, error: unknown, fallback = 'Something
     message: error instanceof Error && error.message ? error.message : fallback,
     color: 'red',
   });
-}
-
-/** Swap one task in the cached task list, leaving any non-list cache entries alone. */
-function replaceInList(queryClient: QueryClient, updated: Project) {
-  queryClient.setQueryData<Project[]>(projectKeys.all, (old) =>
-    Array.isArray(old) ? old.map((p) => (p.id === updated.id ? { ...p, ...updated } : p)) : old
-  );
 }
 
 // --- Create Project ---
@@ -46,6 +47,7 @@ async function createProject(projectData: ProjectCreateInput, token: string): Pr
 export function useCreateProject() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
 
   return useMutation({
     mutationFn: (newProject: ProjectCreateInput) => {
@@ -54,11 +56,16 @@ export function useCreateProject() {
       }
       return createProject(newProject, session.accessToken);
     },
-    onSuccess: (newProject) => {
+    onMutate: () => ({ cacheScope: captureTaskCacheScope(queryClient, accountId) }),
+    onSuccess: (newProject, _variables, context) => {
+      if (!isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
       queryClient.invalidateQueries({ queryKey: ['epics'] });
       queryClient.invalidateQueries({ queryKey: ['organisations'] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
+      void invalidateBoardCaches(queryClient, context.cacheScope);
       const where = newProject.category ? ` in ${newProject.category}` : '';
       const who =
         newProject.isShared && newProject.assigneeName && newProject.isMine === false
@@ -70,7 +77,12 @@ export function useCreateProject() {
         color: 'green',
       });
     },
-    onError: (error) => notifyError('Could not create task', error),
+    onError: (error, _variables, context) => {
+      if (context && !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      notifyError('Could not create task', error);
+    },
   });
 }
 
@@ -96,6 +108,7 @@ async function updateProject(
 export function useUpdateProject() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
 
   return useMutation({
     mutationFn: (variables: { projectId: string; data: ProjectUpdateInput }) => {
@@ -104,17 +117,19 @@ export function useUpdateProject() {
       }
       return updateProject(variables.projectId, variables.data, session.accessToken);
     },
-    onSuccess: (updatedProject, variables) => {
+    onMutate: () => ({ cacheScope: captureTaskCacheScope(queryClient, accountId) }),
+    onSuccess: (updatedProject, variables, context) => {
+      if (!isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       if (variables.data.isDeleted) {
-        queryClient.setQueryData<Project[]>(projectKeys.all, (old) =>
-          Array.isArray(old) ? old.filter((p) => p.id !== variables.projectId) : old
-        );
+        removeTaskCaches(queryClient, variables.projectId, context.cacheScope);
       } else {
-        replaceInList(queryClient, updatedProject);
-        queryClient.setQueryData(projectKeys.detail(updatedProject.id), updatedProject);
+        patchTaskCaches(queryClient, updatedProject, context.cacheScope);
       }
       queryClient.invalidateQueries({ queryKey: ['epics'] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
+      void invalidateBoardCaches(queryClient, context.cacheScope, updatedProject.id);
       notifications.show({
         title: variables.data.isDeleted ? 'Task deleted' : 'Task updated',
         message: variables.data.isDeleted
@@ -123,9 +138,12 @@ export function useUpdateProject() {
         color: 'green',
       });
     },
-    onError: (error) => {
-      // Re-sync anything that was shown optimistically
+    onError: (error, _variables, context) => {
+      if (context && !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      void invalidateBoardCaches(queryClient, context?.cacheScope ?? accountId);
       notifyError('Could not save', error);
     },
   });
@@ -149,6 +167,7 @@ async function batchUpdateProjects(updates: ProjectBatchUpdateInput, token: stri
 export function useBatchUpdateProjects() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
 
   return useMutation({
     mutationFn: (updates: ProjectBatchUpdateInput) => {
@@ -158,32 +177,41 @@ export function useBatchUpdateProjects() {
       return batchUpdateProjects(updates, session.accessToken);
     },
     onMutate: async (updates) => {
-      await queryClient.cancelQueries({ queryKey: projectKeys.all });
-      const previousProjects = queryClient.getQueryData<Project[]>(projectKeys.all);
-
-      queryClient.setQueryData<Project[]>(projectKeys.all, (old) => {
-        if (!old) {
-          return [];
-        }
-        const updatesMap = new Map(updates.map((u) => [u.id, u]));
-        return old.map((p) => {
-          const update = updatesMap.get(p.id);
-          // The API skips rows I can't edit, so don't pretend they moved
-          return update && p.canEdit !== false ? { ...p, ...update } : p;
-        });
-      });
-
-      return { previousProjects };
+      const cacheScope = captureTaskCacheScope(queryClient, accountId);
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: projectKeys.all }),
+        queryClient.cancelQueries({ queryKey: ['board-summary'] }),
+        queryClient.cancelQueries({ queryKey: ['board-done-history'] }),
+        queryClient.cancelQueries({ queryKey: ['board-full'] }),
+      ]);
+      const rollbacks = updates.map((update) =>
+        applyOptimisticTaskPatch(
+          queryClient,
+          update.id,
+          { priority: update.priority, status: update.status },
+          cacheScope
+        )
+      );
+      return { rollbacks, cacheScope };
     },
     onError: (error, _updates, context) => {
-      if (context?.previousProjects) {
-        queryClient.setQueryData(projectKeys.all, context.previousProjects);
+      if (context && !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
       }
+      context?.rollbacks
+        ?.slice()
+        .reverse()
+        .forEach((rollback) => rollback());
       notifyError('Could not save changes', error);
     },
-    onSettled: () => {
+    onSettled: (_data, _error, _updates, context) => {
+      if (!context || !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
+      void invalidateBoardCaches(queryClient, context.cacheScope);
     },
   });
 }
@@ -192,23 +220,35 @@ export function useBatchUpdateProjects() {
 export function useMergeProjects() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const accountId = session?.user?.id || session?.user?.email || null;
 
   return useMutation({
     mutationFn: async ({ targetId, sourceId }: { targetId: string; sourceId: string }) => {
       return mergeProjects(targetId, sourceId, session?.accessToken);
     },
-    onSuccess: (_, { targetId }) => {
-      // ['projects'] also covers every cached single task
+    onMutate: () => ({ cacheScope: captureTaskCacheScope(queryClient, accountId) }),
+    onSuccess: (mergedProject, { targetId, sourceId }, context) => {
+      if (!isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      patchTaskCaches(queryClient, mergedProject, context.cacheScope);
+      removeTaskCaches(queryClient, sourceId, context.cacheScope);
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
       queryClient.invalidateQueries({ queryKey: ['project-updates', targetId] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
+      void invalidateBoardCaches(queryClient, context.cacheScope, targetId);
       notifications.show({
         title: 'Tasks Merged',
         message: 'The tasks were successfully combined.',
         color: 'green',
       });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, _variables, context) => {
+      if (context && !isTaskCacheScopeCurrent(queryClient, context.cacheScope)) {
+        return;
+      }
+      void invalidateBoardCaches(queryClient, context?.cacheScope ?? accountId);
       notifications.show({
         title: 'Merge Failed',
         message: error.message || 'An error occurred while merging tasks.',
