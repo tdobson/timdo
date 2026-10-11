@@ -1,5 +1,22 @@
+import { readFileSync } from 'node:fs';
+import { URL } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, seedCollaboration, TIM } from './helpers/testDb';
+
+// Syntax-shape guard only. This does not simulate or claim upstream D1 acceptance.
+describe('bot migration SQL syntax shape', () => {
+  it('parenthesizes every CASE expression in the epic update trigger', () => {
+    const migration = readFileSync(
+      new URL('../../migrations/0010_bots_and_via.sql', import.meta.url),
+      'utf8'
+    );
+    const trigger = migration.match(/CREATE TRIGGER trg_bot_epics_scope_update[\s\S]*?\nEND;/)?.[0];
+
+    expect(trigger).toBeDefined();
+    expect(trigger?.match(/SELECT \(CASE WHEN/g) ?? []).toHaveLength(5);
+    expect(trigger).not.toMatch(/SELECT CASE WHEN/g);
+  });
+});
 
 describe('bot identity and database guards', () => {
   let raw: any;

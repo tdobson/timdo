@@ -238,32 +238,32 @@ WHEN EXISTS (SELECT 1 FROM Users u WHERE u.id = OLD.user_id AND u.kind = 'bot')
   OR EXISTS (SELECT 1 FROM Users u WHERE u.id = NEW.updated_by AND u.kind = 'bot')
 BEGIN
   -- Bot-created epics stay bot-owned and cannot acquire a personal goal, regardless of the editor.
-  SELECT CASE WHEN (
+  SELECT (CASE WHEN (
     (
       EXISTS (SELECT 1 FROM Users u WHERE u.id = OLD.user_id AND u.kind = 'bot')
       OR EXISTS (SELECT 1 FROM Users u WHERE u.id = NEW.user_id AND u.kind = 'bot')
     ) AND NEW.user_id IS NOT OLD.user_id
-  ) THEN RAISE(ABORT, 'Bots cannot change epic creators') END;
-  SELECT CASE WHEN (
+  ) THEN RAISE(ABORT, 'Bots cannot change epic creators') END);
+  SELECT (CASE WHEN (
     (
       EXISTS (SELECT 1 FROM Users u WHERE u.id = OLD.user_id AND u.kind = 'bot')
       OR EXISTS (SELECT 1 FROM Users u WHERE u.id = NEW.user_id AND u.kind = 'bot')
     ) AND NEW.goal_id IS NOT NULL
-  ) THEN RAISE(ABORT, 'Bots do not have life goals') END;
+  ) THEN RAISE(ABORT, 'Bots do not have life goals') END);
 
   -- A bot cannot reassign ownership or change a human creator's private goal.
-  SELECT CASE WHEN EXISTS (
+  SELECT (CASE WHEN EXISTS (
     SELECT 1 FROM Users actor WHERE actor.id = NEW.updated_by AND actor.kind = 'bot'
   ) AND NEW.user_id IS NOT OLD.user_id
-    THEN RAISE(ABORT, 'Bots cannot change epic creators') END;
-  SELECT CASE WHEN EXISTS (
+    THEN RAISE(ABORT, 'Bots cannot change epic creators') END);
+  SELECT (CASE WHEN EXISTS (
     SELECT 1 FROM Users actor WHERE actor.id = NEW.updated_by AND actor.kind = 'bot'
   ) AND NEW.goal_id IS NOT OLD.goal_id
-    THEN RAISE(ABORT, 'Bots do not have life goals') END;
+    THEN RAISE(ABORT, 'Bots do not have life goals') END);
 
   -- Scope confinement follows the editor. Human permissions are checked by epicService;
   -- unattributed writes to a bot-owned epic fall back to the bot creator for the DB backstop.
-  SELECT CASE WHEN (
+  SELECT (CASE WHEN (
     EXISTS (SELECT 1 FROM Users actor WHERE actor.id = NEW.updated_by AND actor.kind = 'bot')
     OR (
       NEW.updated_by IS NULL
@@ -278,6 +278,5 @@ BEGIN
       AND bot.disabled_at IS NULL
       AND p.org_id = bot.bot_org_id
       AND m.role = 'member'
-  ) THEN RAISE(ABORT, 'Bots can only update scoped epics in their workspace') END;
+  ) THEN RAISE(ABORT, 'Bots can only update scoped epics in their workspace') END);
 END;
-
