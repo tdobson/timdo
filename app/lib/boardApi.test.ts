@@ -1,4 +1,4 @@
-import { getProjectCounts, getProjectPage } from './apiClient';
+import { getProjectById, getProjectCounts, getProjectPage } from './apiClient';
 
 jest.mock('next-auth/react', () => ({ signIn: jest.fn() }));
 
@@ -14,6 +14,41 @@ describe('board list API helpers', () => {
   afterEach(() => {
     global.fetch = originalFetch;
     process.env.NEXT_PUBLIC_WORKER_API_BASE_URL = originalEnv;
+  });
+
+  it.each([
+    { label: 'null', notes: null },
+    { label: 'empty', notes: '' },
+    { label: 'long', notes: 'Full body '.repeat(3000) },
+  ])(
+    'hydrates an authoritative $label detail body without discarding content',
+    async ({ notes }) => {
+      const body = { id: 'task-empty-body', notes };
+      const controller = new AbortController();
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => body,
+      } as unknown as Response);
+
+      const detail = await getProjectById(body.id, 'token', controller.signal);
+
+      expect(detail?.notes).toBe(notes === null ? '' : notes);
+      expect(body.notes).toBe(notes);
+      expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+    }
+  );
+
+  it('does not turn a missing summary body into an authoritative empty detail', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'task-summary' }),
+    } as unknown as Response);
+
+    const detail = await getProjectById('task-summary', 'token');
+
+    expect(detail).not.toHaveProperty('notes');
   });
 
   it('reads page totals and continuation headers and forwards the abort signal', async () => {

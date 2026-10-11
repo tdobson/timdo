@@ -1,7 +1,9 @@
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { useSession } from 'next-auth/react';
+import { patchTaskCaches } from '../lib/taskCache';
+import type { Project } from '../types/project.types';
 import {
   boardQueryKeys,
   useBoardDoneHistory,
@@ -108,6 +110,32 @@ describe('board query keys and hydration', () => {
     renderHook(() => useBoardProjectDetail('task-1', false), { wrapper });
 
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('hydrates a null body through the real API client and keeps it editable after a mutation', async () => {
+    const body = {
+      id: 'task-empty',
+      project: 'Fictional empty-body task',
+      status: 'do',
+      priority: 5,
+      notes: null,
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => body,
+    } as unknown as Response);
+
+    const { result } = renderHook(() => useBoardProjectDetail(body.id), { wrapper });
+    await waitFor(() => expect(result.current.data?.notes).toBe(''));
+
+    act(() => {
+      patchTaskCaches(queryClient, { ...body, priority: 8 } as unknown as Project, 'account-one');
+    });
+    await waitFor(() => expect(result.current.data?.priority).toBe(8));
+    expect(result.current.data?.notes).toBe('');
+    expect(result.current.isError).toBe(false);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('passes the query abort signal to full-detail fetches so a collapsed card can cancel hydration', async () => {

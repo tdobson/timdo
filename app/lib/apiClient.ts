@@ -145,7 +145,9 @@ export async function getProjectById(
   if (!response.ok) {
     throw await readApiError(response);
   }
-  return response.json();
+  const project = await response.json();
+  // A legacy null is an empty full body; a missing field is still only a summary.
+  return project.notes === null ? { ...project, notes: '' } : project;
 }
 
 /**

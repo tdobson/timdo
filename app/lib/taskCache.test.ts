@@ -71,6 +71,32 @@ describe('task cache helpers', () => {
     );
   });
 
+  it('keeps authoritative null bodies editable after mutations without hydrating summaries', () => {
+    queryClient.setQueryData(['board-full', 'user-1', 'task-1'], project({ notes: '' }));
+    queryClient.setQueryData(['board-summary', 'user-1'], [summary()]);
+    const response = { ...project({ priority: 8 }), notes: null } as unknown as Project;
+
+    patchTaskCaches(queryClient, response);
+
+    expect(queryClient.getQueryData<Project>(['board-full', 'user-1', 'task-1'])?.notes).toBe('');
+    const summaries = queryClient.getQueryData<ProjectSummary[]>(['board-summary', 'user-1']);
+    expect(summaries?.[0]).toMatchObject({ priority: 8 });
+    expect(summaries?.[0]).not.toHaveProperty('notes');
+    expect(response.notes).toBeNull();
+  });
+
+  it('preserves a full body when an incoming summary omits it', () => {
+    const full = project({ notes: 'Full body '.repeat(3000) });
+    queryClient.setQueryData(['board-full', 'user-1', 'task-1'], full);
+
+    patchTaskCaches(queryClient, summary({ priority: 8 }));
+
+    expect(queryClient.getQueryData<Project>(['board-full', 'user-1', 'task-1'])).toMatchObject({
+      priority: 8,
+      notes: full.notes,
+    });
+  });
+
   it('does not mistake raw Tasks rows, whose title field is not TaskView.project, for task views', () => {
     const rawRow = { id: 'task-1', title: 'Raw task', status: 'do', priority: 5, notes: 'body' };
     queryClient.setQueryData(['tasks', 'list', {}], [rawRow]);

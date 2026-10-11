@@ -104,7 +104,8 @@ function withoutBody<T extends Record<string, unknown>>(patch: T): T {
 
 function mergeTaskView(current: Project, incoming: Project): Project {
   const source = hasOwn(current, 'notes') ? incoming : withoutBody(incoming as TaskPatch);
-  return { ...current, ...source };
+  const merged = { ...current, ...source };
+  return merged.notes === null ? { ...merged, notes: '' } : merged;
 }
 
 function mapTaskViews(data: unknown, taskId: string, update: (task: Project) => Project): unknown {
