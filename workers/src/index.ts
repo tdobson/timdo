@@ -1,5 +1,5 @@
 import { drizzle, type DrizzleD1Database } from 'drizzle-orm/d1';
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { cors } from 'hono/cors';
 import * as schema from './db/schema';
 import { onApiError } from './middleware/apiErrors';
@@ -9,6 +9,7 @@ import aiApp from './routes/ai';
 import botsApp from './routes/bots';
 import customersApp from './routes/customers';
 import epicsApp from './routes/epics';
+import eventsApp from './routes/events';
 import goalsApp from './routes/goals';
 import organisationsApp from './routes/organisations';
 import posterApp from './routes/poster';
@@ -24,6 +25,7 @@ export interface Env {
   AUTH0_AUDIENCE: string;
   GROQ_API_KEY: string;
   INTERNAL_API_SECRET: string;
+  EVENT_CURSOR_KEY?: string;
 }
 
 declare module 'hono' {
@@ -49,6 +51,32 @@ app.use('*', async (c, next) => {
   await next();
   console.log(`[Request End]   <-- ${c.req.method} ${c.req.path} - Status: ${c.res.status}`);
 });
+
+// Cursor endpoints must never be cached, including failures produced by auth middleware.
+// These wrappers run outside CORS so preflight responses keep the same cache policy.
+const noStoreCursorResponse = async (c: Context<{ Bindings: Env }>, next: Next) => {
+  c.header('Cache-Control', 'no-store');
+  try {
+    await next();
+  } finally {
+    c.header('Cache-Control', 'no-store');
+  }
+};
+const noStorePagedActivity = async (c: Context<{ Bindings: Env }>, next: Next) => {
+  if (c.req.query('paged') === undefined) {
+    return next();
+  }
+  c.header('Cache-Control', 'no-store');
+  try {
+    await next();
+  } finally {
+    c.header('Cache-Control', 'no-store');
+  }
+};
+app.use('/api/v2/events', noStoreCursorResponse);
+app.use('/api/v2/events/*', noStoreCursorResponse);
+app.use('/api/v2/activity', noStorePagedActivity);
+app.use('/api/v2/activity/*', noStorePagedActivity);
 
 // CORS middleware should be one of the first to run.
 app.use(
@@ -80,6 +108,8 @@ app.use('/api/v2/ai/*', combinedAuthMiddleware);
 app.use('/api/v2/poster/*', combinedAuthMiddleware);
 app.use('/api/v2/activity/*', combinedAuthMiddleware);
 app.use('/api/v2/activity', combinedAuthMiddleware);
+app.use('/api/v2/events/*', combinedAuthMiddleware);
+app.use('/api/v2/events', combinedAuthMiddleware);
 app.use('/api/v2/refs/*', combinedAuthMiddleware);
 
 // Register route handlers.
@@ -94,6 +124,7 @@ app.route('/api/v2/users', userApp);
 app.route('/api/v2/ai', aiApp);
 app.route('/api/v2/poster', posterApp);
 app.route('/api/v2/activity', activityApp);
+app.route('/api/v2/events', eventsApp);
 app.route('/api/v2/refs', refsApp);
 
 // Manual trigger for processing awaiting returns (useful for testing and CLI)

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Upgrade only a persisted Wrangler local D1 SQLite file. Never use this against a remote DB.
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -34,6 +34,23 @@ try {
       ON TaskUpdates(task_id, dedupe_key)
       WHERE dedupe_key IS NOT NULL
   `);
+
+  const activityLog = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ActivityLog'")
+    .get();
+  if (activityLog) {
+    const activityColumns = database.prepare('PRAGMA table_info(ActivityLog)').all();
+    const hasActivitySequence = database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ActivitySequence'")
+      .get();
+    const hasSequenceColumn = activityColumns.some((column) => column.name === 'seq');
+    if (!hasSequenceColumn && hasActivitySequence) {
+      throw new Error('Activity sequence migration is incomplete in the local D1 database');
+    }
+    if (!hasSequenceColumn) {
+      database.exec(readFileSync(path.resolve('migrations/0011_activity_sequence.sql'), 'utf8'));
+    }
+  }
   database.exec('COMMIT');
 } catch (error) {
   try {

@@ -198,3 +198,9 @@ export interface ActivityFilters {
   orgId?: string;
   limit?: number;
 }
+
+/** One opt-in page from the cursor-backed activity endpoint. */
+export interface ActivityPage {
+  entries: ActivityEntry[];
+  nextCursor?: string;
+}

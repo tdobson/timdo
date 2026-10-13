@@ -7,7 +7,10 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 /** bin/timdo in this repository, found relative to this file (mcp/src/ -> ../../bin/timdo). */
-export const DEFAULT_TIMDO_BIN = resolve(dirname(fileURLToPath(import.meta.url)), '../../bin/timdo');
+export const DEFAULT_TIMDO_BIN = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../bin/timdo'
+);
 
 /**
  * Locate the timdo executable: $TIMDO_BIN if set, else this repo's bin/timdo, else "timdo" on PATH.
@@ -48,6 +51,15 @@ export async function runTimdoCli(subcommandArgs, binPath = getTimdoBinaryPath()
     }
     return JSON.parse(trimmed);
   } catch (error) {
+    if (
+      subcommandArgs[0] === 'events' &&
+      error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' &&
+      /stdout maxBuffer length exceeded/i.test(error.message || '')
+    ) {
+      throw new Error(
+        'timdo events page exceeded the 10 MiB CLI output limit. Retry with the same after cursor and a smaller limit, and/or omit includeRefs or includeText. No complete page was returned, so do not advance a consumer checkpoint.'
+      );
+    }
     const stderr = error.stderr ? error.stderr.trim() : '';
     const message = stderr || error.message || 'Unknown timdo CLI error';
     throw new Error(`timdo CLI error: ${message}`);
@@ -60,9 +72,15 @@ export async function runTimdoCli(subcommandArgs, binPath = getTimdoBinaryPath()
  * accepted too, as the API does.
  */
 export const REF_ROLES = ['link', 'source', 'reported_by', 'about'];
-const ROLE_FLAGS = { link: '--ref', source: '--source', reported_by: '--reported-by', about: '--about' };
+const ROLE_FLAGS = {
+  link: '--ref',
+  source: '--source',
+  reported_by: '--reported-by',
+  about: '--about',
+};
 const ROLE_ERROR = 'Role must be link, source, reported_by or about.';
-const REF_NEEDED = 'Each ref needs "ref": a URL or kind:id, e.g. github.issue:acme/widgets#12 or forum.post:4411.';
+const REF_NEEDED =
+  'Each ref needs "ref": a URL or kind:id, e.g. github.issue:acme/widgets#12 or forum.post:4411.';
 
 const NO_DASH = 'Refs never start with "-": give a URL, kind:id or ref id.';
 
@@ -74,7 +92,10 @@ function notAFlag(value, message = NO_DASH) {
 
 export function normaliseRefRole(role) {
   if (role === undefined || role === null || String(role).trim() === '') return 'link';
-  const r = String(role).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const r = String(role)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
   if (!REF_ROLES.includes(r)) throw new Error(ROLE_ERROR);
   return r;
 }
@@ -97,7 +118,8 @@ export function normaliseRefs(refs) {
   if (!Array.isArray(list)) list = [list];
   return list.map((item) => {
     const r = typeof item === 'string' ? { ref: item } : item;
-    if (!r || typeof r !== 'object' || typeof r.ref !== 'string' || !r.ref.trim()) throw new Error(REF_NEEDED);
+    if (!r || typeof r !== 'object' || typeof r.ref !== 'string' || !r.ref.trim())
+      throw new Error(REF_NEEDED);
     notAFlag(r.ref);
     return r;
   });
@@ -133,7 +155,8 @@ export function buildUnrefFlags(removeRefs) {
   if (removeRefs === undefined || removeRefs === null || removeRefs === '') return [];
   const list = Array.isArray(removeRefs) ? removeRefs : [removeRefs];
   return list.flatMap((x) => {
-    if (typeof x !== 'string' || !x.trim()) throw new Error('Each entry in removeRefs is a URL, kind:id or ref id.');
+    if (typeof x !== 'string' || !x.trim())
+      throw new Error('Each entry in removeRefs is a URL, kind:id or ref id.');
     return ['--unref', notAFlag(x)];
   });
 }
@@ -144,9 +167,14 @@ export function buildAddRefArgs({ id, ref, role, label, kind, url } = {}) {
   notAFlag(id, 'Task ids never start with "-".');
   notAFlag(ref);
   const args = ['ref', 'add', id, ref];
-  if (role !== undefined && role !== null && role !== '') args.push('--role', normaliseRefRole(role));
+  if (role !== undefined && role !== null && role !== '')
+    args.push('--role', normaliseRefRole(role));
   if (label) args.push('--label', notAFlag(label, 'Labels cannot start with "-".'));
-  if (kind) args.push('--kind', notAFlag(kind, 'Kinds are lowercase letters, digits and dots, e.g. acme.member.'));
+  if (kind)
+    args.push(
+      '--kind',
+      notAFlag(kind, 'Kinds are lowercase letters, digits and dots, e.g. acme.member.')
+    );
   if (url) args.push('--url', notAFlag(url, 'The url must start with http:// or https://.'));
   return args;
 }
@@ -157,14 +185,16 @@ export function buildRemoveRefArgs({ id, ref, role } = {}) {
   notAFlag(id, 'Task ids never start with "-".');
   notAFlag(ref);
   const args = ['ref', 'rm', id, ref];
-  if (role !== undefined && role !== null && role !== '') args.push('--role', normaliseRefRole(role));
+  if (role !== undefined && role !== null && role !== '')
+    args.push('--role', normaliseRefRole(role));
   return args;
 }
 
 export function buildFindByRefArgs({ ref, role } = {}) {
   if (!ref) throw new Error(REF_NEEDED);
   const args = ['find', notAFlag(ref)];
-  if (role !== undefined && role !== null && role !== '') args.push('--role', normaliseRefRole(role));
+  if (role !== undefined && role !== null && role !== '')
+    args.push('--role', normaliseRefRole(role));
   return args;
 }
 
@@ -175,12 +205,16 @@ const TASK_STATUSES = ['do', 'delay', 'awaiting', 'delegate', 'done'];
 function taskStatusArg(value, fallback) {
   const selected = value === undefined || value === null ? fallback : value;
   if (typeof selected !== 'string' || selected.length === 0) {
-    throw new Error('status must be all or a comma-separated list of do, delay, awaiting, delegate and done.');
+    throw new Error(
+      'status must be all or a comma-separated list of do, delay, awaiting, delegate and done.'
+    );
   }
   if (selected === 'all') return 'all';
   const statuses = selected.split(',');
   if (statuses.some((status) => !TASK_STATUSES.includes(status))) {
-    throw new Error('status must be all or a comma-separated list of do, delay, awaiting, delegate and done.');
+    throw new Error(
+      'status must be all or a comma-separated list of do, delay, awaiting, delegate and done.'
+    );
   }
   return statuses.join(',');
 }
@@ -196,7 +230,12 @@ function pageLimitArg(value) {
 }
 
 function cursorArg(value) {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 4096 ||
+    !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
     throw new Error('cursor must be a URL-safe page cursor of at most 4096 characters.');
   }
   return value;
@@ -259,7 +298,8 @@ export function buildListTasksArgs({ limit, cursor, groupBy, fields, ...filters 
     args.push('--cursor', cursorArg(cursor));
   }
   if (groupBy !== undefined && groupBy !== null) {
-    if (!TASK_GROUPS.includes(groupBy)) throw new Error('groupBy must be project, epic or assignee.');
+    if (!TASK_GROUPS.includes(groupBy))
+      throw new Error('groupBy must be project, epic or assignee.');
     args.push('--group-by', groupBy);
   }
   if (fields !== undefined && fields !== null) {
@@ -347,15 +387,24 @@ export function normaliseOnDuplicate(mode) {
  * Similar open tasks for a title, before creating one. The title goes after --title so one
  * starting with a dash is still a title.
  */
-export function buildFindSimilarArgs({ title, project, projectId, workspace, limit, excludeId } = {}) {
-  if (!title || !String(title).trim()) throw new Error('Say what the task is called: title is required.');
+export function buildFindSimilarArgs({
+  title,
+  project,
+  projectId,
+  workspace,
+  limit,
+  excludeId,
+} = {}) {
+  if (!title || !String(title).trim())
+    throw new Error('Say what the task is called: title is required.');
   const args = ['similar', '--title', String(title)];
   if (project) args.push('-p', project);
   if (projectId) args.push('--project-id', projectId);
   if (workspace) args.push('--workspace', workspace);
   if (limit !== undefined && limit !== null && limit !== '') {
     const n = Number(limit);
-    if (!Number.isInteger(n) || n < 1) throw new Error('limit must be a whole number from 1 to 10.');
+    if (!Number.isInteger(n) || n < 1)
+      throw new Error('limit must be a whole number from 1 to 10.');
     args.push('--limit', String(Math.min(n, 10)));
   }
   if (excludeId) args.push('--exclude', notAFlag(excludeId, 'Task ids never start with "-".'));
@@ -463,7 +512,15 @@ export function buildAddEpicArgs({ title, category, goal, description, status, p
   return args;
 }
 
-export function buildUpdateEpicArgs({ id, title, category, goal, description, status, projectId } = {}) {
+export function buildUpdateEpicArgs({
+  id,
+  title,
+  category,
+  goal,
+  description,
+  status,
+  projectId,
+} = {}) {
   if (!id) throw new Error('Epic id or title is required for update.');
   const args = ['epic', 'update', id];
   if (title) args.push('--title', title);
@@ -507,12 +564,60 @@ export function buildActivityArgs({ taskId, epic, project, workspace, limit } = 
   return args;
 }
 
+function eventsLimitArg(value) {
+  const text = String(value);
+  if (!/^\d+$/.test(text)) throw new Error('limit must be a whole number from 1 to 500.');
+  const limit = Number(text);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
+    throw new Error('limit must be a whole number from 1 to 500.');
+  return String(limit);
+}
+
+/** Build arguments for one finite recorded-events page. */
+export function buildEventsArgs({ after, workspace, types, includeRefs, includeText, limit } = {}) {
+  const args = ['events'];
+  if (after !== undefined && after !== null && after !== '') {
+    const cursor = String(after);
+    if (
+      cursor.length > 2048 ||
+      (cursor !== '0' &&
+        cursor !== 'latest' &&
+        (cursor.length < 20 || !/^c1\.[A-Za-z0-9_-]+$/.test(cursor)))
+    ) {
+      throw new Error('after must be 0, latest or a bounded opaque events cursor.');
+    }
+    args.push('--after', cursor);
+  }
+  if (workspace !== undefined && workspace !== null && workspace !== '') {
+    const scope = String(workspace);
+    if (scope.trim() !== scope || scope.startsWith('-'))
+      throw new Error('workspace must be a workspace id or slug.');
+    args.push('--workspace', scope);
+  }
+  if (types !== undefined && types !== null && types !== '') {
+    const filter = String(types);
+    if (filter.trim() !== filter || filter.startsWith('-'))
+      throw new Error('types must be a registered event type list.');
+    args.push('--types', filter);
+  }
+  if (includeRefs === true) args.push('--include-refs');
+  if (includeText === true) args.push('--include-text');
+  if (limit !== undefined && limit !== null && limit !== '') args.push('-n', eventsLimitArg(limit));
+  return args;
+}
+
 const BOT_ROLES = ['member', 'viewer'];
 const botRequired = (value, field) => {
-  if (value === undefined || value === null || value === '') throw new Error(`${field} is required.`);
+  if (value === undefined || value === null || value === '')
+    throw new Error(`${field} is required.`);
   return value;
 };
-const botPositionals = (subcommand, ...values) => ['bot', subcommand, '--', ...values.map((value) => String(value))];
+const botPositionals = (subcommand, ...values) => [
+  'bot',
+  subcommand,
+  '--',
+  ...values.map((value) => String(value)),
+];
 
 export function buildListBotsArgs({ workspace } = {}) {
   return botPositionals('list', botRequired(workspace, 'Workspace'));
@@ -524,13 +629,23 @@ export function buildCreateBotArgs({ workspace, name, role, tokenName } = {}) {
     if (!BOT_ROLES.includes(role)) throw new Error('role must be member or viewer.');
     args.push('--role', role);
   }
-  if (tokenName !== undefined && tokenName !== null && tokenName !== '') args.push('--token-name', String(tokenName));
-  args.push('--', String(botRequired(workspace, 'Workspace')), String(botRequired(name, 'Bot name')));
+  if (tokenName !== undefined && tokenName !== null && tokenName !== '')
+    args.push('--token-name', String(tokenName));
+  args.push(
+    '--',
+    String(botRequired(workspace, 'Workspace')),
+    String(botRequired(name, 'Bot name'))
+  );
   return args;
 }
 
 export function buildRenameBotArgs({ workspace, bot, name } = {}) {
-  return botPositionals('rename', botRequired(workspace, 'Workspace'), botRequired(bot, 'Bot'), botRequired(name, 'New bot name'));
+  return botPositionals(
+    'rename',
+    botRequired(workspace, 'Workspace'),
+    botRequired(bot, 'Bot'),
+    botRequired(name, 'New bot name')
+  );
 }
 
 export function buildSetBotRoleArgs({ workspace, bot, role } = {}) {
@@ -546,12 +661,26 @@ export function buildIssueBotTokenArgs({ workspace, bot, name } = {}) {
 }
 
 export function buildRevokeBotTokenArgs({ workspace, bot, token } = {}) {
-  return ['bot', 'revoke-token', '--yes', '--', String(botRequired(workspace, 'Workspace')),
-    String(botRequired(bot, 'Bot')), String(botRequired(token, 'Token'))];
+  return [
+    'bot',
+    'revoke-token',
+    '--yes',
+    '--',
+    String(botRequired(workspace, 'Workspace')),
+    String(botRequired(bot, 'Bot')),
+    String(botRequired(token, 'Token')),
+  ];
 }
 
 export function buildDisableBotArgs({ workspace, bot } = {}) {
-  return ['bot', 'disable', '--yes', '--', String(botRequired(workspace, 'Workspace')), String(botRequired(bot, 'Bot'))];
+  return [
+    'bot',
+    'disable',
+    '--yes',
+    '--',
+    String(botRequired(workspace, 'Workspace')),
+    String(botRequired(bot, 'Bot')),
+  ];
 }
 
 /**
@@ -581,7 +710,8 @@ export function buildShareWorkspaceArgs({ workspace, email, role = 'member' } = 
 
 export function buildUpdateMemberRoleArgs({ workspace, member, role } = {}) {
   if (!workspace || !member || !role) throw new Error('workspace, member and role are required.');
-  if (!MEMBER_ROLES.includes(role)) throw new Error('role must be one of owner, admin, member, viewer.');
+  if (!MEMBER_ROLES.includes(role))
+    throw new Error('role must be one of owner, admin, member, viewer.');
   return ['workspace', 'role', workspace, member, role];
 }
 

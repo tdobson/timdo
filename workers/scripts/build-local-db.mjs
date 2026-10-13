@@ -19,6 +19,7 @@ for (const t of ['Users', 'Organisations', 'OrganisationMembers', 'Projects', 'G
 db.exec('PRAGMA foreign_keys=ON');
 db.exec(fs.readFileSync('migrations/0006_collaboration.sql', 'utf8'));
 db.exec(fs.readFileSync('migrations/0007_api_tokens.sql', 'utf8'));
+db.exec(fs.readFileSync('migrations/0011_activity_sequence.sql', 'utf8'));
 db.exec(fs.readFileSync('scripts/sql/collab-initial-sync.sql', 'utf8'));
 if (fs.existsSync('scripts/sql/demo-share-migrating-dragons.sql')) {
   db.exec(fs.readFileSync('scripts/sql/demo-share-migrating-dragons.sql', 'utf8'));

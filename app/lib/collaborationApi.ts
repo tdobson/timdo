@@ -9,6 +9,7 @@ import type {
   AcceptInviteResult,
   ActivityEntry,
   ActivityFilters,
+  ActivityPage,
   BotRole,
   BotView,
   CreatedBotResult,
@@ -23,7 +24,7 @@ import type {
   WorkspaceRole,
   WorkspaceSummary,
 } from '../types/collaboration.types';
-import { apiFetch } from './apiClient';
+import { apiFetch, readApiError } from './apiClient';
 import { getWorkerApiBaseUrl } from './apiConfig';
 
 /** Public web address used in invite links. */
@@ -266,6 +267,50 @@ export function fetchActivity(
   signal?: AbortSignal
 ): Promise<ActivityEntry[]> {
   return request<ActivityEntry[]>(`/activity${activityQueryString(filters)}`, token, { signal });
+}
+
+/** Fetch one legacy-projection activity page using the opt-in cursor endpoint. */
+export async function fetchActivityPage(
+  filters: ActivityFilters,
+  token?: string,
+  before?: string,
+  signal?: AbortSignal
+): Promise<ActivityPage> {
+  const params = new URLSearchParams();
+  params.set('paged', '1');
+  if (filters.taskId) {
+    params.set('taskId', filters.taskId);
+  }
+  if (filters.epicId) {
+    params.set('epicId', filters.epicId);
+  }
+  if (filters.projectId) {
+    params.set('projectId', filters.projectId);
+  }
+  if (filters.orgId) {
+    params.set('orgId', filters.orgId);
+  }
+  params.set('limit', String(filters.limit ?? 50));
+  if (before) {
+    params.set('before', before);
+  }
+
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await apiFetch(`${getWorkerApiBaseUrl()}/activity?${params.toString()}`, {
+    headers,
+    signal,
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    throw await readApiError(response, 'Failed to fetch activity');
+  }
+
+  const entries = (await response.json()) as ActivityEntry[];
+  const nextCursor = response.headers?.get?.('X-Next-Cursor') || undefined;
+  return { entries, ...(nextCursor ? { nextCursor } : {}) };
 }
 
 /* ------------------------------------------------------------------ bots */

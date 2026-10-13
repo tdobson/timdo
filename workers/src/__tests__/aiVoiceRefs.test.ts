@@ -171,12 +171,15 @@ describe('voice and task refs', () => {
         'epics',
         'me',
         'projects',
+        'recentRecordedActivity',
         'refKinds',
         'taskSample',
         'timestamp',
         'transcript',
         'workspaces',
       ]);
+      await processVoiceCommand({ audioFile: audio(), groqApiKey: 'k', context: await ctx() });
+      await expect(template.format(lastInvokeArgs)).resolves.toContain('mock transcription');
     });
   });
 

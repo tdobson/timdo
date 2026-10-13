@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_TIMDO="$ROOT_DIR/bin/timdo"
 
 python3 - "$BIN_TIMDO" <<'PY'
+import errno
 import json
 import os
 import pty
@@ -356,33 +357,46 @@ def run_interactive(args, answer, trigger=b'[y/N]'):
     os.close(slave)
     output = bytearray()
     sent = False
-    deadline = time.time() + 8
+    deadline = time.monotonic() + 8
     try:
-        while child.poll() is None and time.time() < deadline:
+        while child.poll() is None and time.monotonic() < deadline:
             ready, _, _ = select.select([master], [], [], 0.1)
             if not ready:
                 continue
             try:
                 data = os.read(master, 4096)
-            except OSError:
+            except OSError as exc:
+                if exc.errno != errno.EIO:
+                    raise
+                break
+            if not data:
                 break
             output.extend(data)
             if not sent and trigger in output:
                 os.write(master, answer.encode() + b'\n')
                 sent = True
-        if child.poll() is None:
-            child.kill()
-            raise AssertionError('interactive bot command timed out')
+        # PTY EOF can arrive before the child's exit status is observable.
+        try:
+            child.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError(
+                f'interactive bot command timed out: sent={sent}, output={output.decode(errors="replace")!r}'
+            ) from exc
         while True:
             try:
                 data = os.read(master, 4096)
                 if not data:
                     break
                 output.extend(data)
-            except OSError:
+            except OSError as exc:
+                if exc.errno != errno.EIO:
+                    raise
                 break
         return child.returncode, output.decode(errors='replace'), sent
     finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
         os.close(master)
 
 

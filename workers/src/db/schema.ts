@@ -269,6 +269,12 @@ export const activityLog = sqliteTable('ActivityLog', {
   via: text('via', { enum: ['web', 'token', 'owner_secret', 'system'] }),
   viaDetail: text('via_detail'),
   createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
+  seq: integer('seq').notNull().default(0),
+});
+
+export const activitySequence = sqliteTable('ActivitySequence', {
+  id: integer('id').primaryKey(),
+  lastSeq: integer('last_seq').notNull(),
 });
 
 // FTS5 virtual table (created by migration 0005, kept in sync by triggers). Read-only here.

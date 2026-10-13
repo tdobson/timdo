@@ -17,14 +17,27 @@ import {
   Text,
   Title,
 } from '@mantine/core';
+import { CommandBlock } from '../../../components/Access/CommandBlock';
 import { CreateTokenForm } from '../../../components/Access/CreateTokenForm';
 import { NewTokenPanel } from '../../../components/Access/NewTokenPanel';
 import { SetupSteps } from '../../../components/Access/SetupSteps';
 import { TokenList } from '../../../components/Access/TokenList';
 import { SignInPrompt } from '../../../components/Sharing/SignInPrompt';
 import { useApiTokens, type CreatedApiToken } from '../../hooks/useApiTokens';
+import { getWorkerApiBaseUrl } from '../../lib/apiConfig';
 
 const REPO_URL = 'https://github.com/tdobson/timdo';
+const INTEGRATION_GUIDE_URL = `${REPO_URL}/blob/main/docs/integrations.md`;
+
+function eventsCurlExample() {
+  const url = `${getWorkerApiBaseUrl()}/events?after=0`;
+  return [
+    "curl --config - <<'CURL'",
+    `url = ${JSON.stringify(url)}`,
+    'header = "Authorization: Bearer YOUR_TIMDO_TOKEN"',
+    'CURL',
+  ].join('\n');
+}
 
 function TokenSkeleton() {
   return (
@@ -114,6 +127,27 @@ export default function AccessPage() {
             Set up the CLI and MCP
           </Title>
           <SetupSteps />
+        </Card>
+
+        <Card withBorder radius="md" padding="lg">
+          <Stack gap="sm">
+            <Title order={2} size="h4">
+              Integrations
+            </Title>
+            <Text size="sm" c="dimmed" maw={680}>
+              Read recorded changes with a token you created above. Replace the placeholder before
+              running this command. curl reads the request settings, including the token, from
+              standard input.
+            </Text>
+            <CommandBlock
+              value={eventsCurlExample()}
+              testId="integration-example"
+              copyLabel="Copy events command"
+            />
+            <Anchor href={INTEGRATION_GUIDE_URL} target="_blank" rel="noopener noreferrer">
+              Integration guide
+            </Anchor>
+          </Stack>
         </Card>
 
         <Group gap="xs" wrap="nowrap" align="center">

@@ -40,7 +40,7 @@ import {
   ThemeIcon,
   Tooltip,
 } from '@mantine/core';
-import { useActivity } from '../../app/hooks/useActivityQueries';
+import { useActivity, useActivityPages } from '../../app/hooks/useActivityQueries';
 import { organisationKeys } from '../../app/hooks/useOrganisationQueries';
 import { useMe } from '../../app/hooks/useSharingQueries';
 import { fetchWorkspaces } from '../../app/lib/collaborationApi';
@@ -67,6 +67,8 @@ export interface ActivityFeedProps {
   compact?: boolean;
   /** Optional heading above the feed */
   title?: string;
+  /** Load the full feed a page at a time with the opaque continuation header. */
+  paged?: boolean;
 }
 
 export const SYSTEM_ACTOR_NAME = 'TimDo';
@@ -290,15 +292,36 @@ export function ActivityFeed({
   limit,
   compact = false,
   title,
+  paged = false,
 }: ActivityFeedProps) {
   const effectiveLimit = limit ?? (compact ? 10 : 50);
-  const { data, isPending, isError, error, refetch, isFetching } = useActivity({
-    taskId,
-    epicId,
-    projectId,
-    orgId,
-    limit: effectiveLimit,
-  });
+  const filters = { taskId, epicId, projectId, orgId, limit: effectiveLimit };
+  const legacyQuery = useActivity(filters, { enabled: !paged });
+  const pagedQuery = useActivityPages(filters, { enabled: paged });
+  const data = useMemo(() => {
+    if (!paged) {
+      return legacyQuery.data;
+    }
+    if (pagedQuery.isScopeFailure) {
+      return [];
+    }
+    const seen = new Set<string>();
+    const entries: ActivityEntry[] = [];
+    for (const page of pagedQuery.data?.pages ?? []) {
+      for (const entry of page.entries) {
+        if (!seen.has(entry.id)) {
+          seen.add(entry.id);
+          entries.push(entry);
+        }
+      }
+    }
+    return entries;
+  }, [paged, legacyQuery.data, pagedQuery.data, pagedQuery.isScopeFailure]);
+  const isPending = paged ? pagedQuery.isPending : legacyQuery.isPending;
+  const isError = paged ? pagedQuery.isError : legacyQuery.isError;
+  const error = paged ? pagedQuery.error : legacyQuery.error;
+  const refetch = paged ? pagedQuery.refetch : legacyQuery.refetch;
+  const isFetching = paged ? pagedQuery.isFetching : legacyQuery.isFetching;
   const { data: me } = useMe();
   const { data: session } = useSession();
   // The Auth0 id is the API user id, so "You" shows before /users/me has loaded
@@ -321,9 +344,15 @@ export function ActivityFeed({
 
   let body: React.ReactNode;
   // isPending also covers the moment before the session token arrives, so no empty-state flash
-  if (isPending && !isError) {
+  if (paged && pagedQuery.isScopeFailure && pagedQuery.data) {
+    body = (
+      <Text size="sm" c="dimmed" role="status" aria-live="polite">
+        Access changed. Reloading activity.
+      </Text>
+    );
+  } else if (isPending && !isError) {
     body = <FeedSkeleton rows={compact ? 3 : 6} compact={compact} />;
-  } else if (isError) {
+  } else if (isError && (!paged || !pagedQuery.data)) {
     body = (
       <Alert color="red" variant="light" title="Couldn't load activity" p={compact ? 'xs' : 'sm'}>
         <Text size="sm" mb="xs">
@@ -414,9 +443,65 @@ export function ActivityFeed({
   }
 
   return (
-    <Box data-testid="activity-feed">
+    <Box data-testid="activity-feed" style={{ minWidth: 0 }}>
       {heading}
       {body}
+      {paged && !pagedQuery.isScopeFailure && pagedQuery.data?.pages.length ? (
+        <Stack gap="sm" mt="md" align="stretch">
+          {pagedQuery.isFetchingNextPage && (
+            <Text size="sm" c="dimmed" role="status" aria-live="polite">
+              Loading older activity
+            </Text>
+          )}
+          {pagedQuery.isError && !pagedQuery.isScopeFailure && (
+            <Alert
+              color="red"
+              variant="light"
+              title={
+                pagedQuery.isFetchNextPageError
+                  ? "Couldn't load older activity"
+                  : "Couldn't refresh activity"
+              }
+              p={compact ? 'xs' : 'sm'}
+              role="alert"
+            >
+              <Text size="sm" mb="xs">
+                {(pagedQuery.error as Error)?.message || 'Something went wrong.'}
+              </Text>
+              <Button
+                size="xs"
+                variant="light"
+                color="red"
+                leftSection={<IconRefresh size={14} />}
+                onClick={() =>
+                  void (pagedQuery.isFetchNextPageError
+                    ? pagedQuery.fetchNextPage()
+                    : pagedQuery.refetch())
+                }
+                loading={pagedQuery.isFetching}
+              >
+                Try again
+              </Button>
+            </Alert>
+          )}
+          {pagedQuery.hasNextPage ? (
+            <Button
+              variant="default"
+              leftSection={<IconHistory size={16} />}
+              fullWidth
+              loading={pagedQuery.isFetchingNextPage}
+              disabled={pagedQuery.isFetchingNextPage}
+              onClick={() => void pagedQuery.fetchNextPage()}
+            >
+              Load older activity
+            </Button>
+          ) : data?.length ? (
+            <Text size="sm" c="dimmed" ta="center" role="status" aria-live="polite">
+              That's everything
+            </Text>
+          ) : null}
+        </Stack>
+      ) : null}
     </Box>
   );
 }

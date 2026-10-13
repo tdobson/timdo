@@ -19,6 +19,7 @@ import { canEdit, getAccessibleProjects, type AccessibleProject, type Role } fro
 import * as botService from './botService';
 import type { BotTaskCreationCount } from './botService';
 import { getEpicsForUser } from './epicService';
+import { getRecentRecordedActivity, type RecentRecordedActivityResult } from './eventsFeedService';
 import { getGoalsForUser } from './goalService';
 import { getLondonDayWindow } from './londonDayWindow';
 import { getOrganisationMembers } from './organisationService';
@@ -106,6 +107,8 @@ export interface VoiceContext {
   goals: VoiceGoal[];
   /** Today's visible bot task-created aggregates, with explicit bounds and availability. */
   botTaskCreationsToday?: VoiceBotTaskCreationFacts;
+  /** Safe recorded activity for the exact trailing 24 hours, separate from UK-day bot counts. */
+  recentRecordedActivity?: RecentRecordedActivityResult;
   /** True SQL totals, independent of the selected task sample. */
   taskCounts?: import('./taskListService').TaskAggregateCounts;
   /** The limit applied to the selected task sample. */
@@ -139,7 +142,17 @@ export async function loadVoiceContext(
   transcript = '',
   now: Date = new Date()
 ): Promise<VoiceContext> {
-  const dayWindow = getLondonDayWindow(now);
+  const capturedNow = new Date(now.getTime());
+  const recentBounds = {
+    from: new Date(capturedNow.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+    to: capturedNow.toISOString(),
+  };
+  const dayWindow = getLondonDayWindow(capturedNow);
+  const recentRecordedActivityPromise = getRecentRecordedActivity(
+    db,
+    { userId, userKind: 'human' },
+    recentBounds
+  );
   const botTaskCreationsPromise: Promise<VoiceBotTaskCreationFacts> = botService
     .getBotTaskCreationCounts(db, userId, {
       from: dayWindow.from,
@@ -165,25 +178,34 @@ export async function loadVoiceContext(
       omitted: null,
     }));
 
-  const [projects, meRow, epicsRaw, goalsRaw, taskCounts, selection, botTaskCreationsToday] =
-    await Promise.all([
-      getAccessibleProjects(db, userId),
-      db
-        .select({
-          id: schema.users.id,
-          name: schema.users.name,
-          email: schema.users.email,
-          kind: schema.users.kind,
-        })
-        .from(schema.users)
-        .where(eq(schema.users.id, userId))
-        .get(),
-      getEpicsForUser(db, userId).catch(() => []),
-      getGoalsForUser(db, userId).catch(() => []),
-      getTaskAggregateCountsForUser(db, userId),
-      selectVoiceTaskIds(db, userId, transcript),
-      botTaskCreationsPromise,
-    ]);
+  const [
+    projects,
+    meRow,
+    epicsRaw,
+    goalsRaw,
+    taskCounts,
+    selection,
+    botTaskCreationsToday,
+    recentRecordedActivityRaw,
+  ] = await Promise.all([
+    getAccessibleProjects(db, userId),
+    db
+      .select({
+        id: schema.users.id,
+        name: schema.users.name,
+        email: schema.users.email,
+        kind: schema.users.kind,
+      })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId))
+      .get(),
+    getEpicsForUser(db, userId).catch(() => []),
+    getGoalsForUser(db, userId).catch(() => []),
+    getTaskAggregateCountsForUser(db, userId),
+    selectVoiceTaskIds(db, userId, transcript),
+    botTaskCreationsPromise,
+    recentRecordedActivityPromise,
+  ]);
 
   const orgIds = Array.from(new Set(projects.map((p) => p.orgId)));
   const memberLists = await Promise.all(orgIds.map((id) => getOrganisationMembers(db, id)));
@@ -248,6 +270,7 @@ export async function loadVoiceContext(
     goals: (goalsRaw as any[]).map((g) => ({ id: g.id, title: g.title })),
     taskCounts,
     botTaskCreationsToday,
+    recentRecordedActivity: recentRecordedActivityRaw,
     sampleCap: VOICE_TASK_SAMPLE_CAP,
     selectionWarnings: selection.warnings,
     promptFields,

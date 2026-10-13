@@ -128,6 +128,7 @@ Workspaces and sharing:
 - `timdo_remove_member`: take someone out of a workspace.
 - `timdo_move_project`: move a project and its history to another workspace.
 - `timdo_activity`: who did what, newest first.
+- `timdo_events`: read one finite recorded-events page with `after`, `workspace`, `types`, `includeRefs`, `includeText` and `limit`. It returns the complete versioned page envelope, including empty pages. It has no follow loop, checkpoint file or credential argument. See the [events integration guide](../docs/integrations.md#recorded-events-feed) for cursor handling and the limits of the feed.
 
 ## Workspace bots
 

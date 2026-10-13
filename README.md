@@ -32,7 +32,7 @@ TimDo started as a one-person tool and is now multi-user. Work lives in workspac
 
 ### Connecting other systems
 
-A watcher or bot can turn forum posts, issues or form submissions into tasks without making the same task twice: it gives each task the outside item as its source, and TimDo answers a repeat with the task it already has. [docs/integrations.md](docs/integrations.md) has the recipe in curl, CLI and MCP form.
+A watcher or bot can turn forum posts, issues or form submissions into tasks without making the same task twice: it gives each task the outside item as its source, and TimDo answers a repeat with the task it already has. The same guide covers reading recorded activity with the events feed. [docs/integrations.md](docs/integrations.md) has the recipes in curl, CLI and MCP form.
 
 ## Technology Stack
 

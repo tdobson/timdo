@@ -2,11 +2,22 @@
  * Activity log: who did what, when, across tasks, epics, notes and sharing.
  * Writes never block the action they describe; a failed log write is only reported.
  */
-import { and, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { v4 as uuidv4 } from 'uuid';
 import * as schema from '../db/schema';
 import { getAccessibleProjects } from './accessService';
+import {
+  assertCursorBinding,
+  assertCursorKey,
+  CursorError,
+  decodeCursor,
+  encodeCursor,
+  encodeSequence,
+  fingerprint,
+  MAX_ACTIVITY_SEQUENCE,
+} from './cursorService';
+import { EVENT_REGISTRY } from './eventsFeedService';
 import { getPeople, type PersonKind } from './personService';
 import { getActorContext } from './requestActorContext';
 
@@ -235,4 +246,240 @@ function safeParse(s: string): FieldChanges | null {
   } catch {
     return null;
   }
+}
+
+export interface PagedActivityQuery extends Omit<ActivityQuery, 'limit'> {}
+
+export interface PagedActivityResult {
+  entries: ActivityEntry[];
+  nextCursor?: string;
+}
+
+const KNOWN_ACTIVITY_PAIRS = Array.from(
+  new Map(
+    EVENT_REGISTRY.map((entry) => [`${entry.entityType}:${entry.action}`, entry] as const)
+  ).values()
+);
+
+function knownActivityClause() {
+  return or(
+    ...KNOWN_ACTIVITY_PAIRS.map((entry) =>
+      and(
+        eq(schema.activityLog.entityType, entry.entityType),
+        eq(schema.activityLog.action, entry.action)
+      )
+    )
+  )!;
+}
+
+/** Page the legacy activity view without changing its visibility or response projection. */
+export async function getPagedActivity(
+  db: DB,
+  key: string | undefined,
+  userId: string,
+  query: PagedActivityQuery,
+  limit: number,
+  beforeToken?: string
+): Promise<PagedActivityResult> {
+  assertCursorKey(key);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+    throw new CursorError(400, 'invalid_cursor', 'limit must be an integer between 1 and 500');
+  }
+
+  const membershipRows = await db
+    .select({
+      membershipId: schema.organisationMembers.id,
+      orgId: schema.organisationMembers.orgId,
+      role: schema.organisationMembers.role,
+    })
+    .from(schema.organisationMembers)
+    .where(eq(schema.organisationMembers.userId, userId))
+    .orderBy(asc(schema.organisationMembers.orgId), asc(schema.organisationMembers.id));
+  const [principalFingerprint, scopeFingerprint, filtersFingerprint, sequenceRow] =
+    await Promise.all([
+      fingerprint({ userId }),
+      fingerprint({
+        scope: 'legacy-activity',
+        membership: membershipRows.map((row) => ({
+          id: row.membershipId,
+          orgId: row.orgId,
+          role: row.role,
+        })),
+      }),
+      fingerprint({
+        taskId: query.taskId ?? null,
+        epicId: query.epicId ?? null,
+        projectId: query.projectId ?? null,
+        orgId: query.orgId ?? null,
+      }),
+      db
+        .select({ lastSeq: schema.activitySequence.lastSeq })
+        .from(schema.activitySequence)
+        .where(eq(schema.activitySequence.id, 1))
+        .get(),
+    ]);
+  const highWater = sequenceRow?.lastSeq;
+  if (!Number.isSafeInteger(highWater) || highWater! < 0 || highWater! > MAX_ACTIVITY_SEQUENCE) {
+    throw new CursorError(503, 'cursor_unavailable', 'The activity sequence is unavailable');
+  }
+  const binding = {
+    principal: principalFingerprint,
+    scope: scopeFingerprint,
+    filters: filtersFingerprint,
+  };
+  let cursorHighWater = highWater!;
+  let before: { t: string | null; i: string } | undefined;
+  if (beforeToken !== undefined) {
+    const cursor = await decodeCursor(key, 'activity', beforeToken);
+    if (cursor.d !== 'activity') {
+      throw new CursorError(400, 'invalid_cursor', 'The cursor is invalid or cannot be decrypted');
+    }
+    assertCursorBinding(cursor, binding);
+    const decodedHighWater = Number.parseInt(cursor.h, 16);
+    if (!Number.isSafeInteger(decodedHighWater) || decodedHighWater > highWater!) {
+      throw new CursorError(
+        409,
+        'stale_cursor',
+        'The activity sequence moved backwards; restart from a fresh page'
+      );
+    }
+    cursorHighWater = decodedHighWater;
+    before = cursor.b;
+  }
+
+  const projects = await getAccessibleProjects(db, userId);
+  const conditions: SQL[] = [
+    or(
+      and(
+        isNull(schema.activityLog.projectId),
+        isNull(schema.activityLog.orgId),
+        eq(schema.activityLog.actorId, userId)
+      )!,
+      sql`exists (
+        select 1
+        from Projects visible_project
+        inner join OrganisationMembers visible_member on visible_member.org_id = visible_project.org_id
+        where visible_project.id = ${schema.activityLog.projectId}
+          and visible_member.user_id = ${userId}
+      )`,
+      and(
+        isNull(schema.activityLog.projectId),
+        sql`exists (
+          select 1
+          from OrganisationMembers visible_org_member
+          where visible_org_member.org_id = ${schema.activityLog.orgId}
+            and visible_org_member.user_id = ${userId}
+        )`
+      )!
+    )!,
+    isNotNull(schema.activityLog.id),
+    ne(schema.activityLog.id, ''),
+    knownActivityClause(),
+    sql`${schema.activityLog.seq} <= ${cursorHighWater}`,
+  ];
+  if (query.taskId) {
+    conditions.push(eq(schema.activityLog.taskId, query.taskId));
+  }
+  if (query.epicId) {
+    conditions.push(eq(schema.activityLog.epicId, query.epicId));
+  }
+  if (query.projectId) {
+    conditions.push(eq(schema.activityLog.projectId, query.projectId));
+  }
+  if (query.orgId) {
+    conditions.push(eq(schema.activityLog.orgId, query.orgId));
+  }
+  if (before) {
+    if (before.t === null) {
+      conditions.push(
+        and(isNull(schema.activityLog.createdAt), lt(schema.activityLog.id, before.i))!
+      );
+    } else {
+      conditions.push(
+        or(
+          isNull(schema.activityLog.createdAt),
+          lt(schema.activityLog.createdAt, before.t),
+          and(eq(schema.activityLog.createdAt, before.t), lt(schema.activityLog.id, before.i))
+        )!
+      );
+    }
+  }
+
+  const rows = await db
+    .select()
+    .from(schema.activityLog)
+    .where(and(...conditions))
+    .orderBy(
+      sql`${schema.activityLog.createdAt} IS NULL ASC`,
+      desc(schema.activityLog.createdAt),
+      desc(schema.activityLog.id)
+    )
+    .limit(limit + 1);
+  const hasMore = rows.length > limit;
+  const pageRows = rows.slice(0, limit);
+  const people = await getPeople(
+    db,
+    pageRows.map((row) => row.actorId)
+  );
+  const projectNames = new Map(projects.map((project) => [project.id, project.name]));
+  const entries = pageRows.map((row) => {
+    const actor = row.actorId ? people.get(row.actorId) : undefined;
+    return {
+      id: row.id,
+      actorId: row.actorId,
+      actorName: actor?.name ?? (row.actorId ? 'Someone' : 'TimDo'),
+      actorKind: actor?.kind ?? null,
+      orgId: row.orgId,
+      projectId: row.projectId,
+      projectName: row.projectId ? (projectNames.get(row.projectId) ?? null) : null,
+      entityType: row.entityType as EntityType,
+      entityId: row.entityId,
+      taskId: row.taskId,
+      epicId: row.epicId,
+      action: row.action,
+      summary: row.summary,
+      changes: row.changes ? safeParse(row.changes) : null,
+      via: row.via ?? null,
+      viaDetail: row.viaDetail ?? null,
+      createdAt: row.createdAt,
+    };
+  });
+  const refreshedMemberships = await db
+    .select({
+      membershipId: schema.organisationMembers.id,
+      orgId: schema.organisationMembers.orgId,
+      role: schema.organisationMembers.role,
+    })
+    .from(schema.organisationMembers)
+    .where(eq(schema.organisationMembers.userId, userId))
+    .orderBy(asc(schema.organisationMembers.orgId), asc(schema.organisationMembers.id));
+  const refreshedScopeFingerprint = await fingerprint({
+    scope: 'legacy-activity',
+    membership: refreshedMemberships.map((row) => ({
+      id: row.membershipId,
+      orgId: row.orgId,
+      role: row.role,
+    })),
+  });
+  if (refreshedScopeFingerprint !== scopeFingerprint) {
+    throw new CursorError(
+      409,
+      'stale_cursor',
+      'Workspace membership changed; restart from a fresh page'
+    );
+  }
+  if (!hasMore) {
+    return { entries };
+  }
+  const last = pageRows[pageRows.length - 1];
+  const nextCursor = await encodeCursor(key, {
+    v: 1,
+    d: 'activity',
+    p: binding.principal,
+    s: binding.scope,
+    f: binding.filters,
+    h: encodeSequence(cursorHighWater),
+    b: { t: last.createdAt, i: last.id },
+  });
+  return { entries, nextCursor };
 }

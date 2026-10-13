@@ -23,6 +23,7 @@ TIMDO_TOKEN="${TIMDO_TOKEN:-}"
 [[ -n "$_env_api" ]] && TIMDO_API="$_env_api"
 [[ -n "$_env_as" ]] && TIMDO_AS="$_env_as"
 TIMDO_API="${TIMDO_API:-https://timdo-v2-api.tdobson.net/api/v2}"
+while [[ "$TIMDO_API" == */ && "$TIMDO_API" != "/" ]]; do TIMDO_API="${TIMDO_API%/}"; done
 TIMDO_AS="${TIMDO_AS:-}"
 TIMDO_FORMAT="${TIMDO_FORMAT:-text}"
 FORMAT_EXPLICIT=0
@@ -60,6 +61,14 @@ while [[ $# -gt 0 ]]; do
 done
 set -- ${_args[@]+"${_args[@]}"}
 
+TIMDO_SOURCE_PATH="${BASH_SOURCE[0]}"
+while [[ -h "$TIMDO_SOURCE_PATH" ]]; do
+  TIMDO_SOURCE_DIR=$(cd -P "$(dirname "$TIMDO_SOURCE_PATH")" >/dev/null 2>&1 && pwd)
+  TIMDO_SOURCE_PATH=$(readlink "$TIMDO_SOURCE_PATH")
+  [[ "$TIMDO_SOURCE_PATH" == /* ]] || TIMDO_SOURCE_PATH="$TIMDO_SOURCE_DIR/$TIMDO_SOURCE_PATH"
+done
+TIMDO_SCRIPT_DIR=$(cd -P "$(dirname "$TIMDO_SOURCE_PATH")" >/dev/null 2>&1 && pwd)
+unset TIMDO_SOURCE_PATH TIMDO_SOURCE_DIR
 TMPD=$(mktemp -d "${TMPDIR:-/tmp}/timdo.XXXXXX")
 trap 'rm -rf "$TMPD"' EXIT
 
@@ -287,9 +296,17 @@ $prog"
 # secret (TIMDO_SECRET) is for the account owner's own tooling only.
 require_credentials() {
   if [[ "$BOT_OWNER_SECRET_SELECTED" == true && -z "${TIMDO_SECRET:-}" ]]; then
+    if [[ "${EVENT_FOLLOW_ACTIVE:-}" == "1" ]]; then
+      printf 'The --owner-secret option needs TIMDO_SECRET configured in the environment or %s.\n' "$TIMDO_CONFIG" >&2
+      return 1
+    fi
     die "The --owner-secret option needs TIMDO_SECRET configured in the environment or $TIMDO_CONFIG."
   fi
   if [[ -z "$TIMDO_TOKEN" && -z "${TIMDO_SECRET:-}" ]]; then
+    if [[ "${EVENT_FOLLOW_ACTIVE:-}" == "1" ]]; then
+      printf 'Not logged in. Create a token at %s/settings/access, then run: timdo login\n' "$APP_URL" >&2
+      return 1
+    fi
     echo "Not logged in. Create a token at $APP_URL/settings/access, then run: timdo login" >&2
     exit 1
   fi
@@ -329,12 +346,14 @@ api_error() {
   if [[ "$msg" == *"Invalid internal secret"* ]]; then
     die "Not signed in: the API rejected TIMDO_SECRET. Check the environment or $TIMDO_CONFIG (API: $TIMDO_API)."
   fi
-  # A 409 means the ref is already the source of another task: name it so scripts can recover.
+  # A 409 with a taskId means the ref is already the source of another task: name it so scripts can recover.
   # Commands can set CLASH_HINT to say what else they could do (add: --on-duplicate report).
   if [[ "$code" == "409" ]]; then
     local other
     other=$(jq -r '.taskId // empty' "$file" 2>/dev/null || true)
-    die "Already tracked: $msg.${other:+ Open it with: timdo get ${other:0:8}}${CLASH_HINT:+. $CLASH_HINT}"
+    if [[ -n "$other" ]]; then
+      die "Already tracked: $msg. Open it with: timdo get ${other:0:8}${CLASH_HINT:+. $CLASH_HINT}"
+    fi
   fi
   local who_note=""
   [[ -n "$TIMDO_AS" && ( "$code" == "403" || "$code" == "404" ) && "$msg" != *"$TIMDO_AS"* ]] && who_note=" (acting as $TIMDO_AS)"
@@ -373,11 +392,18 @@ api_response() {
   API_CAPTURE_RESPONSE=1 api "$@"
 }
 
+# Remove one request's private response files before the next follow poll.
+api_cleanup_files() {
+  local out="$1" err="$2" request_status="$3" header_file="${4:-}"
+  rm -f "$out" "$err" "$request_status" 2>/dev/null || true
+  [[ -z "$header_file" ]] || rm -f "$header_file" 2>/dev/null || true
+}
+
 # api METHOD PATH [curl args...]: prints the response body, or exits non-zero with the API error
 api() {
   local method="$1" path="$2"
   shift 2
-  require_credentials
+  require_credentials || return $?
   # Credentials go to curl as a config on stdin (-K -), never as arguments, so they don't
   # show up in `ps` for other users on the machine.
   local auth_header
@@ -386,29 +412,84 @@ api() {
   elif [[ -n "$TIMDO_TOKEN" ]]; then
     auth_header="Authorization: Bearer $TIMDO_TOKEN"
   else
-    auth_header="X-Internal-Secret: $TIMDO_SECRET"
+    auth_header="X-Internal-Secret: ${TIMDO_SECRET:-}"
   fi
   local headers=(-H "Content-Type: application/json")
   [[ -n "$TIMDO_AS" ]] && headers+=(-H "X-Timdo-User: $TIMDO_AS")
-  local out err code header_file="" dump_header=()
+  local out err code header_file="" dump_header=() curl_status request_status_file=""
   out=$(mktemp "$TMPD/resp.XXXXXX")
   err="$out.err"
+  request_status_file="$out.status"
   if [[ "${API_CAPTURE_RESPONSE:-}" == "1" ]]; then
     header_file="$out.headers"
     dump_header=(-D "$header_file")
   fi
-  if ! code=$(printf 'header = "%s"\n' "$auth_header" | curl -sS -K - -o "$out" "${dump_header[@]}" -w '%{http_code}' -X "$method" "${headers[@]}" "$@" "${TIMDO_API}${path}" 2>"$err"); then
+  if [[ "${EVENT_FOLLOW_ACTIVE:-}" == "1" ]]; then
+    local request_pid tracked_request
+    [[ ! -e "${EVENT_STOP_FILE:-}" ]] || { rm -f "$out" "$err" "$request_status_file" 2>/dev/null || true; return 1; }
+    curl -sS -K - -o "$out" "${dump_header[@]}" -w '%{http_code}' -X "$method" "${headers[@]}" "$@" "${TIMDO_API}${path}" \
+      >"$request_status_file" 2>"$err" <<<"header = \"$auth_header\"" &
+    request_pid=$!
+    if ! printf '%s\n' "$request_pid" > "$EVENT_REQUEST_PID_FILE"; then
+      kill -TERM "$request_pid" 2>/dev/null || true
+      wait "$request_pid" 2>/dev/null || true
+      api_cleanup_files "$out" "$err" "$request_status_file" "$header_file"
+      die "Error: could not track the active events request."
+    fi
+    if [[ "${EVENT_STOP:-}" == "1" || -e "${EVENT_STOP_FILE:-}" ]]; then
+      kill -TERM "$request_pid" 2>/dev/null || true
+    fi
+    if wait "$request_pid"; then curl_status=0; else curl_status=$?; fi
+    if [[ -r "$EVENT_REQUEST_PID_FILE" ]]; then
+      IFS= read -r tracked_request < "$EVENT_REQUEST_PID_FILE" || true
+      [[ "$tracked_request" != "$request_pid" ]] || rm -f "$EVENT_REQUEST_PID_FILE"
+    fi
+    if [[ "$curl_status" -ne 0 ]]; then
+      if [[ "${EVENT_STOP:-}" == "1" ]]; then
+        api_cleanup_files "$out" "$err" "$request_status_file" "$header_file"
+        return 1
+      fi
+      if [[ "${EVENT_FOLLOW_ACTIVE:-}" == "1" ]]; then
+        printf 'Error: could not reach the TimDo API at %s (%s)\n' "$TIMDO_API" "$(head -c 200 "$err" | tr '\n' ' ')" >&2
+        api_cleanup_files "$out" "$err" "$request_status_file" "$header_file"
+        return 1
+      fi
+      die "Error: could not reach the TimDo API at $TIMDO_API ($(head -c 200 "$err" | tr '\n' ' '))"
+    fi
+    code=$(<"$request_status_file")
+    rm -f "$request_status_file" 2>/dev/null || true
+  elif ! code=$(printf 'header = "%s"\n' "$auth_header" | curl -sS -K - -o "$out" "${dump_header[@]}" -w '%{http_code}' -X "$method" "${headers[@]}" "$@" "${TIMDO_API}${path}" 2>"$err"); then
     die "Error: could not reach the TimDo API at $TIMDO_API ($(head -c 200 "$err" | tr '\n' ' '))"
   fi
   if [[ "$code" -ge 400 ]]; then
+    if [[ "${EVENT_FOLLOW_ACTIVE:-}" == "1" ]]; then
+      if (api_error "$code" "$out"); then
+        api_cleanup_files "$out" "$err" "$request_status_file" "$header_file"
+        return 0
+      else
+        local api_error_status=$?
+        api_cleanup_files "$out" "$err" "$request_status_file" "$header_file"
+        return "$api_error_status"
+      fi
+    fi
     api_error "$code" "$out"
   fi
   if [[ "${API_CAPTURE_RESPONSE:-}" == "1" ]]; then
-    local response_headers
+    local response_headers response response_status
     response_headers=$(response_headers_json "$header_file")
-    jq -cn --rawfile body "$out" --argjson headers "$response_headers" '{body:(try ($body | fromjson) catch $body), headers:$headers}'
+    if response=$(jq -cn --rawfile body "$out" --argjson headers "$response_headers" '{body:(try ($body | fromjson) catch $body), headers:$headers}'); then
+      response_status=0
+    else
+      response_status=$?
+    fi
+    api_cleanup_files "$out" "$err" "$request_status_file" "$header_file"
+    if [[ "$response_status" -ne 0 ]]; then return "$response_status"; fi
+    printf '%s\n' "$response"
   else
-    cat "$out"
+    local output_status
+    if cat "$out"; then output_status=0; else output_status=$?; fi
+    api_cleanup_files "$out" "$err" "$request_status_file" "$header_file"
+    return "$output_status"
   fi
 }
 
@@ -2633,6 +2714,397 @@ cmd_unlink() {
 }
 
 # ---------------------------------------------------------------------------
+# recorded events
+# ---------------------------------------------------------------------------
+usage_events() {
+  cat <<'EOF'
+Usage:
+  timdo events [--after 0|latest|CURSOR] [-w ID|SLUG] [--types LIST]
+               [--include-refs] [--include-text] [-n 1-500] [--follow] [--interval 1-3600]
+               [--state-file PATH]
+  timdo events init --state-file PATH --after 0|latest [scope and include options]
+  timdo events ack --state-file PATH --from OLD --to NEXT
+
+Read one finite page from the recorded activity feed. JSON output is the complete
+versioned page envelope, including when events is empty. --text is the global
+human-readable format flag. Text output shows IDs and fixed attribution fields only.
+
+--follow drains every hasMore page before waiting for the next poll. JSON follow
+writes one compact page envelope per line. The cursor stays in memory and advances
+only after that page was written. It stops on SIGINT or SIGTERM. Follow cannot use
+a checkpoint file.
+
+A checkpoint is created only by init. Use --after 0 to replay visible history, or
+--after latest to start at the current high-water mark. A finite --state-file read
+never changes the file. After every intended action succeeds, acknowledge with the
+old and next cursor from the page. Replays are normal; use the immutable event ID
+as the receiver's idempotency key. The file contains no credential or event body.
+
+The checkpoint helper uses Node.js built-ins. Store the file in a private directory.
+See docs/integrations.md for the feed's limits and a local receiver example.
+
+Examples:
+  timdo --json events --after 0 --workspace <workspace-id> --types task.completed
+  timdo events --follow --interval 30 --include-text
+  timdo events init --state-file ./private/events.json --after 0 --workspace <workspace-id>
+  timdo --json events --state-file ./private/events.json > page.json
+  timdo events ack --state-file ./private/events.json --from 0 --to <page-next>
+EOF
+}
+
+EVENT_PUBLIC_TYPES_JSON='["bot.created","bot.disabled","bot.renamed","bot.role_changed","bot.token_created","bot.token_revoked","epic.completed","epic.created","epic.deleted","epic.moved","epic.status_changed","epic.updated","member.added","member.invited","member.joined","member.left","member.removed","member.role_changed","note.added","note.deleted","organisation.created","organisation.renamed","project.archived","project.created","project.moved","project.moved_out","project.renamed","project.unarchived","ref.added","ref.removed","task.assigned","task.completed","task.created","task.deleted","task.linked","task.merged","task.moved","task.moved_out","task.restored","task.status_changed","task.updated"]'
+
+normalise_event_types() {
+  local raw="$1" selected="$2" result
+  if [[ "$selected" == false ]]; then
+    printf '%s\n' "$EVENT_PUBLIC_TYPES_JSON"
+    return
+  fi
+  if ! result=$(jq -cn --arg raw "$raw" --argjson public "$EVENT_PUBLIC_TYPES_JSON" '
+    def expand($part):
+      if ($part | endswith(".*")) then [$public[] | select(startswith($part[0:-1]))]
+      elif ($public | index($part)) then [$part]
+      else [] end;
+    ($raw | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; ""))) as $parts
+    | if any($parts[]; . == "") then error("empty event type")
+      else [$parts[] as $part | expand($part) as $matches
+        | if ($matches | length) == 0 then error("unknown event type") else $matches[] end]
+        | unique | sort
+      end' 2>/dev/null); then
+    usage_die "Error: --types must be registered event types or a registered prefix such as task.*."
+  fi
+  printf '%s\n' "$result"
+}
+
+events_include_json() {
+  jq -cn --argjson refs "$1" --argjson text "$2" \
+    '[if $refs then "refs" else empty end, if $text then "text" else empty end] | sort'
+}
+
+events_validate_cursor() {
+  local cursor="$1" allow_bootstrap="${2:-true}"
+  if [[ "$allow_bootstrap" == true && ( "$cursor" == 0 || "$cursor" == latest ) ]]; then return 0; fi
+  [[ ${#cursor} -ge 20 && ${#cursor} -le 2048 && "$cursor" =~ ^c1\.[A-Za-z0-9_-]+$ ]] \
+    || usage_die "Error: cursor must be a bounded opaque events cursor."
+}
+
+events_validate_checkpoint_cursor() {
+  local cursor="$1"
+  [[ "$cursor" == 0 ]] && return 0
+  events_validate_cursor "$cursor" false
+}
+
+events_state_helper() {
+  local operation="$1" state_path="$2" payload="${3:-}"
+  if [[ -n "$payload" ]]; then
+    printf '%s' "$payload" | env -u TIMDO_TOKEN -u TIMDO_SECRET -u TIMDO_AS -u TIMDO_CONFIG \
+      node "$TIMDO_SCRIPT_DIR/timdo-events-state.js" "$operation" "$state_path"
+  else
+    env -u TIMDO_TOKEN -u TIMDO_SECRET -u TIMDO_AS -u TIMDO_CONFIG \
+      node "$TIMDO_SCRIPT_DIR/timdo-events-state.js" "$operation" "$state_path"
+  fi
+}
+
+events_normalised_api() {
+  local payload
+  payload=$(jq -cn --arg api "$TIMDO_API" '{api:$api}')
+  printf '%s' "$payload" | env -u TIMDO_TOKEN -u TIMDO_SECRET -u TIMDO_AS -u TIMDO_CONFIG \
+    node "$TIMDO_SCRIPT_DIR/timdo-events-state.js" normalize-api
+}
+
+events_current_principal() {
+  local me id
+  me=$(api GET /users/me)
+  id=$(jq -er 'if (.id | type) == "string" and (.id | length) > 0 then .id else error("missing id") end' <<< "$me" 2>/dev/null) \
+    || die "Error: the authenticated account response has no principal id."
+  printf '%s' "$id"
+}
+
+events_resolve_workspace() {
+  local query="$1" org_id
+  org_id=$(sharing_json | jq -er --arg q "$query" \
+    '(([.[] | select(.id == $q)] | .[0].id) // ([.[] | select(.slug == $q)] | .[0].id) // empty)' 2>/dev/null) \
+    || die "Not found: no accessible workspace has ID or slug \"$query\"."
+  printf '%s' "$org_id"
+}
+
+events_page_path() {
+  local after="$1" workspace="$2" types_json="$3" include_json="$4" limit="$5" send_types="$6" send_include="$7"
+  local -a params=("after=$(urlencode "$after")")
+  [[ -n "$workspace" ]] && params+=("workspace=$(urlencode "$workspace")")
+  if [[ "$send_types" == true ]]; then
+    params+=("types=$(urlencode "$(jq -r 'join(",")' <<< "$types_json")")")
+  fi
+  if [[ "$send_include" == true && "$(jq 'length' <<< "$include_json")" -gt 0 ]]; then
+    params+=("include=$(urlencode "$(jq -r 'join(",")' <<< "$include_json")")")
+  fi
+  params+=("limit=$limit")
+  printf '/events?%s' "$(IFS='&'; printf '%s' "${params[*]}")"
+}
+
+events_check_page() {
+  jq -e 'type == "object" and .version == 1 and (.events | type == "array") and (.events | (all(.[]; type == "object" and (.id | type == "string") and (.id | length) > 0) and ((map(.id) | unique | length) == length))) and (.next | type == "string") and (.hasMore | type == "boolean")' \
+    >/dev/null 2>&1 <<< "$1" || die "Error: the events API returned an invalid page envelope or unstable event IDs."
+  events_validate_cursor "$(jq -r '.next' <<< "$1")" false
+}
+
+events_write_page() {
+  local page="$1" following="$2" rendered
+  events_check_page "$page"
+  if ! is_text; then
+    if [[ "$following" == true ]]; then
+      rendered=$(jq -c '.' <<< "$page") || return 1
+    else
+      rendered=$(jq '.' <<< "$page") || return 1
+    fi
+  else
+    rendered=$(jq -r '
+      def safe: (. // "-") | tostring | gsub("[\\p{Cc}]"; " ");
+      .events[] | [(.occurredAt // "time unavailable" | safe), (.type | safe),
+        ("event " + (.id | safe)), ("task " + (.taskId | safe)),
+        ("project " + (.projectId | safe)),
+        ("actor " + ((.actor.kind // "unknown") | safe) + ":" + (.actor.id | safe)),
+        ("via " + (.via | safe))] | join("  ")' <<< "$page") || return 1
+    if [[ -z "$rendered" ]]; then
+      [[ "$following" == true ]] && return 0
+      rendered='No recorded events.'
+    fi
+  fi
+  printf '%s\n' "$rendered" || return 1
+}
+
+events_follow_signal() {
+  EVENT_STOP=1
+  if [[ -n "${EVENT_STOP_FILE:-}" ]]; then : > "$EVENT_STOP_FILE" 2>/dev/null || true; fi
+  if [[ -n "${EVENT_REQUEST_PID_FILE:-}" && -r "$EVENT_REQUEST_PID_FILE" ]]; then
+    local request_pid=""
+    IFS= read -r request_pid < "$EVENT_REQUEST_PID_FILE" || true
+    rm -f "$EVENT_REQUEST_PID_FILE" 2>/dev/null || true
+    if [[ "$request_pid" =~ ^[1-9][0-9]*$ ]]; then
+      kill -TERM "$request_pid" 2>/dev/null || true
+    fi
+  fi
+  if [[ -n "${EVENT_CHILD_PID:-}" ]]; then
+    kill -TERM "$EVENT_CHILD_PID" 2>/dev/null || true
+  fi
+}
+
+cmd_events() {
+  local mode="read" after="0" after_set=false workspace="" workspace_set=false
+  local types="" types_set=false include_refs=false include_refs_set=false include_text=false include_text_set=false
+  local limit=100 limit_set=false follow=false interval=30 interval_set=false state_file=""
+  local from_cursor="" from_set=false to_cursor="" to_set=false
+  case "${1:-}" in
+    init|ack) mode="$1"; shift ;;
+  esac
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) usage_events; return 0 ;;
+      --after) need_value "$1" "${2:-}"; after="$2"; after_set=true; shift 2 ;;
+      --after=*) after="${1#*=}"; after_set=true; shift ;;
+      -w|--workspace) need_value "$1" "${2:-}"; workspace="$2"; workspace_set=true; shift 2 ;;
+      --workspace=*) workspace="${1#*=}"; workspace_set=true; shift ;;
+      --types) need_value "$1" "${2:-}"; types="$2"; types_set=true; shift 2 ;;
+      --types=*) types="${1#*=}"; types_set=true; shift ;;
+      --include-refs) include_refs=true; include_refs_set=true; shift ;;
+      --include-text) include_text=true; include_text_set=true; shift ;;
+      -n|--limit) need_value "$1" "${2:-}"; limit="$2"; limit_set=true; shift 2 ;;
+      --limit=*) limit="${1#*=}"; limit_set=true; shift ;;
+      --follow) follow=true; shift ;;
+      --interval) need_value "$1" "${2:-}"; interval="$2"; interval_set=true; shift 2 ;;
+      --interval=*) interval="${1#*=}"; interval_set=true; shift ;;
+      --state-file) need_value "$1" "${2:-}"; state_file="$2"; shift 2 ;;
+      --state-file=*) state_file="${1#*=}"; shift ;;
+      --from) need_value "$1" "${2:-}"; from_cursor="$2"; from_set=true; shift 2 ;;
+      --from=*) from_cursor="${1#*=}"; from_set=true; shift ;;
+      --to) need_value "$1" "${2:-}"; to_cursor="$2"; to_set=true; shift 2 ;;
+      --to=*) to_cursor="${1#*=}"; to_set=true; shift ;;
+      *) usage_die "Unknown option for events: $1 (see: timdo events --help)" ;;
+    esac
+  done
+
+  [[ "$limit" =~ ^[0-9]{1,3}$ ]] || usage_die "Error: --limit must be a whole number from 1 to 500."
+  limit=$((10#$limit))
+  (( limit >= 1 && limit <= 500 )) || usage_die "Error: --limit must be a whole number from 1 to 500."
+  [[ "$interval" =~ ^[0-9]{1,4}$ ]] || usage_die "Error: --interval must be a whole number from 1 to 3600."
+  interval=$((10#$interval))
+  (( interval >= 1 && interval <= 3600 )) || usage_die "Error: --interval must be a whole number from 1 to 3600."
+
+  local types_json include_json
+  types_json=$(normalise_event_types "$types" "$types_set")
+  include_json=$(events_include_json "$include_refs" "$include_text")
+
+  if [[ "$mode" == "ack" ]]; then
+    [[ -n "$state_file" && "$from_set" == true && "$to_set" == true ]] \
+      || usage_die "Usage: timdo events ack --state-file PATH --from OLD --to NEXT"
+    [[ "$after_set" == false && "$workspace_set" == false && "$types_set" == false && "$include_refs_set" == false && "$include_text_set" == false && "$limit_set" == false && "$follow" == false && "$interval_set" == false ]] \
+      || usage_die "Error: events ack accepts only --state-file, --from and --to."
+    events_validate_checkpoint_cursor "$from_cursor"
+    events_validate_cursor "$to_cursor" false
+    local ack_state api_base principal payload ack_result
+    ack_state=$(events_state_helper read "$state_file")
+    api_base=$(events_normalised_api)
+    [[ "$(jq -r '.api' <<< "$ack_state")" == "$api_base" ]] \
+      || die "Checkpoint API base does not match TIMDO_API."
+    principal=$(events_current_principal)
+    [[ "$(jq -r '.principal' <<< "$ack_state")" == "$principal" ]] \
+      || die "Checkpoint principal does not match the current authenticated account."
+    payload=$(jq -cn --arg from "$from_cursor" --arg to "$to_cursor" '{from:$from,to:$to}')
+    ack_result=$(events_state_helper ack "$state_file" "$payload")
+    if ! is_text; then jq '.' <<< "$ack_result"; else printf 'Acknowledged event checkpoint.\n'; fi
+    return 0
+  fi
+
+  if [[ "$mode" == "init" ]]; then
+    [[ -n "$state_file" && "$after_set" == true && ( "$after" == 0 || "$after" == latest ) ]] \
+      || usage_die "Usage: timdo events init --state-file PATH --after 0|latest [scope and include options]"
+    [[ "$follow" == false && "$from_set" == false && "$to_set" == false && "$interval_set" == false ]] \
+      || usage_die "Error: events init does not accept follow, interval, from or to."
+    if [[ -e "$state_file" || -L "$state_file" ]]; then
+      die "Checkpoint already exists. Init never replaces a checkpoint."
+    fi
+  elif [[ "$mode" != "read" ]]; then
+    usage_die "Unknown events operation: $mode. Use events, events init or events ack."
+  fi
+
+  [[ "$from_set" == false && "$to_set" == false ]] || usage_die "Error: --from and --to are only used by events ack."
+  if [[ "$follow" == true && -n "$state_file" ]]; then
+    usage_die "Error: --follow cannot be combined with --state-file."
+  fi
+  if [[ "$interval_set" == true && "$follow" != true ]]; then
+    usage_die "Error: --interval requires --follow."
+  fi
+  if [[ "$follow" == true && ( "$from_set" == true || "$to_set" == true ) ]]; then
+    usage_die "Error: --follow cannot be combined with acknowledgement options."
+  fi
+  if [[ "$follow" == true && "$interval_set" == false ]]; then interval=30; fi
+  if [[ "$after_set" == true && "$mode" != "init" ]]; then
+    events_validate_cursor "$after" true
+  fi
+
+  local api_base="" principal_id="" state="" query_workspace="" query_after="$after"
+  local query_types="$types_json" query_include="$include_json" send_types="$types_set" send_include=false
+  [[ "$(jq 'length' <<< "$include_json")" -gt 0 ]] && send_include=true
+
+  if [[ "$mode" == "init" || -n "$state_file" ]]; then
+    api_base=$(events_normalised_api)
+  fi
+
+  if [[ "$mode" == "init" ]]; then
+    principal_id=$(events_current_principal)
+    if [[ "$workspace_set" == true ]]; then query_workspace=$(events_resolve_workspace "$workspace"); fi
+    if [[ "$after" == latest ]]; then
+      local latest_path latest_page
+      latest_path=$(events_page_path latest "$query_workspace" "$types_json" "$include_json" "$limit" "$send_types" "$send_include")
+      latest_page=$(api GET "$latest_path")
+      events_check_page "$latest_page"
+      query_after=$(jq -r '.next' <<< "$latest_page")
+    else
+      query_after=0
+    fi
+    local state_payload init_result
+    state_payload=$(jq -cn --arg api "$api_base" --arg principal "$principal_id" --arg workspace "$query_workspace" \
+      --arg cursor "$query_after" --argjson types "$types_json" --argjson include "$include_json" \
+      '{version:1,api:$api,principal:$principal,workspace:(if $workspace == "" then null else $workspace end),types:$types,include:$include,cursor:$cursor}')
+    init_result=$(events_state_helper init "$state_file" "$state_payload")
+    if ! is_text; then jq -cn --arg path "$state_file" --arg after "$after" '{initialized:true,stateFile:$path,after:$after}';
+    else printf 'Created event checkpoint at %s.\n' "$state_file"; fi
+    return 0
+  fi
+
+  if [[ -n "$state_file" ]]; then
+    state=$(events_state_helper read "$state_file")
+    [[ "$(jq -r '.api' <<< "$state")" == "$api_base" ]] \
+      || die "Checkpoint API base does not match TIMDO_API."
+    principal_id=$(events_current_principal)
+    [[ "$(jq -r '.principal' <<< "$state")" == "$principal_id" ]] \
+      || die "Checkpoint principal does not match the current authenticated account."
+    local saved_workspace saved_types saved_include saved_cursor
+    saved_workspace=$(jq -r '.workspace // ""' <<< "$state")
+    saved_types=$(jq -c '.types' <<< "$state")
+    saved_include=$(jq -c '.include' <<< "$state")
+    saved_cursor=$(jq -r '.cursor' <<< "$state")
+    if [[ "$after_set" == true && "$after" != "$saved_cursor" ]]; then
+      die "Explicit --after conflicts with the checkpoint cursor."
+    fi
+    if [[ "$types_set" == true && "$types_json" != "$saved_types" ]]; then
+      die "Explicit --types conflicts with the checkpoint filter."
+    fi
+    if [[ "$include_refs_set" == true || "$include_text_set" == true ]]; then
+      [[ "$include_json" == "$saved_include" ]] || die "Explicit include options conflict with the checkpoint filter."
+    fi
+    if [[ "$workspace_set" == true ]]; then
+      query_workspace=$(events_resolve_workspace "$workspace")
+      [[ "$query_workspace" == "$saved_workspace" ]] || die "Explicit workspace conflicts with the checkpoint scope."
+    else
+      query_workspace="$saved_workspace"
+    fi
+    query_after="$saved_cursor"
+    query_types="$saved_types"
+    query_include="$saved_include"
+    send_types=true
+    [[ "$(jq 'length' <<< "$query_include")" -gt 0 ]] && send_include=true
+  elif [[ "$workspace_set" == true ]]; then
+    query_workspace=$(events_resolve_workspace "$workspace")
+  fi
+
+  if [[ "$follow" != true ]]; then
+    local path page
+    path=$(events_page_path "$query_after" "$query_workspace" "$query_types" "$query_include" "$limit" "$send_types" "$send_include")
+    page=$(api GET "$path")
+    events_write_page "$page" false || die "Error: could not write events output."
+    return 0
+  fi
+
+  local EVENT_STOP=0 EVENT_CHILD_PID="" EVENT_REQUEST_PID_FILE="$TMPD/events-request.pid" EVENT_STOP_FILE="$TMPD/events-stop" EVENT_FOLLOW_ACTIVE=1
+  trap 'events_follow_signal' INT TERM
+  local current_after="$query_after" page_path page next has_more err_file page_file sleep_status
+  err_file="$TMPD/events-api.err"
+  page_file="$TMPD/events-page.json"
+  while [[ "$EVENT_STOP" == 0 ]]; do
+    while [[ "$EVENT_STOP" == 0 ]]; do
+      page_path=$(events_page_path "$current_after" "$query_workspace" "$query_types" "$query_include" "$limit" "$send_types" "$send_include")
+      if ! api GET "$page_path" >"$page_file" 2>"$err_file"; then
+        if [[ "$EVENT_STOP" == 1 ]]; then break; fi
+        cat "$err_file" >&2
+        trap - INT TERM
+        return 1
+      fi
+      [[ "$EVENT_STOP" == 1 ]] && break
+      page=$(<"$page_file")
+      if ! events_write_page "$page" true; then
+        if [[ "$EVENT_STOP" == 1 ]]; then break; fi
+        printf 'Error: could not write events output.\n' >&2
+        trap - INT TERM
+        return 1
+      fi
+      next=$(jq -r '.next' <<< "$page")
+      has_more=$(jq -r '.hasMore' <<< "$page")
+      if [[ "$has_more" == true && "$next" == "$current_after" ]]; then
+        printf 'Error: events API cursor did not advance while more pages were available.\n' >&2
+        trap - INT TERM
+        return 1
+      fi
+      current_after="$next"
+      [[ "$has_more" == true ]] || break
+    done
+    [[ "$EVENT_STOP" == 1 ]] && break
+    sleep "$interval" &
+    EVENT_CHILD_PID=$!
+    [[ "$EVENT_STOP" == 1 ]] && kill -TERM "$EVENT_CHILD_PID" 2>/dev/null || true
+    if wait "$EVENT_CHILD_PID"; then sleep_status=0; else sleep_status=$?; fi
+    EVENT_CHILD_PID=""
+    [[ "$EVENT_STOP" == 1 ]] && break
+    if [[ "$sleep_status" != 0 ]]; then
+      printf 'Error: event polling wait failed.\n' >&2
+      trap - INT TERM
+      return 1
+    fi
+  done
+  trap - INT TERM
+}
+
+# ---------------------------------------------------------------------------
 # activity
 # ---------------------------------------------------------------------------
 usage_activity() {
@@ -3448,6 +3920,7 @@ TASKS:
   search <query> [opts]        Full-text search (--all, --customer <name>); a pasted URL or
                                kind:id finds tasks carrying that ref first
   activity [opts]              Who did what, newest first (--task, --epic, --project, --workspace, -n)
+  events [opts]                Read recorded activity pages (see: timdo events --help)
 
 LINKS TO THINGS OUTSIDE TIMDO (refs):
   A ref is a URL or kind:id with a role: link (default), source (where the task came from,
@@ -3492,7 +3965,7 @@ WORKSPACES AND SHARING (alias: ws, org):
   whoami                       Who the CLI is acting as, and your workspaces
 
 Run `timdo <command> --help` for the options of list, add, update, ref, find, similar,
-epic, workspace, activity, audit and search.
+epic, workspace, activity, events, audit and search.
 
 EXAMPLES:
   timdo list do --mine
@@ -3537,6 +4010,7 @@ case "${1:-help}" in
   find)                shift; cmd_find "$@" ;;
   similar)             shift; cmd_similar "$@" ;;
   activity|history)    shift; cmd_activity "$@" ;;
+  events)              shift; cmd_events "$@" ;;
   whoami|me)           shift; cmd_whoami "$@" ;;
   login)               shift; cmd_login "$@" ;;
   logout)              shift; cmd_logout "$@" ;;

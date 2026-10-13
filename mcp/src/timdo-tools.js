@@ -7,43 +7,44 @@
 // Refs link a task to things outside TimDo (issues, posts, mail, member ids) as a URL or kind:id.
 
 import {
-  runTimdoCli,
-  buildListTasksArgs,
-  buildCountsArgs,
-  buildAddTaskArgs,
-  buildUpdateTaskArgs,
-  buildListEpicsArgs,
-  buildAddEpicArgs,
-  buildUpdateEpicArgs,
-  buildDeleteEpicArgs,
-  buildGetEpicArgs,
-  buildListGoalsArgs,
-  buildSearchTasksArgs,
-  buildListCustomersArgs,
-  buildLinkTasksArgs,
-  buildUnlinkTasksArgs,
-  buildAuditArgs,
   buildActivityArgs,
-  buildListBotsArgs,
-  buildCreateBotArgs,
-  buildRenameBotArgs,
-  buildSetBotRoleArgs,
-  buildIssueBotTokenArgs,
-  buildRevokeBotTokenArgs,
-  buildDisableBotArgs,
-  buildWhoamiArgs,
-  buildListWorkspacesArgs,
-  buildGetWorkspaceArgs,
-  buildShareWorkspaceArgs,
-  buildUpdateMemberRoleArgs,
-  buildRemoveMemberArgs,
-  buildMoveProjectArgs,
+  buildAddEpicArgs,
   buildAddRefArgs,
-  buildRemoveRefArgs,
+  buildAddTaskArgs,
+  buildAuditArgs,
+  buildCountsArgs,
+  buildCreateBotArgs,
+  buildDeleteEpicArgs,
+  buildDisableBotArgs,
+  buildEventsArgs,
   buildFindByRefArgs,
   buildFindSimilarArgs,
-  REF_ROLES,
+  buildGetEpicArgs,
+  buildGetWorkspaceArgs,
+  buildIssueBotTokenArgs,
+  buildLinkTasksArgs,
+  buildListBotsArgs,
+  buildListCustomersArgs,
+  buildListEpicsArgs,
+  buildListGoalsArgs,
+  buildListTasksArgs,
+  buildListWorkspacesArgs,
+  buildMoveProjectArgs,
+  buildRemoveMemberArgs,
+  buildRemoveRefArgs,
+  buildRenameBotArgs,
+  buildRevokeBotTokenArgs,
+  buildSearchTasksArgs,
+  buildSetBotRoleArgs,
+  buildShareWorkspaceArgs,
+  buildUnlinkTasksArgs,
+  buildUpdateEpicArgs,
+  buildUpdateMemberRoleArgs,
+  buildUpdateTaskArgs,
+  buildWhoamiArgs,
   ON_DUPLICATE,
+  REF_ROLES,
+  runTimdoCli,
 } from './timdo-cli.js';
 
 const MODEL =
@@ -79,7 +80,7 @@ const DUPLICATES_NOTE =
   'creates the task, and every later call for the same item adds its new refs and a "Reported again" note to that task ' +
   'instead, so retries and repeats are safe. The result is the task plus created (true for a new task; false when ' +
   'onDuplicate found the existing one, with reported: true after a report) and similar (up to 3 open tasks that look alike, ' +
-  'each with canEdit). Similarity is a suggestion, not proof of a duplicate. Review both tasks and get the user\'s explicit confirmation of the exact source and target before calling timdo_merge_tasks. ' +
+  "each with canEdit). Similarity is a suggestion, not proof of a duplicate. Review both tasks and get the user's explicit confirmation of the exact source and target before calling timdo_merge_tasks. " +
   'Call it only if canEdit is true on both tasks; the merge acts immediately and archives the source into the target.';
 
 const REF_ITEM = {
@@ -90,15 +91,24 @@ const REF_ITEM = {
       description:
         'A URL, or kind:id such as github.issue:acme/widgets#12 or forum.post:4411. When kind is given, just the id (e.g. 123456).',
     },
-    role: { type: 'string', enum: REF_ROLES, description: 'link (default), source, reported_by or about' },
+    role: {
+      type: 'string',
+      enum: REF_ROLES,
+      description: 'link (default), source, reported_by or about',
+    },
     label: {
       type: 'string',
-      description: 'Optional short display text (max 200), e.g. "Forum thread". Avoid people\'s names and contact details.',
+      description:
+        'Optional short display text (max 200), e.g. "Forum thread". Avoid people\'s names and contact details.',
     },
-    kind: { type: 'string', description: 'Optional kind for a bare id, e.g. acme.member with ref 123456' },
+    kind: {
+      type: 'string',
+      description: 'Optional kind for a bare id, e.g. acme.member with ref 123456',
+    },
     url: {
       type: 'string',
-      description: 'Optional http(s) link to open for this ref, when TimDo cannot build one (e.g. a member profile page)',
+      description:
+        'Optional http(s) link to open for this ref, when TimDo cannot build one (e.g. a member profile page)',
     },
   },
   required: ['ref'],
@@ -108,12 +118,13 @@ const AS_USER = {
   type: 'string',
   description:
     'Optional. Act as another TimDo account by email (sent as X-Timdo-User), e.g. robin@example.com, ' +
-    'to preview what that collaborator sees. Only works with the account owner\'s secret: with a personal ' +
+    "to preview what that collaborator sees. Only works with the account owner's secret: with a personal " +
     'token (bin/timdo login) you can only name yourself, and any other email is refused with 403. ' +
     'Omit to act as whoever the CLI is signed in as. Only write as someone else when the user asks.',
 };
 
-const TASK_STATUS_PATTERN = '^(?:all|(?:do|awaiting|delay|done|delegate)(?:,(?:do|awaiting|delay|done|delegate))*)$';
+const TASK_STATUS_PATTERN =
+  '^(?:all|(?:do|awaiting|delay|done|delegate)(?:,(?:do|awaiting|delay|done|delegate))*)$';
 const RELATIONS = ['relates_to', 'blocks', 'blocked_by', 'duplicates'];
 
 const str = (description, extra = {}) => ({ type: 'string', description, ...extra });
@@ -157,7 +168,9 @@ const TASK_FILTER_PROPERTIES = {
   noEpic: bool('Only tasks not linked to any epic'),
   noGoal: bool('Only tasks not linked to any of your life goals'),
   noCategory: bool('Only tasks with no project'),
-  unlinked: str('Only tasks missing a hierarchy link', { enum: ['epic', 'goal', 'category', 'any'] }),
+  unlinked: str('Only tasks missing a hierarchy link', {
+    enum: ['epic', 'goal', 'category', 'any'],
+  }),
   ref: str(
     'Only tasks carrying this ref (a URL or kind:id, e.g. github.issue:acme/widgets#12). With ref and no status, every status is listed (done included).'
   ),
@@ -169,10 +182,23 @@ export const TIMDO_TOOLS = [
     `List TimDo tasks you can see across all your workspaces. Returns up to 50 summary items by default in a page envelope with nextCursor and the full filtered total. Pass cursor with the same filters to continue; narrow membership with status, project, workspace, assignee, epic, goal, customer, tag, refs or missing links. groupBy adds page-local grouping metadata without changing the continuation. ${MODEL} ${TASK_FIELDS_NOTE}`,
     {
       ...TASK_FILTER_PROPERTIES,
-      limit: { type: 'number', default: 50, minimum: 1, maximum: 200, description: 'Page size (default 50, maximum 200)' },
-      cursor: str('Opaque continuation cursor from the previous page. Keep all membership filters the same.'),
-      groupBy: str('Add page-local presentation groups by project, epic or assignee.', { enum: ['project', 'epic', 'assignee'] }),
-      fields: str('Task fields: summary omits the full notes body (default); full includes it.', { enum: ['summary', 'full'], default: 'summary' }),
+      limit: {
+        type: 'number',
+        default: 50,
+        minimum: 1,
+        maximum: 200,
+        description: 'Page size (default 50, maximum 200)',
+      },
+      cursor: str(
+        'Opaque continuation cursor from the previous page. Keep all membership filters the same.'
+      ),
+      groupBy: str('Add page-local presentation groups by project, epic or assignee.', {
+        enum: ['project', 'epic', 'assignee'],
+      }),
+      fields: str('Task fields: summary omits the full notes body (default); full includes it.', {
+        enum: ['summary', 'full'],
+        default: 'summary',
+      }),
     }
   ),
   tool(
@@ -197,15 +223,21 @@ export const TIMDO_TOOLS = [
       }),
       priority: { type: 'number', description: 'Priority 1-10 (default: 5)' },
       size: str('Estimated size/effort: * to ***** (default: ***)'),
-      category: str('Project (category) name, e.g. Acme Solar, Personal. Required unless projectId is given.'),
+      category: str(
+        'Project (category) name, e.g. Acme Solar, Personal. Required unless projectId is given.'
+      ),
       projectId: str('Exact project by id, key (e.g. ACME) or "Workspace/Project"'),
-      assignTo: str('"me" for human creators (default for humans), "none" for unassigned, or a human member of the project\'s workspace by name or email. Bots default to unassigned and cannot be assigned.'),
+      assignTo: str(
+        '"me" for human creators (default for humans), "none" for unassigned, or a human member of the project\'s workspace by name or email. Bots default to unassigned and cannot be assigned.'
+      ),
       epic: str('Parent epic title or ID'),
       goal: str('Human-only: one of your private life goals; bots cannot own goals.'),
       customer: str('Customer or client name (e.g. Acme Solar)'),
       tags: str('Tags (comma-separated)'),
       linkTaskId: str('Task ID or prefix to link with after creation'),
-      linkType: str('Relationship when linkTaskId is given (default: relates_to)', { enum: RELATIONS }),
+      linkType: str('Relationship when linkTaskId is given (default: relates_to)', {
+        enum: RELATIONS,
+      }),
       awaitUntil: str('Return date YYYY-MM-DD (needed when status is awaiting)'),
       thread: str('Associated Gmail thread ID (also recorded as a gmail.thread ref)'),
       notes: str('Initial notes or next action'),
@@ -239,11 +271,15 @@ export const TIMDO_TOOLS = [
       'appear. Scope it like the create: project searches the workspace that project is in; projectId the same by id or ' +
       'key; workspace one workspace; none of them every workspace you can see. Returns [{ id, shortId, title, status, ' +
       'projectId, projectName, orgId, orgName, assigneeId, assigneeName, score, canEdit }], where score (0.5 to 1) is ' +
-      'the share of the title\'s words found. Only add a note when canEdit is true; a read-only match cannot be edited.',
+      "the share of the title's words found. Only add a note when canEdit is true; a read-only match cannot be edited.",
     {
       title: str('The title you would create, e.g. "Fix the offer page"'),
-      project: str('Project (category) name you would create in, e.g. Acme Solar: searches that project\'s workspace'),
-      projectId: str('Exact project by id, key (e.g. ACME) or "Workspace/Project": searches its workspace'),
+      project: str(
+        "Project (category) name you would create in, e.g. Acme Solar: searches that project's workspace"
+      ),
+      projectId: str(
+        'Exact project by id, key (e.g. ACME) or "Workspace/Project": searches its workspace'
+      ),
       workspace: str('Only this workspace, e.g. "Acme" or "personal"'),
       limit: { type: 'number', description: 'How many results, 1 to 10 (default 3)' },
       excludeId: str('Leave this task out (ID or prefix), e.g. the task you are editing'),
@@ -263,7 +299,9 @@ export const TIMDO_TOOLS = [
       priority: { type: 'number', description: 'Priority 1-10' },
       category: str('Move to another project by name'),
       projectId: str('Move to an exact project by id, key (e.g. ACME) or "Workspace/Project"'),
-      assignTo: str('"me" for a human caller, "none" to unassign, or a human workspace member by name or email. Bots cannot be assigned.'),
+      assignTo: str(
+        '"me" for a human caller, "none" to unassign, or a human workspace member by name or email. Bots cannot be assigned.'
+      ),
       claim: bool('Assign the task to yourself (bots cannot be assignees)'),
       unassign: bool('Leave the task unassigned'),
       epic: str('Parent epic title or ID'),
@@ -271,12 +309,18 @@ export const TIMDO_TOOLS = [
       customer: str('Customer or client name'),
       tags: str('Tags (comma-separated)'),
       linkTaskId: str('Task ID or prefix to link with'),
-      linkType: str('Relationship when linkTaskId is given (default: relates_to)', { enum: RELATIONS }),
+      linkType: str('Relationship when linkTaskId is given (default: relates_to)', {
+        enum: RELATIONS,
+      }),
       size: str('Size/effort (* to *****)'),
       awaitUntil: str('Return date YYYY-MM-DD (when status is awaiting)'),
       thread: str('Associated Gmail thread ID (also recorded as a gmail.thread ref)'),
       notes: str('Updated task notes'),
-      refs: { type: 'array', items: REF_ITEM, description: 'Refs to add, e.g. [{"ref":"https://github.com/acme/widgets/pull/7"}]' },
+      refs: {
+        type: 'array',
+        items: REF_ITEM,
+        description: 'Refs to add, e.g. [{"ref":"https://github.com/acme/widgets/pull/7"}]',
+      },
       removeRefs: {
         type: 'array',
         items: { type: 'string' },
@@ -288,7 +332,7 @@ export const TIMDO_TOOLS = [
   ),
   tool(
     'timdo_add_note',
-    'Append a dated progress note to a TimDo task. The note is signed with the caller\'s name and visible to everyone in the task\'s workspace.',
+    "Append a dated progress note to a TimDo task. The note is signed with the caller's name and visible to everyone in the task's workspace.",
     {
       id: str('Task ID (prefix or full UUID)'),
       note: str('Progress update text'),
@@ -312,14 +356,21 @@ export const TIMDO_TOOLS = [
     'Full-text search (SQLite FTS5, BM25) across tasks in every workspace you can see. Results include match snippets, linked tasks, and orgName/projectName/assigneeName. If the query is a URL or kind:id, tasks carrying exactly that ref come first, marked matchedRef: true, done ones included (check status) whatever includeDone says.',
     {
       query: str('Free-text query (title, reason, notes, customer, tags)'),
-      includeDone: { type: 'boolean', default: false, description: 'Include done tasks (default: false)' },
+      includeDone: {
+        type: 'boolean',
+        default: false,
+        description: 'Include done tasks (default: false)',
+      },
       customer: str('Restrict to one customer or company'),
     },
     ['query']
   ),
-  tool('timdo_delete_task', 'Soft-delete a TimDo task (needs edit rights).', { id: str('Task ID (prefix or full UUID)') }, [
-    'id',
-  ]),
+  tool(
+    'timdo_delete_task',
+    'Soft-delete a TimDo task (needs edit rights).',
+    { id: str('Task ID (prefix or full UUID)') },
+    ['id']
+  ),
   tool(
     'timdo_list_epics',
     'List TimDo epics with progress (done/total, %). Each epic includes orgName, projectKey, isShared, canEdit and createdByName.',
@@ -330,7 +381,7 @@ export const TIMDO_TOOLS = [
   ),
   tool(
     'timdo_add_epic',
-    'Create a TimDo epic in a project. Everyone in that project\'s workspace sees it. The life goal link is private to you.',
+    "Create a TimDo epic in a project. Everyone in that project's workspace sees it. The life goal link is private to you.",
     {
       title: str('Epic title'),
       category: str('Project (category) name, e.g. Acme Solar, Personal'),
@@ -355,9 +406,12 @@ export const TIMDO_TOOLS = [
     },
     ['id']
   ),
-  tool('timdo_delete_epic', 'Delete a TimDo epic by ID or title.', { id: str('Epic ID (prefix or UUID) or title') }, [
-    'id',
-  ]),
+  tool(
+    'timdo_delete_epic',
+    'Delete a TimDo epic by ID or title.',
+    { id: str('Epic ID (prefix or UUID) or title') },
+    ['id']
+  ),
   tool(
     'timdo_get_epic',
     'Get a TimDo epic: workspace, project, created/updated by, progress, all its tasks (with assignees) and recent activity.',
@@ -386,7 +440,12 @@ export const TIMDO_TOOLS = [
     {
       taskId: str('Source task ID or prefix'),
       targetTaskId: str('Target task ID or prefix'),
-      relation: { type: 'string', enum: RELATIONS, default: 'relates_to', description: 'Relationship (default: relates_to)' },
+      relation: {
+        type: 'string',
+        enum: RELATIONS,
+        default: 'relates_to',
+        description: 'Relationship (default: relates_to)',
+      },
       reason: str('Why the tasks are linked'),
     },
     ['taskId', 'targetTaskId']
@@ -426,7 +485,9 @@ export const TIMDO_TOOLS = [
     'timdo_find_by_ref',
     'Find TimDo tasks that carry a ref (a link to something outside TimDo), in every workspace you can see, any status including done. Use it to look up the task for an outside item, e.g. { "ref": "forum.post:4411", "role": "source" }. To create one only if it does not exist yet, call timdo_add_task with that source ref and onDuplicate "report" (or "return") instead: checking first and then creating can race with another caller, the single create cannot. ref is a URL or kind:id; a URL and its kind:id form find the same tasks. Returns an array of tasks (empty when none), each with its refs.',
     {
-      ref: str('URL or kind:id, e.g. https://github.com/acme/widgets/issues/12 or acme.member:123456'),
+      ref: str(
+        'URL or kind:id, e.g. https://github.com/acme/widgets/issues/12 or acme.member:123456'
+      ),
       role: str('Only tasks carrying it in this role', { enum: REF_ROLES }),
     },
     ['ref']
@@ -442,6 +503,26 @@ export const TIMDO_TOOLS = [
       project: str('Only this project (name, key such as ACME, or "Workspace/Project")'),
       workspace: str('Only this workspace'),
       limit: { type: 'number', description: 'How many entries (default 20)' },
+    }
+  ),
+  tool(
+    'timdo_events',
+    'Read one finite page of best-effort recorded activity. Returns the versioned {version, events, next, hasMore} page object, including empty pages. Current task and ref state is read at request time. includeRefs exposes canonical refs; includeText exposes task titles, event summaries and explicit actor names, which may contain personal data. Continue with after=next and deduplicate receiver actions by immutable event ID. This tool does not follow pages, keep a checkpoint file or perform external actions.',
+    {
+      after: str('0, latest or an opaque events cursor from the previous page'),
+      workspace: str('One authorised workspace ID or slug; omit for all current memberships'),
+      types: str('Comma-separated registered event types or a documented prefix such as task.*'),
+      includeRefs: bool(
+        'Include canonical role/ref values. A ref can contain an email, URL or user text.'
+      ),
+      includeText: bool('Include task title, event summary and explicit actor display name.'),
+      limit: {
+        type: 'number',
+        default: 100,
+        minimum: 1,
+        maximum: 500,
+        description: 'Page size (default 100, maximum 500)',
+      },
     }
   ),
   tool(
@@ -464,13 +545,15 @@ export const TIMDO_TOOLS = [
     {
       workspace: str('Workspace name or id'),
       email: str('Email address to share with'),
-      role: str('Role to give (default: member). viewer is read-only.', { enum: ['admin', 'member', 'viewer'] }),
+      role: str('Role to give (default: member). viewer is read-only.', {
+        enum: ['admin', 'member', 'viewer'],
+      }),
     },
     ['workspace', 'email']
   ),
   tool(
     'timdo_update_member_role',
-    'Change a member\'s role in a TimDo workspace. owner can change anyone; admin can manage members and viewers. A workspace always keeps one owner. Acts immediately.',
+    "Change a member's role in a TimDo workspace. owner can change anyone; admin can manage members and viewers. A workspace always keeps one owner. Acts immediately.",
     {
       workspace: str('Workspace name or id'),
       member: str('Member email or name'),
@@ -516,7 +599,12 @@ export const TIMDO_TOOLS = [
   tool(
     'timdo_rename_bot',
     'Rename a bot in its existing workspace. Confirm with the user first: agree the new name. A rename does not change its credentials or permissions.',
-    { workspace: str('Workspace name or id'), bot: str('Bot name or ID prefix'), name: str('New bot name'), ownerSecret: OWNER_SECRET },
+    {
+      workspace: str('Workspace name or id'),
+      bot: str('Bot name or ID prefix'),
+      name: str('New bot name'),
+      ownerSecret: OWNER_SECRET,
+    },
     ['workspace', 'bot', 'name']
   ),
   tool(
@@ -555,7 +643,11 @@ export const TIMDO_TOOLS = [
   tool(
     'timdo_disable_bot',
     'Disable a bot in its workspace. This revokes all its tokens and removes its membership. Confirm with the user first: agree the bot and workspace. The MCP call uses --yes after that confirmation, acts immediately and does not prompt in a terminal.',
-    { workspace: str('Workspace name or id'), bot: str('Bot name or ID prefix'), ownerSecret: OWNER_SECRET },
+    {
+      workspace: str('Workspace name or id'),
+      bot: str('Bot name or ID prefix'),
+      ownerSecret: OWNER_SECRET,
+    },
     ['workspace', 'bot']
   ),
 ];
@@ -578,7 +670,11 @@ export const TIMDO_ARG_BUILDERS = {
   timdo_add_task: (a) => buildAddTaskArgs(a),
   timdo_update_task: (a) => buildUpdateTaskArgs(a),
   timdo_add_note: (a) => {
-    const args = ['add-note', required(a.id, 'Task id is required.'), required(a.note, 'Note text is required.')];
+    const args = [
+      'add-note',
+      required(a.id, 'Task id is required.'),
+      required(a.note, 'Note text is required.'),
+    ];
     if (a.thread) args.push('--thread', a.thread);
     return args;
   },
@@ -593,7 +689,8 @@ export const TIMDO_ARG_BUILDERS = {
   timdo_get_epic: (a) => buildGetEpicArgs(a),
   timdo_list_goals: (a) => buildListGoalsArgs(a),
   timdo_merge_tasks: (a) => {
-    if (!a.sourceId || !a.targetId) throw new Error('Both sourceId and targetId are required for merge.');
+    if (!a.sourceId || !a.targetId)
+      throw new Error('Both sourceId and targetId are required for merge.');
     return ['merge', a.sourceId, a.targetId, '--yes'];
   },
   timdo_list_customers: () => buildListCustomersArgs(),
@@ -604,6 +701,7 @@ export const TIMDO_ARG_BUILDERS = {
   timdo_find_by_ref: (a) => buildFindByRefArgs(a),
   timdo_find_similar: (a) => buildFindSimilarArgs(a),
   timdo_activity: (a) => buildActivityArgs(a),
+  timdo_events: (a) => buildEventsArgs(a),
   timdo_list_bots: (a) => buildListBotsArgs(a),
   timdo_create_bot: (a) => buildCreateBotArgs(a),
   timdo_rename_bot: (a) => buildRenameBotArgs(a),
@@ -627,16 +725,20 @@ export function toolHints(message) {
   return String(message)
     .replace(/timdo get (\S+?)(?=[\s.,]|$)/g, 'timdo_get_task with id "$1"')
     .replace(/timdo ref list (\S+?)(?=[\s.,]|$)/g, 'timdo_get_task with id "$1" (its refs)')
-    .replace(/--on-duplicate (error|return|report)\b/g, 'call timdo_add_task again with onDuplicate "$1"');
+    .replace(
+      /--on-duplicate (error|return|report)\b/g,
+      'call timdo_add_task again with onDuplicate "$1"'
+    );
 }
 
 function taskGroup(task, groupBy) {
   if (groupBy === 'project') {
     const projectId = task.projectId || task.projectName || task.category || null;
     const name = task.projectName || task.category || 'No project';
-    const label = task.isShared === true && task.orgName && task.orgName.toLowerCase() !== name.toLowerCase()
-      ? `${task.orgName}/${name}`
-      : name;
+    const label =
+      task.isShared === true && task.orgName && task.orgName.toLowerCase() !== name.toLowerCase()
+        ? `${task.orgName}/${name}`
+        : name;
     return { key: projectId, label };
   }
   if (groupBy === 'epic') {
@@ -698,12 +800,20 @@ export async function handleTimdoTool(name, rawArgs = {}, run = runTimdoCli) {
   // Optional link straight after creating or updating a task. onDuplicate "return" promises no
   // writes, so the task it hands back is not linked.
   const returnedOnly = name === 'timdo_add_task' && result?.created === false && !result?.reported;
-  if ((name === 'timdo_add_task' || name === 'timdo_update_task') && args.linkTaskId && !returnedOnly) {
+  if (
+    (name === 'timdo_add_task' || name === 'timdo_update_task') &&
+    args.linkTaskId &&
+    !returnedOnly
+  ) {
     const taskId = name === 'timdo_add_task' ? result?.id : args.id;
     if (taskId) {
       try {
         await run(
-          buildLinkTasksArgs({ taskId, targetTaskId: args.linkTaskId, relation: args.linkType || 'relates_to' }),
+          buildLinkTasksArgs({
+            taskId,
+            targetTaskId: args.linkTaskId,
+            relation: args.linkType || 'relates_to',
+          }),
           undefined,
           options
         );

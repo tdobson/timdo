@@ -217,6 +217,21 @@ describe('AccessPage', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
+  it('shows a copyable events example with the token supplied on stdin', async () => {
+    render(<AccessPage />);
+
+    await screen.findByTestId('token-row-tok-1');
+    const example = screen.getByTestId('integration-example');
+    expect(example).toHaveTextContent('curl --config -');
+    expect(example).toHaveTextContent(`${API}/events?after=0`);
+    expect(example).toHaveTextContent('Authorization: Bearer YOUR_TIMDO_TOKEN');
+    expect(example).toHaveTextContent("<<'CURL'");
+    expect(screen.getByRole('link', { name: 'Integration guide' })).toHaveAttribute(
+      'href',
+      'https://github.com/tdobson/timdo/blob/main/docs/integrations.md'
+    );
+  });
+
   it('shows the setup steps with copyable commands and the source link', async () => {
     render(<AccessPage />);
     const steps = screen.getByRole('list', { name: 'Setup steps' });

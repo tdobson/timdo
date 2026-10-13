@@ -1,33 +1,26 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { IconBuilding, IconChevronDown, IconFolder } from '@tabler/icons-react';
+import { IconBuilding, IconFolder } from '@tabler/icons-react';
 import { useSession } from 'next-auth/react';
-import { Box, Button, Card, Container, Group, Select, Stack, Text, Title } from '@mantine/core';
+import { Box, Card, Container, Group, Select, Stack, Text, Title } from '@mantine/core';
 import { ActivityFeed } from '../../components/Activity/ActivityFeed';
 import { workspaceLabel } from '../../components/Sharing/sharingRules';
 import { SignInPrompt } from '../../components/Sharing/SignInPrompt';
-import { useActivity } from '../hooks/useActivityQueries';
 import { useSharingOverview } from '../hooks/useSharingQueries';
 
 const PAGE_SIZE = 50;
-const MAX_LIMIT = 500;
 
 export default function ActivityPage() {
   const { status } = useSession();
   const { data: workspaces = [], isLoading: workspacesLoading } = useSharingOverview();
   const [orgId, setOrgId] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
-  const [limit, setLimit] = useState(PAGE_SIZE);
 
   const filters = {
     orgId: orgId || undefined,
     projectId: projectId || undefined,
-    limit,
   };
-  // Same query key as the feed below, so this reads the shared cache rather than fetching twice
-  const { data: entries, isFetching } = useActivity(filters);
-  const hasMore = !!entries && entries.length >= limit && limit < MAX_LIMIT;
 
   const workspaceOptions = workspaces.map((w) => ({ value: w.id, label: workspaceLabel(w) }));
   const projectOptions = useMemo(() => {
@@ -70,7 +63,6 @@ export default function ActivityPage() {
             onChange={(value) => {
               setOrgId(value);
               setProjectId(null);
-              setLimit(PAGE_SIZE);
             }}
             clearable
             disabled={workspacesLoading}
@@ -84,10 +76,7 @@ export default function ActivityPage() {
             placeholder="All projects"
             data={projectOptions}
             value={projectId}
-            onChange={(value) => {
-              setProjectId(value);
-              setLimit(PAGE_SIZE);
-            }}
+            onChange={setProjectId}
             clearable
             searchable
             nothingFoundMessage="No matching projects"
@@ -100,27 +89,13 @@ export default function ActivityPage() {
         </Group>
 
         <Card withBorder radius="md" padding="lg">
-          <ActivityFeed orgId={filters.orgId} projectId={filters.projectId} limit={limit} />
+          <ActivityFeed
+            orgId={filters.orgId}
+            projectId={filters.projectId}
+            limit={PAGE_SIZE}
+            paged
+          />
         </Card>
-
-        {entries && entries.length > 0 && (
-          <Group justify="center">
-            {hasMore ? (
-              <Button
-                variant="default"
-                leftSection={<IconChevronDown size={16} />}
-                loading={isFetching}
-                onClick={() => setLimit((l) => Math.min(l + PAGE_SIZE, MAX_LIMIT))}
-              >
-                Load more
-              </Button>
-            ) : (
-              <Text size="sm" c="dimmed">
-                {limit >= MAX_LIMIT ? `Showing the latest ${MAX_LIMIT}` : "That's everything"}
-              </Text>
-            )}
-          </Group>
-        )}
       </Stack>
     </Container>
   );

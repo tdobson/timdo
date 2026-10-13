@@ -19,6 +19,7 @@ if [[ ! -d "$PERSIST" || "${RESET:-}" == "1" ]]; then
   rm -rf "$PERSIST"
   npx wrangler d1 execute timdo-v2-db --local --persist-to "$PERSIST" --file schema/current-schema.sql >/dev/null
   npx wrangler d1 execute timdo-v2-db --local --persist-to "$PERSIST" --file scripts/sql/demo-seed.sql >/dev/null
+  npx wrangler d1 execute timdo-v2-db --local --persist-to "$PERSIST" --file migrations/0011_activity_sequence.sql >/dev/null
   echo "Built a fresh local database with demo data in $PERSIST"
 fi
 

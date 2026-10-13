@@ -22,6 +22,7 @@ export const PENDING_MIGRATIONS = [
   '0008_task_refs.sql',
   '0009_report_note_dedupe.sql',
   '0010_bots_and_via.sql',
+  '0011_activity_sequence.sql',
 ];
 
 export const TIM = 'user-tim';

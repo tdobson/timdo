@@ -970,6 +970,19 @@ export async function updateProject(
 
     if (Object.keys(changes).length > 0) {
       await logTaskChanges(db, userId, task, targetProject, changes);
+      if (movesWorkspace) {
+        await logActivity(db, {
+          actorId: userId,
+          orgId: project.orgId,
+          projectId: null,
+          entityType: 'task',
+          entityId: task.id,
+          taskId: task.id,
+          epicId: null,
+          action: 'moved_out',
+          summary: 'Task moved out of this workspace',
+        });
+      }
     }
   }
 
@@ -998,6 +1011,13 @@ async function logTaskChanges(
     epicId: (changes.epicId?.to as string | null) ?? task.epicId,
   };
   const title = (changes.title?.to as string) ?? task.title;
+  const logMove = () =>
+    logActivity(db, {
+      ...base,
+      action: 'moved',
+      summary: `Moved "${title}" to ${project.name}`,
+      changes: { projectId: changes.projectId! },
+    });
 
   if (changes.isDeleted) {
     await logActivity(db, {
@@ -1005,6 +1025,9 @@ async function logTaskChanges(
       action: changes.isDeleted.to ? 'deleted' : 'restored',
       summary: changes.isDeleted.to ? `Deleted "${title}"` : `Restored "${title}"`,
     });
+    if (changes.projectId) {
+      await logMove();
+    }
     return;
   }
 
@@ -1038,12 +1061,7 @@ async function logTaskChanges(
   }
   if (changes.projectId) {
     delete rest.projectId;
-    await logActivity(db, {
-      ...base,
-      action: 'moved',
-      summary: `Moved "${title}" to ${project.name}`,
-      changes: { projectId: changes.projectId },
-    });
+    await logMove();
   }
   const summary = describeFieldEdits(rest);
   if (summary) {
